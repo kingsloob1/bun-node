@@ -140,6 +140,7 @@ export function evaluateLists(
   dryPolicy: boolean,
   trace?: ExplainStep[],
   intel?: IntelLookup,
+  geoExempt = false,
 ): ListOutcome {
   const byAddress = address ? policy.ips.match(address) : NONE;
   const byUser = user === undefined ? undefined : policy.users.get(user);
@@ -157,6 +158,12 @@ export function evaluateLists(
     if (record.country !== undefined)
       byCountry = policy.countries.get(record.country);
     if (record.asn !== undefined) byAsn = policy.asns.get(record.asn);
+    // A verified crawler on its allowance (layers.md L3.2, `geo`): country
+    // and ASN entries that refuse do not apply; IP and CIDR entries still do.
+    if (geoExempt) {
+      byCountry = byCountry?.filter((entry) => entry.action === "allow");
+      byAsn = byAsn?.filter((entry) => entry.action === "allow");
+    }
   }
   if (
     byAddress.length === 0 &&

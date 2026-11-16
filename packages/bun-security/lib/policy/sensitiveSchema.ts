@@ -160,11 +160,11 @@ export function validateSensitive(
   ) {
     for (const [id, on] of Object.entries(presets)) {
       if (id.startsWith("$")) continue;
-      if (typeof on !== "boolean") {
+      if (typeof on !== "boolean" && on !== "enforce") {
         add(
           issues,
           ["presets", id],
-          `must be true or false; got ${describe(on)}`,
+          `must be true (on, as it ships), "enforce" (on, enforced) or false (off); got ${describe(on)}`,
         );
       }
     }

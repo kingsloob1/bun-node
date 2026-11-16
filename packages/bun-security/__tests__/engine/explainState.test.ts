@@ -116,7 +116,8 @@ describe("explain() and evaluate() agree with state in play", () => {
       const random = seededRandom(seed);
       const clock = fakeClock();
       const security = createSecurity({
-        policy: POLICY,
+        // Without the managed set (on in dry run by default since PR-S12).
+        policy: { requestRules: { managed: false }, ...POLICY },
         now: clock.now,
         logger: () => {},
       });

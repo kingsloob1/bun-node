@@ -14,8 +14,8 @@ from a policy compiled once, before your handler sees it.
 > state across processes (`./stores`), WebSocket message limits, request
 > rules, challenges with bot signals, the sensitive endpoints (sign-in,
 > codes, resets: presets, the login defences, device cookies, identifier
-> checks), and IP intelligence (`./intel`). The control plane follows in
-> later PRs.
+> checks), IP intelligence (`./intel`), and verified crawlers. The
+> control plane follows in later PRs.
 
 ```sh
 bun add @kingsleyweb/bun-security
@@ -451,12 +451,14 @@ requestRules: {
   `.*a.*`, `a?a?aa`). A refused pattern refuses the policy, with the reason
   (`regexRefusal(source)` gives it beforehand). A regex reads at most
   `maxRegexInput` characters (1,024).
-- **The managed probe set** (off by default; `managed: true` turns it on in
-  dry run): `dotenv`, `vcs` (`.git`, `.svn`, `.hg`), `wordpress`,
+- **The managed probe set** (on by default, in dry run, since verified
+  crawlers are exempt from it; `managed: false` turns it off,
+  `{ mode: "enforce" }` makes it act): `dotenv`, `vcs` (`.git`, `.svn`, `.hg`), `wordpress`,
   `phpmyadmin`, `cgi-bin`, `actuator` (answered `404`), `scanner-agents`
   (`403`), `header-control-chars` (`400`), `oversized-cookie` (`431`). A
-  verified crawler (a later release) is never refused by it, and a rule of
-  your own can say `crawlers: "skip"` to exempt one too.
+  [verified crawler](#verified-crawlers) is never refused by it (its hits
+  are logged as `crawler.probe`), and a rule of your own can say
+  `crawlers: "skip"` to exempt one too.
 
 ## Deception
 
@@ -711,14 +713,80 @@ const security = createSecurity({
   class no feed or range provides.
 - Lookups run only when the policy needs them, in the early stage, and are
   cached per process (`cacheSize`, 50,000 addresses).
+## Verified crawlers
+
+A search engine's crawler looks like a scanner at the edge: it walks every
+link it has ever seen (many are dead), comes from a cloud's address space,
+sends no browser headers, cannot solve a challenge. So the engine gives
+**verified** crawlers an allowance (layers.md L3.2), on by default for
+Google, Bing, Apple and DuckDuckGo, for `GET` and `HEAD` on every path:
+
+- **Verification, never a header.** A request whose `User-Agent` carries a
+  crawler's token (`Googlebot`, `bingbot`, `Applebot`, `DuckDuckBot`) is a
+  claimant. It is verified when its address is in the crawler's published
+  range file (`ranges`), or when its reverse DNS name ends in the crawler's
+  domain (`googlebot.com`, `search.msn.com`, `applebot.apple.com`) **and**
+  that name resolves back to the address (`rdns`); `ranges-then-rdns` by
+  default. Range files come in as `./intel` feeds:
+  `ipIntel({ feeds: crawlerFeeds(policy.crawlers) })`, given to
+  `createSecurity({ intel })`. DNS is the host's (`node:dns`) unless you
+  pass `resolver`; verdicts are cached (24 h verified, 1 h refuted), at most
+  `maxPendingVerifications` (64) lookups run at once, and a claimant whose
+  lookup takes over `verifyTimeoutMs` (500 ms) or fails is an ordinary
+  client for that request.
+- **What the allowance lifts** (`exempt`, every one by default):
+  `notFound` (L14's not-found answers are not counted), `probeRules` (the
+  managed probe set logs `crawler.probe` instead), `honeypots` (answered as
+  usual, no score: `crawler.honeypot`), `botSignals`, `challenges` (never
+  challenged), `hostingClass`, `geo` (country and ASN *block* entries; IP
+  entries still apply), `perIpLimits` (replaced by the crawler's own
+  `limit`, `"3000/1m"` per crawler across its addresses, answered `429`
+  with `Retry-After`), `autoBans` (the ladder never bans it; an automatic
+  ban of its address is skipped; a manual ban applies).
+- **Never lifted**: request shape, the sensitive endpoints, canaries, your
+  own IP entries, manual bans, other methods than its `methods`, paths
+  outside its `paths`.
+- **A spoofed claimant** (a crawler's token, failing verification) is
+  `crawler.spoofed`: blocked and weighed 5 on the ladder by default
+  (`spoofed: { action, weight }`). Give an SEO tool of your own staff a plain
+  allow entry for its address.
+- **The conflict check**: a refusing list entry or a manual ban that covers
+  an allowed crawler's ranges raises a `crawler.conflict` warning at start
+  and on `load()`; `security.crawlerConflicts()` lists them once the range
+  feeds have loaded.
+- Every decision on a claimant carries `crawler: { id, verified,
+  verifiedBy, spoofed }`. `mode: "dryRun"` lifts nothing and records, on a
+  refused verified crawler, that the allowance would have let it in;
+  `mode: "off"` looks at no claimant.
+
+```ts
+crawlers: {
+  allow: ["google", "bing", "apple", "duckduckgo"], // also google-special, yandex, baidu, or your custom ids
+  paths: { exclude: ["/api/**"] },
+  limit: "3000/1m",
+  custom: [{ id: "acme", tokens: ["AcmeBot"], rdns: ["crawl.acme.example"] }],
+},
+```
+
+AI and LLM crawlers are not in the registry's default set: add them as
+`custom` entries if you choose to let them in.
+
 ## Presets
 
 A policy gets built-in rules without writing them, each with an id
-(`PRESETS` lists them): it turns one off or on with `presets`, and replaces
-one by giving a rule of its own the same id.
+(`PRESETS` lists them), and switches each in `presets`:
+
+- `true`: on, **as it ships** (enforced, or in dry run for the one preset
+  that ships in dry run, `not_found_per_minute`). Leaving a preset out is
+  the same as `true`.
+- `"enforce"`: on and enforced, whatever mode it ships in.
+- `false`: off.
+
+Any other value is refused. A rule of the policy's own with a preset's id
+replaces the preset.
 
 ```ts
-presets: { "per-ip": false, not_found_per_minute: true },
+presets: { "per-ip": false, not_found_per_minute: "enforce" },
 limits: [{ id: "per-user", limit: 300, window: "1m", key: "user" }], // replaces the preset
 ```
 
@@ -732,8 +800,13 @@ limits: [{ id: "per-user", limit: 300, window: "1m", key: "user" }], // replaces
   minutes), `otp.destination-day`, `otp.prefix` (100 an hour per country
   and area code, against SMS pumping); `reset.ip`, `reset.ip-hour`,
   `reset.destination`; `signup.ip`.
-- **Off**: `not_found_per_minute` (120 route-not-found answers a minute: a
-  day's ban), until the verified-crawler exemption lands.
+- **On, in dry run**: `not_found_per_minute` (120 route-not-found answers a
+  minute: a day's ban), which records the bans it would make. A verified
+  crawler's not-found answers are not counted.
+  `presets: { not_found_per_minute: "enforce" }` enforces it, `false` turns
+  it off.
+- **Beside them**: `crawler`, the verified crawlers' own limit (see
+  [Verified crawlers](#verified-crawlers)).
 
 ## Sensitive endpoints
 

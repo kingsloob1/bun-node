@@ -462,15 +462,17 @@ function compileRule(
 export function compileRequestRules(
   source: RequestRulesPolicy | undefined,
 ): CompiledRequestRules {
-  if (source === undefined) return NONE;
+  // The managed probe set is on, in dry run, unless the policy says
+  // otherwise (`managed: false`, or a mode): the user's decision with PR-S12.
+  source ??= {};
   const maxRegexInput = source.maxRegexInput ?? DEFAULT_MAX_REGEX_INPUT;
   const rules: CompiledRequestRule[] = [];
   for (const rule of source.rules ?? []) {
     const compiled = compileRule(rule, false, maxRegexInput);
     if (compiled !== undefined) rules.push(compiled);
   }
-  const managed = source.managed;
-  if (managed !== undefined && managed !== false) {
+  const managed = source.managed ?? true;
+  if (managed !== false) {
     const settings: ManagedRulesPolicy = managed === true ? {} : managed;
     const exclude = new Set(settings.exclude ?? []);
     for (const [id, rule] of MANAGED_RULES) {

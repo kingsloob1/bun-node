@@ -65,6 +65,8 @@ export interface SubjectKeys {
   readonly destinationPrefix?: string;
   /** The id of the request's valid device cookie for its username (layers.md L11.4). */
   readonly device?: string;
+  /** The verified crawler's id, on its allowance, where its own limit replaces the per-address ones (layers.md L3.2). */
+  readonly crawler?: string;
 }
 
 /** The engine's answer for one request. */
@@ -90,6 +92,24 @@ export interface Decision {
   readonly risk: number;
   /** The keys the request was decided under. */
   readonly subject: SubjectKeys;
+  /**
+   * For a request whose `User-Agent` claims an allowed crawler (layers.md
+   * L3.2): which, whether it was verified, and how (`ranges`, `rdns` or
+   * `cache`). Absent for any other request.
+   */
+  readonly crawler?: DecisionCrawler;
+}
+
+/** A decision's crawler claim. */
+export interface DecisionCrawler {
+  /** The crawler claimed (`google`). */
+  readonly id: string;
+  /** Whether the claim was verified; `false` for a spoofed or unverifiable one. */
+  readonly verified: boolean;
+  /** How it was verified or refuted, when it was. */
+  readonly verifiedBy?: "ranges" | "rdns" | "cache";
+  /** Whether it was found spoofed (`crawler.spoofed`). */
+  readonly spoofed: boolean;
 }
 
 /** Where the client's address came from. */

@@ -12,6 +12,7 @@ import { parseCidr } from "../ip/address";
 import { CidrTrie } from "../ip/trie";
 import { SecurityPolicyError } from "./errors";
 import { INTERNAL_RANGES } from "./internal";
+import { crawlerLimitRule } from "../crawlers/policy";
 import { withPresets } from "./presets";
 import { parseRoutePattern } from "./routes";
 import type { RoutePattern } from "./routes";
@@ -748,7 +749,16 @@ export function compilePolicy(
     source.limits,
     source.countedRules,
   );
-  const limits = compileLimits(source, effective.limits, "limits");
+  // The verified crawlers' own limit (layers.md L3.2), beside the presets.
+  const crawlerLimit = crawlerLimitRule(source.crawlers);
+  const limits = compileLimits(
+    source,
+    crawlerLimit === undefined ||
+      effective.limits.some((rule) => rule.id === crawlerLimit.id)
+      ? effective.limits
+      : [crawlerLimit, ...effective.limits],
+    "limits",
+  );
 
   const countedRules: CompiledCountedRule[] = [];
   const countedByEvent = new Map<string, CompiledCountedRule[]>();

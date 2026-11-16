@@ -41,7 +41,9 @@ const one = (
   extra: SecurityPolicy = {},
 ): SecurityPolicy => ({
   ...extra,
-  requestRules: { rules: [rule] },
+  // The managed set (on in dry run by default since PR-S12) is left out:
+  // these cases are about the policy's own rules.
+  requestRules: { rules: [rule], managed: false },
 });
 
 describe("L7 request rules: actions", () => {
@@ -292,8 +294,15 @@ describe("L7 request rules: events and the ladder", () => {
 });
 
 describe("L7 request rules: the managed probe set", () => {
-  it("is off unless the policy turns it on, then in dry run", () => {
-    expect(decide(engine({}), at("/.env")).hits).toEqual([]);
+  it("is on in dry run by default (PR-S12), off with managed: false", () => {
+    expect(
+      decide(engine({ requestRules: { managed: false } }), at("/.env")).hits,
+    ).toEqual([]);
+    const byDefault = decide(engine({}), at("/.env"));
+    expect([byDefault.action, byDefault.hits[0]?.wouldHaveBeen]).toEqual([
+      "log",
+      "block",
+    ]);
     const dry = decide(
       engine({ requestRules: { managed: true } }),
       at("/.env"),
@@ -360,6 +369,7 @@ describe("L7 request rules: the stages", () => {
   it("runs a rule on the caller in the route stage only, and a rule on the path in the early stage only", () => {
     const security = engine({
       requestRules: {
+        managed: false,
         rules: [
           {
             id: "svc-only",

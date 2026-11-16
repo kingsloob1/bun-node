@@ -11,6 +11,7 @@
  *
  * No database or range list ships with the package.
  */
+export { crawlerFeeds } from "./crawlers";
 export {
   type ExtractedIntel,
   extractIntel,

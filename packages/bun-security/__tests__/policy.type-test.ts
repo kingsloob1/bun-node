@@ -150,6 +150,7 @@ assertType<
     | "canary.used"
     | "store.unavailable"
     | "login.risky-success"
+    | "crawler.conflict"
   >
 >();
 

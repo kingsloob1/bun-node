@@ -96,6 +96,8 @@ export interface IntelStatus {
 
 /** IP intelligence: {@link lookup}, the feeds' refresh, its state. */
 export interface IpIntel extends IntelLookup {
+  /** The ranges in use for a class: its static ranges and its feeds' copies. */
+  readonly ranges: (className: string) => readonly string[];
   /** Fetches every feed that is due (every feed with `force`), one at a time; the outcomes. Never throws. */
   readonly refresh: (options?: {
     readonly force?: boolean;
@@ -367,6 +369,16 @@ export async function ipIntel(options: IpIntelOptions = {}): Promise<IpIntel> {
   return Object.freeze({
     lookup,
     provides: () => provided,
+    ranges(className: string): readonly string[] {
+      const out: string[] = [];
+      for (const [name, cidr] of statics)
+        if (name === className) out.push(cidr.text);
+      for (const state of states) {
+        if (state.feed.class === className)
+          for (const cidr of state.ranges) out.push(cidr.text);
+      }
+      return out;
+    },
     refresh,
     start() {
       if (running) return;

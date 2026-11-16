@@ -88,6 +88,7 @@ import type {
   ClientResolution,
   Decision,
   Explanation,
+  DecisionCrawler,
   ExplainStep,
   RuleHit,
   SubjectKeys,
@@ -114,6 +115,14 @@ import { botSignalsOf, readSignals } from "./signals";
 import type { ChallengeFlow } from "../challenge/flow";
 import type { IntelLookup } from "../intel/types";
 import { checkIntel } from "./intelNeeds";
+import { crawlerConflicts } from "../crawlers/conflicts";
+import type { CrawlerConflict } from "../crawlers/conflicts";
+import { crawlersOf, covered } from "../crawlers/policy";
+import type { CrawlerExemption } from "../crawlers/policy";
+import { claimOf, exempts } from "../crawlers/request";
+import type { CrawlerRequest } from "../crawlers/request";
+import { CrawlerVerifier } from "../crawlers/verify";
+import type { CrawlerResolver } from "../crawlers/verify";
 import { TrustMonitor } from "./trust";
 import { DistinctCounts } from "./distinct";
 import { sensitiveOf } from "../sensitive/compile";
@@ -216,6 +225,19 @@ export interface CreateSecurityOptions<TRequest = Request> {
    * one (or naming what it cannot tell) is refused.
    */
   readonly intel?: IntelLookup;
+  /**
+   * Reverse and forward DNS for verifying crawlers (layers.md L3.2):
+   * `{ reverse(address), lookup(name) }`. Default the host's (`node:dns`).
+   * Trusted, like the host's own resolver.
+   */
+  readonly resolver?: CrawlerResolver;
+  /** The most crawler verifications (DNS lookups) in flight at once. Default `64`. */
+  readonly maxPendingVerifications?: number;
+  /**
+   * How long a claimant waits for its verification, in ms; past it, it is
+   * an ordinary client for that request (and nothing is cached). Default `500`.
+   */
+  readonly verifyTimeoutMs?: number;
 }
 
 /** What `signal()` can be told beside the event (layers.md L11.1). */
@@ -324,6 +346,13 @@ export interface SecurityStatus {
 export interface Security<TRequest = Request> {
   /** The policy in force. */
   readonly policy: CompiledPolicy;
+  /**
+   * The crawler conflicts (layers.md L3.2): refusing list entries and
+   * manual bans that cover an allowed crawler's published ranges. Each is
+   * also raised as a `crawler.conflict` warning when found at start or on
+   * `load()`; call this again once the range feeds have loaded.
+   */
+  readonly crawlerConflicts: () => readonly CrawlerConflict[];
   /** The challenge flow, when the engine was given one (`createSecurity`'s `challenge`). */
   readonly challenge: ChallengeFlow | undefined;
   /** Whether {@link close} was called. */
@@ -571,6 +600,8 @@ interface Pass {
   readonly stage: EvaluationStage | undefined;
   /** With writes off, the address's score as this request's offences leave it. */
   score?: number;
+  /** The request's crawler claim (layers.md L3.2), if its `User-Agent` names an allowed crawler. */
+  readonly crawler?: CrawlerRequest | undefined;
 }
 
 /**
@@ -647,6 +678,8 @@ class Run {
   readonly tags = new Set<string>();
   /** The longest `delay` asked for, ms. */
   delayMs = 0;
+  /** The request's crawler claim (layers.md L3.2), for the decision. */
+  crawler: CrawlerRequest | undefined;
 
   constructor(
     /**
@@ -836,6 +869,10 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   readonly #signalled = new WeakSet<RequestFacts>();
   /** Device cookies issued for facts, until the integration sets them. */
   readonly #devices = new WeakMap<RequestFacts, string>();
+  /** Crawler verification (layers.md L3.2). */
+  readonly #verifier: CrawlerVerifier;
+  /** Each claimant request's crawler state, by its facts. */
+  readonly #claims = new WeakMap<RequestFacts, CrawlerRequest>();
   /** When the `login.risky-success` warning was last raised. */
   #lastRisky = Number.NEGATIVE_INFINITY;
 
@@ -896,6 +933,27 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       (warning) => this.#warn(warning),
       () => this.#policy.service,
     );
+    for (const [name, value] of [
+      ["maxPendingVerifications", options.maxPendingVerifications],
+      ["verifyTimeoutMs", options.verifyTimeoutMs],
+    ] as const) {
+      if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
+        throw new ConfigError(
+          `createSecurity(): ${name} must be a positive whole number; got ${String(value)}`,
+        );
+      }
+    }
+    this.#verifier = new CrawlerVerifier({
+      ...(options.resolver === undefined ? {} : { resolver: options.resolver }),
+      ...(options.maxPendingVerifications === undefined
+        ? {}
+        : { maxPendingVerifications: options.maxPendingVerifications }),
+      ...(options.verifyTimeoutMs === undefined
+        ? {}
+        : { verifyTimeoutMs: options.verifyTimeoutMs }),
+      ...(options.store === undefined ? {} : { store: options.store }),
+      now: this.#now,
+    });
     const counters = store ?? memoryThrottleStore({ maxKeys, now: this.#now });
     const stores = {
       local: counters,
@@ -992,6 +1050,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       );
       this.#start(shared);
     }
+    this.#reportConflicts();
   }
 
   /** Starts the shared store's background work: the first load, the timers, the bus. */
@@ -1153,6 +1212,35 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       : "";
   }
 
+  crawlerConflicts(): readonly CrawlerConflict[] {
+    return crawlerConflicts(this.#policy, this.#options.intel, [
+      ...this.#bans.list(this.#now()),
+    ]);
+  }
+
+  /** Raises a `crawler.conflict` warning for each conflict found now. */
+  #reportConflicts(): void {
+    let conflicts: readonly CrawlerConflict[];
+    try {
+      conflicts = this.crawlerConflicts();
+    } catch (error) {
+      this.#logger.error("bun-security: the crawler conflict check failed", {
+        error,
+      });
+      return;
+    }
+    for (const conflict of conflicts) {
+      this.#warn({
+        kind: "crawler.conflict",
+        message: `bun-security: crawler conflict: ${conflict.message}`,
+        service: this.#policy.service,
+        minutes: 0,
+        share: 0,
+        since: this.#now(),
+      });
+    }
+  }
+
   get challenge(): ChallengeFlow | undefined {
     return this.#options.challenge;
   }
@@ -1278,7 +1366,13 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       return EMPTY;
     }
     const events: string[] = [];
-    if (outcome.routeNotFound === true) events.push("route.notFound");
+    if (
+      outcome.routeNotFound === true &&
+      // Not counted against a verified crawler on its allowance (L3.2).
+      !this.#crawlerExempt(facts, "notFound")
+    ) {
+      events.push("route.notFound");
+    }
     if (outcome.status >= 500) events.push("server.error");
     const inferred = this.#inferred(facts, context.stage, outcome.status);
     if (events.length === 0 && inferred === undefined) return EMPTY;
@@ -1361,13 +1455,10 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     // soon as the call returns, whatever the store still has to do.
     if (event === "auth.success")
       this.#issueDevice(facts, resolved.subject, flags, now);
-    const counted = this.#occurAll(
-      [event],
-      facts,
-      resolved.subject,
-      flags,
-      now,
-      undefined,
+    // A crawler claim is known (verified) first: the ladder spares a
+    // verified crawler (layers.md L3.2, `autoBans`).
+    const counted = then(this.#claim(facts, undefined, undefined), () =>
+      this.#occurAll([event], facts, resolved.subject, flags, now, undefined),
     );
     return then(counted, (hits) =>
       then(
@@ -1608,6 +1699,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     this.#policy = compiled;
     this.#internals = internals;
     this.#limits = prepared.set;
+    this.#verifier.clear();
+    this.#reportConflicts();
     this.#messageLimits = preparedMessages.set;
     this.#prefix = prefix;
     // A counted rule removed or turned off lifts the bans it wrote here.
@@ -2026,6 +2119,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       trace: undefined,
       run: new Run(this.#challengeOutcome(facts)),
       stage,
+      crawler: this.#claims.get(facts),
     };
     // One event after another, so the hits keep the events' order.
     const from = (index: number): MaybePromise<void> => {
@@ -2239,7 +2333,9 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     if (
       flags.allowAll ||
       flags.internal ||
-      flags.service?.exempt.has("bans") === true
+      flags.service?.exempt.has("bans") === true ||
+      // The ladder never bans a verified crawler on its allowance (L3.2).
+      exempts(pass.crawler, "autoBans")
     ) {
       return;
     }
@@ -2388,6 +2484,20 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     if (pass.address && !flags.internal && pass.stage !== "route") {
       found.push(...this.#bans.ranges(pass.address, now));
     }
+    // A verified crawler on its allowance: automatic bans are skipped
+    // (`autoBans`); manual ones still apply (layers.md L3.2).
+    if (exempts(pass.crawler, "autoBans")) {
+      const manual = found.filter((ban) => ban.source === "manual");
+      if (manual.length !== found.length) {
+        trace?.push({
+          layer: "L4",
+          check: "ban",
+          outcome: `${found.length - manual.length} automatic ban(s) skipped: a verified ${pass.crawler?.id ?? ""} crawler`,
+        });
+      }
+      found.length = 0;
+      found.push(...manual);
+    }
     const applying = exempt
       ? found.filter((ban) => {
           const id = ban.rule?.startsWith("counted:")
@@ -2477,8 +2587,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
    * marked `crawlers: "skip"`), whose hits are logged as `crawler.probe`
    * instead. PR-S12 answers it; until then no crawler is verified.
    */
-  #verifiedCrawler(_facts: RequestFacts, _pass?: Pass): boolean {
-    return false;
+  #verifiedCrawler(facts: RequestFacts, _pass?: Pass): boolean {
+    return this.#crawlerExempt(facts, "probeRules");
   }
 
   /**
@@ -2489,9 +2599,11 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
    */
   #challengeOutcome(facts: RequestFacts): (() => ChallengeOutcome) | undefined {
     const flow = this.#options.challenge;
-    if (flow === undefined) return undefined;
+    // A verified crawler is never challenged, with or without a flow (L3.2).
+    const crawler = this.#crawlerExempt(facts, "challenges");
+    if (flow === undefined && !crawler) return undefined;
     return () => {
-      if (this.#verifiedCrawler(facts)) return "crawler";
+      if (crawler || flow === undefined) return "crawler";
       try {
         return flow.cleared(facts) ? "cleared" : "challenge";
       } catch (error) {
@@ -2525,7 +2637,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       compiled,
       facts,
       pass.stage,
-      this.#options.intel,
+      this.#intelFor(pass),
     );
     if (matched.length === 0) return false;
     const { run, trace, now, writes, flags } = pass;
@@ -2698,6 +2810,27 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     }
     const dry = pass.dryPolicy || honeypots.mode === "dryRun";
     const notFound = honeypots.answer === "not-found";
+    if (exempts(pass.crawler, "honeypots")) {
+      // Answered as usual, no score and no ban (layers.md L3.2): a verified
+      // crawler on a honeypot followed an outside link, or an old robots.txt.
+      const reason = `crawler.honeypot: a verified ${pass.crawler?.id ?? ""} crawler on a honeypot route; no score`;
+      pass.run.add(
+        {
+          layer: "L8",
+          rule: "honeypot",
+          action: notFound && !dry ? "block" : "log",
+          reason,
+        },
+        notFound && !dry ? { status: 404, code: "not_found" } : undefined,
+      );
+      pass.trace?.push({
+        layer: "L8",
+        check: "honeypot",
+        rule: "honeypot",
+        outcome: reason,
+      });
+      return notFound && !dry;
+    }
     const reason = "honeypot route";
     pass.run.add(
       dry
@@ -2740,6 +2873,73 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     track: boolean,
     stage: EvaluationStage | undefined,
   ): MaybePromise<{ decision: Decision; resolved: ResolvedClient }> {
+    return then(this.#claim(facts, stage, trace), () =>
+      this.#decideNow(facts, now, writes, trace, track, stage),
+    );
+  }
+
+  /**
+   * Layer L3.2: the allowed crawler a request's `User-Agent` claims,
+   * verified by its ranges or forward-confirmed reverse DNS, kept by its
+   * facts for every layer to read. Synchronous unless a DNS lookup has to
+   * be awaited (at most `verifyTimeoutMs`).
+   */
+  #claim(
+    facts: RequestFacts,
+    stage: EvaluationStage | undefined,
+    trace: ExplainStep[] | undefined,
+  ): MaybePromise<void> {
+    if (this.#internals.mode === "off") return undefined;
+    const compiled = crawlersOf(this.#policy);
+    if (compiled.mode === "off") return undefined;
+    const crawler = claimOf(compiled, facts.headers["user-agent"]);
+    if (crawler === undefined) return undefined;
+    const known = this.#claims.get(facts);
+    if (known?.id === crawler.id) return undefined;
+    const address = parseAddress(facts.client);
+    if (address === null) return undefined;
+    const mode = compiled.mode;
+    return then(
+      this.#verifier.verify(
+        crawler,
+        address,
+        compiled.verify,
+        this.#options.intel,
+      ),
+      (verdict) => {
+        const request: CrawlerRequest = {
+          id: crawler.id,
+          verdict,
+          covered: covered(compiled, facts.method, facts.path),
+          mode,
+          exempt: compiled.exempt,
+        };
+        this.#claims.set(facts, request);
+        trace?.push({
+          layer: "L3",
+          check: "crawler",
+          rule: `crawler:${crawler.id}`,
+          outcome: `claims ${crawler.id}: ${verdict.status}${verdict.by ? ` by ${verdict.by}` : ""} (${verdict.reason})${request.covered ? "" : "; outside the allowance's methods or paths"}${stage === "route" ? "" : ""}`,
+        });
+        return undefined;
+      },
+    );
+  }
+
+  /** Whether the allowance lifts `exemption` for this request's verified crawler. */
+  #crawlerExempt(facts: RequestFacts, exemption: CrawlerExemption): boolean {
+    return exempts(this.#claims.get(facts), exemption);
+  }
+
+  /** {@link #decide}, once the crawler claim is known. */
+  #decideNow(
+    facts: RequestFacts,
+    now: number,
+    writes: boolean,
+    trace: ExplainStep[] | undefined,
+    track: boolean,
+    stage: EvaluationStage | undefined,
+  ): MaybePromise<{ decision: Decision; resolved: ResolvedClient }> {
     const policy = this.#policy;
     const internals = this.#internals;
     const limitSet = this.#limits;
@@ -2760,11 +2960,16 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     }
     const dryPolicy = internals.mode === "dryRun";
     const run = new Run(this.#challengeOutcome(facts));
+    const crawler = this.#claims.get(facts);
+    run.crawler = crawler;
     // The route stage repeats L2 and the lists for their flags and the
     // caller's own entries; the early stage recorded the address's hits.
     const routeStage = stage === "route";
     if (resolved.hit && !routeStage) run.add(resolved.hit);
-    const subject = resolved.subject;
+    // A verified crawler on its allowance counts under its own limit.
+    const subject: SubjectKeys = exempts(crawler, "perIpLimits")
+      ? { ...resolved.subject, crawler: crawler?.id }
+      : resolved.subject;
     const concurrency =
       track && !routeStage ? internals.concurrency : undefined;
     let flags: Flags = {
@@ -2833,6 +3038,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         dryPolicy,
         trace,
         this.#options.intel,
+        exempts(crawler, "geo"),
       );
       if (lists.decided && ownEntry(lists.decided, stage)) {
         if (lists.decided.action === "challenge") {
@@ -2948,6 +3154,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       trace,
       run,
       stage,
+      crawler,
     };
     if (this.#banned(pass)) return finish();
     if (challengeEntry !== undefined) {
@@ -2960,10 +3167,81 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     return then(this.#shaped(facts, pass), (shapeRefused) => {
       if (shapeRefused) return finish();
       return then(this.#ruled(facts, pass, policy), (ruled) => {
-        if (ruled || this.#signaled(facts, pass, policy)) return finish();
-        return this.#afterRules(facts, pass, finish, internals, limitSet);
+        if (ruled) return finish();
+        return then(this.#spoofed(pass), (spoofed) => {
+          if (spoofed || this.#signaled(facts, pass, policy)) return finish();
+          return this.#afterRules(facts, pass, finish, internals, limitSet);
+        });
       });
     });
+  }
+
+  /**
+   * Layer L10 (layers.md L3.2): a claimant whose verification failed,
+   * `crawler.spoofed` — refused by default (`crawlers.spoofed.action`), its
+   * offence weight (5) added to the address's score, its event counted.
+   * Early stage only. Answers whether the request was refused.
+   */
+  #spoofed(pass: Pass): MaybePromise<boolean> {
+    const claim = pass.crawler;
+    if (
+      claim === undefined ||
+      claim.verdict.status !== "spoofed" ||
+      pass.stage === "route" ||
+      pass.flags.allowAll ||
+      pass.flags.internal
+    ) {
+      return false;
+    }
+    const compiled = crawlersOf(this.#policy);
+    const dry = pass.dryPolicy || claim.mode === "dryRun";
+    const action = compiled.spoofedAction;
+    const reason = `crawler.spoofed: claims ${claim.id}, but ${claim.verdict.reason}`;
+    const logged = dry || action === "log";
+    pass.run.add(
+      logged
+        ? {
+            layer: "L10",
+            rule: "crawler.spoofed",
+            action: "log",
+            ...(dry && action !== "log" ? { wouldHaveBeen: action } : {}),
+            reason: dry ? `dry run: ${reason}` : reason,
+          }
+        : { layer: "L10", rule: "crawler.spoofed", action, reason },
+      logged ? undefined : { status: 403, code: "blocked" },
+    );
+    pass.trace?.push({
+      layer: "L10",
+      check: "crawler",
+      rule: "crawler.spoofed",
+      outcome: `${reason}: ${dry ? "would have refused (dry run)" : logged ? "logged" : `refused: ${action}`}`,
+    });
+    if (dry) return false;
+    this.#offend("crawler.spoofed", compiled.spoofedWeight, pass, false);
+    return then(
+      this.#occur("crawler.spoofed", pass, false),
+      () => pass.run.refused,
+    );
+  }
+
+  /** The intel the request's rules and signals read: without the `hosting` class for a verified crawler (`hostingClass`). */
+  #intelFor(pass: Pass): IntelLookup | undefined {
+    const intel = this.#options.intel;
+    if (intel === undefined || !exempts(pass.crawler, "hostingClass")) {
+      return intel;
+    }
+    return {
+      provides: () => intel.provides(),
+      lookup: (address) => {
+        const record = intel.lookup(address);
+        return record.classes.includes("hosting")
+          ? {
+              ...record,
+              classes: record.classes.filter((name) => name !== "hosting"),
+            }
+          : record;
+      },
+    };
   }
 
   /**
@@ -2978,7 +3256,17 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     }
     const compiled = botSignalsOf(policy);
     if (!compiled.enabled) return false;
-    const found = readSignals(compiled, facts, this.#options.intel);
+    // A verified crawler on its allowance adds no signals (layers.md L3.2).
+    if (exempts(pass.crawler, "botSignals")) {
+      pass.trace?.push({
+        layer: "L10",
+        check: "signals",
+        rule: "botSignals",
+        outcome: `not read: a verified ${pass.crawler?.id ?? ""} crawler is exempt`,
+      });
+      return false;
+    }
+    const found = readSignals(compiled, facts, this.#intelFor(pass));
     if (found.length === 0) return false;
     const { run, trace } = pass;
     const points = found.reduce((sum, signal) => sum + signal.points, 0);
@@ -3120,14 +3408,16 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       const built = limitSet.get(limit.id);
       if (built === undefined) continue;
       const skipped =
-        flags.allowAll && !limit.evenWhenAllowed
-          ? "an allow entry let the request through"
-          : flags.internal && limit.key.addressOnly
-            ? "the client is internal and the key names only its address"
-            : flags.service?.exempt.has("globalLimits") &&
-                !limit.appliesToServices
-              ? `service "${flags.service.id}" is exempt from global limits`
-              : undefined;
+        limit.key.addressOnly && exempts(pass.crawler, "perIpLimits")
+          ? `a verified ${pass.crawler?.id ?? ""} crawler counts under its own limit`
+          : flags.allowAll && !limit.evenWhenAllowed
+            ? "an allow entry let the request through"
+            : flags.internal && limit.key.addressOnly
+              ? "the client is internal and the key names only its address"
+              : flags.service?.exempt.has("globalLimits") &&
+                  !limit.appliesToServices
+                ? `service "${flags.service.id}" is exempt from global limits`
+                : undefined;
       if (skipped !== undefined) {
         trace?.push({
           layer: "L9",
@@ -3141,6 +3431,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         continue;
       }
       const key = keyOf(limit.key, subject, route);
+      // The crawlers' own limit counts verified crawlers only: silent for the rest.
+      if (key === undefined && limit.key.parts.includes("crawler")) continue;
       if (key === undefined) {
         trace?.push({
           layer: "L9",
@@ -3287,9 +3579,39 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
    * code and `Retry-After`.
    */
   #conclude(run: Run, subject: Decision["subject"]): Decision {
+    const claim = run.crawler;
+    if (
+      claim !== undefined &&
+      claim.mode === "dryRun" &&
+      claim.covered &&
+      claim.verdict.status === "verified" &&
+      run.refused
+    ) {
+      // The allowance in dry run: lifted nothing, but would have let it in.
+      run.add({
+        layer: "L3",
+        rule: `crawler:${claim.id}`,
+        action: "log",
+        wouldHaveBeen: "allow",
+        reason: `dry run: a verified ${claim.id} crawler; its allowance would have let it through`,
+      });
+    }
+    const crawler: DecisionCrawler | undefined =
+      claim === undefined
+        ? undefined
+        : Object.freeze({
+            id: claim.id,
+            verified: claim.verdict.status === "verified",
+            ...(claim.verdict.by === undefined
+              ? {}
+              : { verifiedBy: claim.verdict.by }),
+            spoofed: claim.verdict.status === "spoofed",
+          });
     const hits = run.hits;
     if (hits.length === 0 && run.tags.size === 0) {
-      return this.#allow(subject);
+      return crawler === undefined
+        ? this.#allow(subject)
+        : { ...this.#allow(subject), crawler };
     }
     let action: SecurityAction = "allow";
     let decider: RuleHit | undefined;
@@ -3308,6 +3630,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       tags: run.tags.size === 0 ? EMPTY : Object.freeze([...run.tags]),
       risk,
       subject,
+      ...(crawler === undefined ? {} : { crawler }),
     };
     if (action === "delay" && run.delayMs > 0) decision.delayMs = run.delayMs;
     if (action === "block" || action === "challenge" || action === "ban") {

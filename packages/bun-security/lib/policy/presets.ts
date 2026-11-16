@@ -8,10 +8,16 @@
  *   and the sensitive endpoints' rules, which apply only to requests of
  *   routes the app marked with their profile (`login.*`, `mfa.*`, `otp.*`,
  *   `reset.*`, `signup.*`).
- * - **Off**: `not_found_per_minute`, which turns on in dry run once the
- *   verified-crawler exemption (PR-S12) exists.
+ * - **On, in dry run**: `not_found_per_minute` (the user's decision with
+ *   PR-S12, now that a verified crawler's route-not-found answers are not
+ *   counted): it records the bans it would make.
+ *
+ * Each preset's switch in `presets` is `true` (on, as it ships), `"enforce"`
+ * (on, enforced) or `false` (off). So `true` changes nothing for a preset
+ * that ships enforced, and `{ not_found_per_minute: "enforce" }` enforces
+ * the one that ships in dry run.
  */
-import type { CountedRule, LimitRule } from "./types";
+import type { CountedRule, LimitRule, PresetSetting } from "./types";
 
 /** A preset: a limit or a counted rule, on or off by default. */
 export type Preset =
@@ -175,13 +181,15 @@ export const PRESETS: Readonly<Record<string, Preset>> = Object.freeze({
     window: "1h",
     profile: "signup",
   }),
-  // Fuzzing's signature (ConcaveHR's): off until PR-S12's crawler exemption.
-  not_found_per_minute: counted(false, {
+  // Fuzzing's signature (ConcaveHR's): on in dry run since PR-S12's crawler
+  // exemption.
+  not_found_per_minute: counted(true, {
     id: "not_found_per_minute",
     event: "route.notFound",
     threshold: 120,
     window: "1m",
     duration: "24h",
+    mode: "dryRun",
   }),
 });
 
@@ -200,7 +208,7 @@ export const PROFILE_NAMES: readonly string[] = Object.freeze([
  * by a rule of the policy with the same id.
  */
 export function withPresets(
-  presets: Readonly<Record<string, boolean>> | undefined,
+  presets: Readonly<Record<string, PresetSetting>> | undefined,
   limits: readonly LimitRule[] | undefined,
   countedRules: readonly CountedRule[] | undefined,
 ): { limits: LimitRule[]; countedRules: CountedRule[] } {
@@ -209,11 +217,21 @@ export function withPresets(
   const outLimits: LimitRule[] = [];
   const outCounted: CountedRule[] = [];
   for (const [id, preset] of Object.entries(PRESETS)) {
-    if (!(presets?.[id] ?? preset.on)) continue;
+    const setting = presets?.[id] ?? preset.on;
+    if (setting === false) continue;
+    // `"enforce"` overrides the mode a preset ships with (dry run for
+    // `not_found_per_minute`); `true` keeps it.
+    const enforced = setting === "enforce";
     if (preset.kind === "limit") {
-      if (!ownLimits.has(id)) outLimits.push(preset.rule);
+      if (!ownLimits.has(id)) {
+        outLimits.push(
+          enforced ? { ...preset.rule, mode: "enforce" } : preset.rule,
+        );
+      }
     } else if (!ownCounted.has(id)) {
-      outCounted.push(preset.rule);
+      outCounted.push(
+        enforced ? { ...preset.rule, mode: "enforce" } : preset.rule,
+      );
     }
   }
   return {

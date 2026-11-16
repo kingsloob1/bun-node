@@ -29,7 +29,9 @@ function engine(policy: SecurityPolicy) {
   const warnings: SecurityWarning[] = [];
   const errors: string[] = [];
   const security = createSecurity({
-    policy,
+    // The managed probe set (on in dry run by default since PR-S12) is
+    // left out: these cases are about the honeypots on the same paths.
+    policy: { requestRules: { managed: false }, ...policy },
     onWarning: (warning) => warnings.push(warning),
     logger: (event) => {
       if (event.level === "error") errors.push(event.message);

@@ -34,4 +34,9 @@ export interface IntelLookup {
   readonly lookup: (address: ParsedAddress | string) => IntelRecord;
   /** What it can tell, so a policy naming what it cannot is refused at start. */
   readonly provides: () => IntelProvides;
+  /**
+   * The ranges in use for a class (`crawler:google`), for the crawler
+   * conflict check (layers.md L3.2). Optional: without it, no check.
+   */
+  readonly ranges?: (className: string) => readonly string[];
 }
