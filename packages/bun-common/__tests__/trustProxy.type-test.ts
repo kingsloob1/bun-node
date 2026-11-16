@@ -20,6 +20,8 @@ import {
   BunHttpAdapter,
   BunRouter,
   CLOUDFLARE_IP_RANGES,
+  normalizeIpAddress,
+  resolveClientAddress,
   trustChain,
 } from "../lib";
 
@@ -78,3 +80,37 @@ adapter.get("/", (req) => {
   // @ts-expect-error -- the chain is read-only
   req.proxyChain.push({ address: "x", source: "header", trusted: true });
 });
+
+// The security-oriented address (bun-node#787): a string beside `ip`,
+// read-only, and the resolution's fields; `maxForwardedHops` is a number on
+// the request, the router and the trust settings.
+adapter.get("/client", (req) => {
+  const clientAddress: string = req.clientAddress;
+  void clientAddress;
+  // @ts-expect-error -- a getter only
+  req.clientAddress = "203.0.113.9";
+});
+const resolved = resolveClientAddress({
+  peer: "10.0.0.1",
+  forwardedFor: null,
+  trust: trustChain([true]),
+  maxForwardedHops: 8,
+});
+const resolvedFields: [string, ProxyChainEntry | undefined, boolean] = [
+  resolved.clientAddress,
+  resolved.clientEntry,
+  resolved.truncated,
+];
+void resolvedFields;
+const normalized: string | null = normalizeIpAddress("::ffff:10.0.0.1");
+void normalized;
+void [
+  new BunRouter({ maxForwardedHops: 32 }),
+  new BunHttpAdapter(0, { request: { maxForwardedHops: 32 } }),
+  // @ts-expect-error -- a count, not a string
+  new BunRouter({ maxForwardedHops: "32" }),
+];
+const bounded: ProxyTrustSettings = { trustProxy: true, maxForwardedHops: 4 };
+void bounded;
+const routerBound: number | undefined = new BunRouter().maxForwardedHops;
+void routerBound;

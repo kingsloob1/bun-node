@@ -399,6 +399,7 @@ class under a second name. Its constructor is
 | `websocket` | `Partial<WebsocketOptions>` | bound to this adapter | Overrides for the built-in WebSocket adapter. See [the `websocket` option](#the-websocket-option). |
 | `trustProxy` | `boolean \| number \| string \| string[] \| (addr, i) => boolean` | `false` | Which proxies to believe about the client, as Express's `trust proxy`; `app.set("trust proxy", value)` sets it too. See [Client IP behind proxies](#client-ip-behind-proxies-trust-proxy). |
 | `clientIpHeader` | `string` | none | A header carrying the client address as one value (`"cf-connecting-ip"`), believed only when `trustProxy` trusts the whole chain. bun-common's `behindCloudflare()` sets both. |
+| `maxForwardedHops` | `number` | none (read every entry) | The most `X-Forwarded-For` entries a request reads, closest first; `adapter.maxForwardedHops` reads it. Wins over `router.maxForwardedHops` and `request.maxForwardedHops`. `@Ip()` stays Express's `req.ip`; `@Req() request: BunRequest` gives `request.clientAddress`, the normalised client a rate limit or ban should key on. See bun-common's [security view](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-common/README.md#the-security-view-reqclientaddress). |
 | `throttle` | `ThrottleOptions \| ThrottleHandler` | none | bun-common's `throttle()`, run first: ahead of every route, Nest middleware, guard and the not-found handler, so 404s count. Refused with bun-common's `429` before Nest sees the request; `@Throttle()`/`@SkipThrottle()` do not affect it. See [Throttling](#throttling). |
 
 ```ts
@@ -1269,6 +1270,13 @@ client's real address is `client.data.ip`, where `client.remoteAddress` is
 always the proxy. `adapter.trustProxy` reads and sets it. `ip`, `ips`,
 `protocol`, `secure`, `host` and `hostname` answer as on
 `@nestjs/platform-express` for the same `trust proxy` value.
+
+`@Ip()` is therefore Express's `req.ip`: an IPv4-mapped peer stays mapped,
+and a malformed `X-Forwarded-For` entry can be it. To key a rate limit, a
+ban or an allow list, read `request.clientAddress` through
+`@Req() request: BunRequest`: the same client, normalised, never a
+malformed entry. `maxForwardedHops` bounds how many `X-Forwarded-For`
+entries are read; unset, every entry is, as on Express.
 
 bun-common's README covers the walk, the client address header, the
 Cloudflare and Railway helpers, a worked Cloudflare → Railway example and the

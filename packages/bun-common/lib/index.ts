@@ -231,10 +231,12 @@ export {
 } from "./trustProxy";
 export {
   compileIpMatcher,
+  formatIpAddress,
   IP_RANGE_PRESETS,
   type IpRange,
   isIpAddress,
   isIpv4MappedAddress,
+  normalizeIpAddress,
   parseIpAddress,
   parseIpRange,
   type ParsedIp,

@@ -564,6 +564,16 @@ export class BunHttpAdapter<
        */
       clientIpHeader?: string;
       /**
+       * The most `X-Forwarded-For` entries a request reads, closest first:
+       * the entries to their left are ignored by `ip`, `ips`, `proxyChain`
+       * and `clientAddress` alike. `undefined` (the default) reads them all,
+       * as Express does — with `trustProxy: true`, every entry a client
+       * sends. Fixed at construction. Wins over `router.maxForwardedHops`
+       * and `request.maxForwardedHops`. A value that is not a whole number
+       * from `0` up throws a `TypeError` here.
+       */
+      maxForwardedHops?: number;
+      /**
        * Throttles every route: a `throttle()` built from these options (or
        * the `throttle()` middleware given) runs first, ahead of every route,
        * every middleware and the not-found handlers, so a request no route
@@ -582,6 +592,10 @@ export class BunHttpAdapter<
     const trustProxy = options?.trustProxy ?? options?.request?.trustProxy;
     const clientIpHeader =
       options?.clientIpHeader ?? options?.request?.clientIpHeader;
+    const maxForwardedHops =
+      options?.maxForwardedHops ??
+      options?.router?.maxForwardedHops ??
+      options?.request?.maxForwardedHops;
 
     // Resolved once here so the adapter and its router share one instance
     // rather than each adapting the same input separately.
@@ -608,6 +622,7 @@ export class BunHttpAdapter<
         : {}),
       ...(trustProxy !== undefined ? { trustProxy } : {}),
       ...(clientIpHeader !== undefined ? { clientIpHeader } : {}),
+      ...(maxForwardedHops !== undefined ? { maxForwardedHops } : {}),
       ...(options?.throttle !== undefined
         ? { throttle: options.throttle }
         : {}),

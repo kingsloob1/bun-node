@@ -74,18 +74,28 @@ export interface TypedEmitter<
 }
 
 /**
- * `opts` with the router's `trustProxy` and `clientIpHeader` filled in where
- * `opts` leaves them out, so a dedicated WebSocket server resolves `req.ip`
- * (and `ws.data.ip`) as the router's own requests do.
+ * `opts` with the router's `trustProxy`, `clientIpHeader` and
+ * `maxForwardedHops` filled in where `opts` leaves them out, so a dedicated
+ * WebSocket server resolves `req.ip` (and `ws.data.ip`) as the router's own
+ * requests do.
  */
 function withRouterTrust<T extends object>(
-  opts: T & { trustProxy?: unknown; clientIpHeader?: unknown },
-  router: { trustProxy?: unknown; clientIpHeader?: unknown },
+  opts: T & {
+    trustProxy?: unknown;
+    clientIpHeader?: unknown;
+    maxForwardedHops?: unknown;
+  },
+  router: {
+    trustProxy?: unknown;
+    clientIpHeader?: unknown;
+    maxForwardedHops?: unknown;
+  },
 ): T {
-  const { trustProxy, clientIpHeader } = router;
+  const { trustProxy, clientIpHeader, maxForwardedHops } = router;
   if (
     (trustProxy === undefined || opts.trustProxy !== undefined) &&
-    (clientIpHeader === undefined || opts.clientIpHeader !== undefined)
+    (clientIpHeader === undefined || opts.clientIpHeader !== undefined) &&
+    (maxForwardedHops === undefined || opts.maxForwardedHops !== undefined)
   ) {
     return opts;
   }
@@ -96,6 +106,9 @@ function withRouterTrust<T extends object>(
       : {}),
     ...(opts.clientIpHeader === undefined && clientIpHeader !== undefined
       ? { clientIpHeader }
+      : {}),
+    ...(opts.maxForwardedHops === undefined && maxForwardedHops !== undefined
+      ? { maxForwardedHops }
       : {}),
   };
 }
