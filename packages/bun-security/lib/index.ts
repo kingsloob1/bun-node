@@ -13,6 +13,7 @@
  * `hardenServe`).
  */
 export { ACTION_SEVERITY } from "./engine/actions";
+export type { Ban, BanSubject } from "./engine/bans";
 export type {
   ClientResolution,
   ClientSource,
@@ -32,6 +33,16 @@ export {
   type SecurityIdentity,
 } from "./engine/facts";
 export {
+  DEFAULT_TRAP_FIELD,
+  isTrapFilled,
+  trapField,
+  type TrapField,
+  type TrapFieldOptions,
+  type TrapSubmission,
+} from "./engine/deception";
+export { canonicalPath } from "./engine/path";
+export {
+  type BanInput,
   createSecurity,
   type CreateSecurityOptions,
   type EvaluateOptions,
@@ -40,6 +51,7 @@ export {
   type Security,
   type SecurityStatus,
   type StateStatus,
+  type UnbanOptions,
 } from "./engine/security";
 export { DEFAULT_MAX_KEYS } from "./engine/state";
 export type {
@@ -54,7 +66,12 @@ export {
   compilePolicy,
   type CompilePolicyOptions,
 } from "./policy/compile";
-export { type PolicyIssue, SecurityPolicyError } from "./policy/errors";
+export {
+  type PolicyIssue,
+  type PolicyIssueCode,
+  SecurityPolicyError,
+} from "./policy/errors";
+export { DEFAULT_HONEYPOTS, DEFAULT_WEIGHTS } from "./policy/compile";
 export { INTERNAL_RANGES } from "./policy/internal";
 export {
   DEFAULT_CLIENT_IP_HEADER,
@@ -65,11 +82,17 @@ export {
   securityPolicySchema,
 } from "./policy/schema";
 export type {
+  BanPolicy,
+  CanaryPolicy,
   ConcurrencyPolicy,
   CountedRule,
   CountedRuleAction,
+  DeceptionPolicy,
+  HoneypotPolicy,
   InternalListPolicy,
   KeyPolicy,
+  LadderPolicy,
+  LadderStep,
   LimitAlgorithm,
   LimitRule,
   ListAction,
@@ -81,6 +104,8 @@ export type {
   ServiceExemption,
   ServiceIdentity,
   ServiceIdentityPolicy,
+  ShapePolicy,
+  ShapeRoute,
   SubjectKeyPart,
   TrustCheckPolicy,
 } from "./policy/types";

@@ -9,7 +9,20 @@ export interface PolicyIssue {
   readonly message: string;
   /** Where: the keys and indexes from the policy's root (`["lists", 3, "ip"]`). */
   readonly path: readonly (string | number)[];
+  /**
+   * A machine-readable kind, for issues a program acts on: `"policy.newer"`
+   * when the policy's format version is newer than this package reads (an
+   * upgrade is needed; the policy is not malformed). Absent for every other
+   * issue.
+   */
+  readonly code?: PolicyIssueCode;
 }
+
+/** The machine-readable kinds of {@link PolicyIssue.code}. */
+export type PolicyIssueCode = "policy.newer";
+
+/** The issue code of a policy whose format version is newer than this package reads. */
+export const POLICY_NEWER: PolicyIssueCode = "policy.newer";
 
 /** `path` written as `lists[3].ip`, or `(root)`. */
 export function formatIssuePath(path: readonly (string | number)[]): string {

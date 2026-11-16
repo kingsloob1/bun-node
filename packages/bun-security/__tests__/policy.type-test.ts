@@ -4,15 +4,20 @@
  * guards ever compiles, the check fails with TS2578.
  */
 import type {
+  Ban,
+  BanInput,
   ConcurrencyPolicy,
   CountedRule,
   Decision,
+  LadderPolicy,
   LimitRule,
   ListEntry,
+  PolicyIssue,
   RuleHit,
   SecurityAction,
   SecurityPolicy,
   SecurityWarningKind,
+  ShapePolicy,
   SubjectKeyPart,
   TrustCheckPolicy,
 } from "../lib/index";
@@ -134,6 +139,37 @@ assertType<
 assertType<
   Equal<
     SecurityWarningKind,
-    "trust.internal" | "trust.unread-forwarding" | "state.evictions"
+    | "trust.internal"
+    | "trust.unread-forwarding"
+    | "state.evictions"
+    | "bans.aggregated"
+    | "canary.used"
   >
 >();
+
+// PR-S3: bans by hand, the ladder, shape, deception.
+assertType<Equal<ReturnType<typeof engine.ban>, Ban>>();
+assertType<Equal<ReturnType<typeof engine.unban>, Ban | undefined>>();
+assertType<Equal<ReturnType<typeof engine.bans>, readonly Ban[]>>();
+export const manual: BanInput = { ip: "203.0.113.0/24", duration: null };
+// @ts-expect-error a ban's duration takes a unit
+export const manualNumber: BanInput = { ip: "203.0.113.5", duration: 3600 };
+export const ladder: LadderPolicy = {
+  halfLife: "1h",
+  steps: [{ score: 3, action: "challenge" }],
+};
+export const ladderDrop: LadderPolicy = {
+  // @ts-expect-error a step challenges or bans; dropping is not a step
+  steps: [{ score: 3, action: "drop" }],
+};
+// @ts-expect-error a half-life takes a unit
+export const ladderNumber: LadderPolicy = { halfLife: 3600 };
+export const shape: ShapePolicy = { caseSensitive: false, maxBodySize: false };
+export const ladderRule: CountedRule = {
+  id: "l",
+  event: "auth.failure",
+  threshold: 10,
+  window: "15m",
+  action: "ladder",
+};
+assertType<Equal<PolicyIssue["code"], "policy.newer" | undefined>>();

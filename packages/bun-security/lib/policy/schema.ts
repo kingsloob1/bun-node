@@ -16,6 +16,7 @@ import type { Duration, StandardSchemaV1 } from "@kingsleyweb/bun-common";
 import { parseCidr } from "../ip/address";
 import type { ParsedCidr } from "../ip/address";
 import { CidrTrie } from "../ip/trie";
+import { POLICY_NEWER } from "./errors";
 import type { PolicyIssue } from "./errors";
 import { INTERNAL_RANGES } from "./internal";
 import { parseRoutePattern } from "./routes";
@@ -82,7 +83,7 @@ const KEY_PARTS: ReadonlySet<SubjectKeyPart> = new Set([
 /** The limit algorithms. */
 const ALGORITHMS = new Set(["sliding-window", "fixed-window", "gcra"]);
 /** The counted-rule actions. */
-const COUNTED_ACTIONS = new Set(["ban", "challenge"]);
+const COUNTED_ACTIONS = new Set(["ban", "challenge", "ladder"]);
 
 /** An id: what an operator would type, bounded. */
 const ID_RE = /^[\w.:/@+-]{1,256}$/;
@@ -653,6 +654,7 @@ const COUNTED_KEYS = [
   "mode",
   "appliesToServices",
   "code",
+  "weight",
 ];
 
 /** Checks one counted rule. */
@@ -676,14 +678,22 @@ function checkCountedRule(
   checkKey(issues, [...path, "key"], value.key);
   checkRoutes(issues, [...path, "routes"], value.routes);
   optionalOneOf(issues, [...path, "action"], value.action, COUNTED_ACTIONS);
-  if (value.duration === undefined) {
+  if (value.action === "ladder") {
+    if (value.duration !== undefined) {
+      issues.add(
+        [...path, "duration"],
+        'must be absent with action "ladder", whose bans last the ladder\'s escalating duration',
+      );
+    }
+  } else if (value.duration === undefined) {
     issues.add(
       [...path, "duration"],
-      'is required: a duration such as "1h", or null for until the rule is removed',
+      'is required: a duration such as "1h", or null for until the ban is lifted',
     );
   } else if (value.duration !== null) {
     policyDuration(issues, [...path, "duration"], value.duration, 1000);
   }
+  nonNegative(issues, [...path, "weight"], value.weight);
   optionalOneOf(issues, [...path, "mode"], value.mode, MODES);
   optionalBoolean(
     issues,
@@ -727,6 +737,367 @@ function checkRules(
       check(issues, [name, i], rule, ids, i);
     });
   }
+}
+
+/** Checks an optional non-negative finite number. */
+function nonNegative(
+  issues: Issues,
+  path: readonly (string | number)[],
+  value: unknown,
+): void {
+  if (
+    value !== undefined &&
+    !(typeof value === "number" && Number.isFinite(value) && value >= 0)
+  ) {
+    issues.add(path, `must be a non-negative number; got ${describe(value)}`);
+  }
+}
+
+/** Checks an optional positive whole number. */
+function optionalPositive(
+  issues: Issues,
+  path: readonly (string | number)[],
+  value: unknown,
+): void {
+  if (value !== undefined) positiveInteger(issues, path, value);
+}
+
+/** Checks an optional list of 1 to `max` strings matching `pattern`. */
+function optionalStrings(
+  issues: Issues,
+  path: readonly (string | number)[],
+  value: unknown,
+  pattern: RegExp,
+  what: string,
+  max = 64,
+): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value) || value.length === 0 || value.length > max) {
+    issues.add(path, `must be a list of 1 to ${max} entries`);
+    return;
+  }
+  value.forEach((item: unknown, i: number) => {
+    if (typeof item !== "string" || !pattern.test(item)) {
+      issues.add([...path, i], `is not ${what}: ${describe(item)}`);
+    }
+  });
+}
+
+/** An HTTP method token, upper case. */
+const METHOD_RE = /^[A-Z][A-Z0-9-]{0,31}$/;
+/** A Host value: a lower-case name or address, with an optional port. */
+const HOST_RE = /^(?:[a-z0-9.-]{1,253}|\[[0-9a-f:.]{2,45}\])(?::\d{1,5})?$/;
+/** A media type or range (`application/json`, `multipart/*`), lower case. */
+const MEDIA_RE = /^[a-z0-9!#$&^_.+-]{1,64}\/(?:\*|[a-z0-9!#$&^_.+-]{1,64})$/;
+
+/** Checks the bans section. */
+function checkBans(issues: Issues, value: unknown): void {
+  if (
+    value === undefined ||
+    !checkObject(issues, ["bans"], value, [
+      "code",
+      "retryAfter",
+      "maxActive",
+      "mode",
+    ])
+  ) {
+    return;
+  }
+  optionalString(
+    issues,
+    ["bans", "code"],
+    value.code,
+    CODE_RE,
+    "a code (lower case, at most 64 characters)",
+  );
+  optionalBoolean(issues, ["bans", "retryAfter"], value.retryAfter);
+  optionalPositive(issues, ["bans", "maxActive"], value.maxActive);
+  optionalOneOf(issues, ["bans", "mode"], value.mode, MODES);
+}
+
+/** Checks one ladder step; records its score in `scores`. */
+function checkStep(
+  issues: Issues,
+  at: readonly (string | number)[],
+  step: unknown,
+  scores: Set<number>,
+): void {
+  if (!checkObject(issues, at, step, ["score", "action", "duration"])) return;
+  if (!(
+    typeof step.score === "number" &&
+    Number.isFinite(step.score) &&
+    step.score > 0
+  )) {
+    issues.add(
+      [...at, "score"],
+      `must be a positive number; got ${describe(step.score)}`,
+    );
+  } else if (scores.has(step.score)) {
+    issues.add([...at, "score"], `repeats score ${step.score}`);
+  } else {
+    scores.add(step.score);
+  }
+  if (step.action !== "ban" && step.action !== "challenge") {
+    issues.add(
+      [...at, "action"],
+      `must be "challenge" or "ban"; got ${describe(step.action)}`,
+    );
+  }
+  if (step.duration !== undefined) {
+    policyDuration(issues, [...at, "duration"], step.duration, 1000);
+  }
+}
+
+/** Checks the ladder section. */
+function checkLadder(issues: Issues, value: unknown): void {
+  if (
+    value === undefined ||
+    value === false ||
+    !checkObject(issues, ["ladder"], value, [
+      "halfLife",
+      "steps",
+      "base",
+      "factor",
+      "maxBan",
+      "memory",
+      "weights",
+      "mode",
+    ])
+  ) {
+    return;
+  }
+  for (const key of ["halfLife", "base", "maxBan", "memory"] as const) {
+    if (value[key] !== undefined) {
+      policyDuration(issues, ["ladder", key], value[key], 1000);
+    }
+  }
+  if (
+    value.factor !== undefined &&
+    !(
+      typeof value.factor === "number" &&
+      Number.isFinite(value.factor) &&
+      value.factor >= 1
+    )
+  ) {
+    issues.add(
+      ["ladder", "factor"],
+      `must be a number of at least 1; got ${describe(value.factor)}`,
+    );
+  }
+  if (value.steps !== undefined) {
+    if (
+      !Array.isArray(value.steps) ||
+      value.steps.length === 0 ||
+      value.steps.length > 16
+    ) {
+      issues.add(["ladder", "steps"], "must be a list of 1 to 16 steps");
+    } else {
+      const scores = new Set<number>();
+      value.steps.forEach((step: unknown, i: number) => {
+        checkStep(issues, ["ladder", "steps", i], step, scores);
+      });
+    }
+  }
+  if (value.weights !== undefined) {
+    if (!isRecord(value.weights)) {
+      issues.add(["ladder", "weights"], "must be an object of event weights");
+    } else {
+      const names = Object.keys(value.weights);
+      if (names.length > 256) {
+        issues.add(["ladder", "weights"], "holds more than 256 events");
+      }
+      for (const name of names) {
+        if (!EVENT_RE.test(name)) {
+          issues.add(["ladder", "weights", name], "is not an event name");
+        }
+        nonNegative(issues, ["ladder", "weights", name], value.weights[name]);
+      }
+    }
+  }
+  optionalOneOf(issues, ["ladder", "mode"], value.mode, MODES);
+}
+
+/** The whole-number sizes of the shape section. */
+const SHAPE_SIZES = [
+  "maxPathBytes",
+  "maxQueryBytes",
+  "maxQueryParams",
+  "maxQueryDepth",
+  "maxHeaders",
+  "maxHeaderBytes",
+] as const;
+
+/** Checks one per-route shape entry. */
+function checkShapeRoute(
+  issues: Issues,
+  at: readonly (string | number)[],
+  route: unknown,
+): void {
+  if (
+    !checkObject(issues, at, route, [
+      "routes",
+      "maxBodySize",
+      "contentTypes",
+      "allowEncodedSlash",
+    ])
+  ) {
+    return;
+  }
+  if (route.routes === undefined) {
+    issues.add([...at, "routes"], "is required");
+  }
+  checkRoutes(issues, [...at, "routes"], route.routes);
+  optionalPositive(issues, [...at, "maxBodySize"], route.maxBodySize);
+  optionalStrings(
+    issues,
+    [...at, "contentTypes"],
+    route.contentTypes,
+    MEDIA_RE,
+    "a lower-case media type",
+  );
+  optionalBoolean(
+    issues,
+    [...at, "allowEncodedSlash"],
+    route.allowEncodedSlash,
+  );
+}
+
+/** Checks the shape section. */
+function checkShape(issues: Issues, value: unknown): void {
+  if (
+    value === undefined ||
+    value === false ||
+    !checkObject(issues, ["shape"], value, [
+      "caseSensitive",
+      ...SHAPE_SIZES,
+      "methods",
+      "hosts",
+      "headerLimits",
+      "maxBodySize",
+      "routes",
+      "mode",
+    ])
+  ) {
+    return;
+  }
+  optionalBoolean(issues, ["shape", "caseSensitive"], value.caseSensitive);
+  for (const key of SHAPE_SIZES) {
+    optionalPositive(issues, ["shape", key], value[key]);
+  }
+  optionalStrings(
+    issues,
+    ["shape", "methods"],
+    value.methods,
+    METHOD_RE,
+    "an upper-case method",
+  );
+  optionalStrings(
+    issues,
+    ["shape", "hosts"],
+    value.hosts,
+    HOST_RE,
+    "a lower-case host",
+    1024,
+  );
+  if (value.headerLimits !== undefined) {
+    if (!isRecord(value.headerLimits)) {
+      issues.add(["shape", "headerLimits"], "must be an object of byte limits");
+    } else {
+      for (const [name, limit] of Object.entries(value.headerLimits)) {
+        if (!HEADER_RE.test(name)) {
+          issues.add(
+            ["shape", "headerLimits", name],
+            "is not a lower-case header name",
+          );
+        }
+        positiveInteger(issues, ["shape", "headerLimits", name], limit);
+      }
+    }
+  }
+  if (value.maxBodySize !== undefined && value.maxBodySize !== false) {
+    positiveInteger(issues, ["shape", "maxBodySize"], value.maxBodySize);
+  }
+  if (value.routes !== undefined) {
+    if (
+      !Array.isArray(value.routes) ||
+      value.routes.length === 0 ||
+      value.routes.length > MAX_RULES
+    ) {
+      issues.add(
+        ["shape", "routes"],
+        `must be a list of 1 to ${MAX_RULES} entries`,
+      );
+    } else {
+      value.routes.forEach((route: unknown, i: number) => {
+        checkShapeRoute(issues, ["shape", "routes", i], route);
+      });
+    }
+  }
+  optionalOneOf(issues, ["shape", "mode"], value.mode, MODES);
+}
+
+/** Checks the honeypots of the deception section. */
+function checkHoneypots(issues: Issues, honeypots: unknown): void {
+  if (
+    honeypots === undefined ||
+    typeof honeypots === "boolean" ||
+    !checkObject(issues, ["deception", "honeypots"], honeypots, [
+      "paths",
+      "answer",
+      "mode",
+    ])
+  ) {
+    return;
+  }
+  checkRoutes(issues, ["deception", "honeypots", "paths"], honeypots.paths);
+  optionalOneOf(
+    issues,
+    ["deception", "honeypots", "answer"],
+    honeypots.answer,
+    new Set(["pass", "not-found"]),
+  );
+  optionalOneOf(
+    issues,
+    ["deception", "honeypots", "mode"],
+    honeypots.mode,
+    MODES,
+  );
+}
+
+/** Checks the deception section. */
+function checkDeception(issues: Issues, value: unknown): void {
+  if (
+    value === undefined ||
+    !checkObject(issues, ["deception"], value, ["honeypots", "canaries"])
+  ) {
+    return;
+  }
+  checkHoneypots(issues, value.honeypots);
+  if (value.canaries === undefined) return;
+  if (!Array.isArray(value.canaries) || value.canaries.length > MAX_RULES) {
+    issues.add(
+      ["deception", "canaries"],
+      `must be a list of at most ${MAX_RULES} canaries`,
+    );
+    return;
+  }
+  const ids = new Map<string, number>();
+  value.canaries.forEach((canary: unknown, i: number) => {
+    const at = ["deception", "canaries", i];
+    if (!checkObject(issues, at, canary, ["id", "user", "apiKey"])) return;
+    checkRuleId(issues, at, canary.id, ids, i, "deception.canaries");
+    optionalString(issues, [...at, "user"], canary.user, ID_RE, "a user id");
+    optionalString(
+      issues,
+      [...at, "apiKey"],
+      canary.apiKey,
+      ID_RE,
+      "an API key id",
+    );
+    if ((canary.user === undefined) === (canary.apiKey === undefined)) {
+      issues.add(at, "must have exactly one of user, apiKey");
+    }
+  });
 }
 
 /** Checks one service identity. */
@@ -817,6 +1188,10 @@ const POLICY_KEYS = [
   "concurrency",
   "limits",
   "countedRules",
+  "bans",
+  "ladder",
+  "shape",
+  "deception",
 ];
 
 /**
@@ -833,6 +1208,7 @@ function newerVersion(input: unknown): PolicyIssue | undefined {
     version > SECURITY_POLICY_VERSION
   ) {
     return {
+      code: POLICY_NEWER,
       path: ["version"],
       message: `the policy is format version ${version}, newer than this package reads (version ${SECURITY_POLICY_VERSION}); upgrade @kingsleyweb/bun-security to load it`,
     };
@@ -1067,6 +1443,20 @@ export function validatePolicy(
 
   checkRules(issues, "limits", input.limits, checkLimit);
   checkRules(issues, "countedRules", input.countedRules, checkCountedRule);
+  if (input.ladder === false && Array.isArray(input.countedRules)) {
+    input.countedRules.forEach((rule: unknown, i: number) => {
+      if (isRecord(rule) && rule.action === "ladder") {
+        issues.add(
+          ["countedRules", i, "action"],
+          'is "ladder", but the policy turns the ladder off',
+        );
+      }
+    });
+  }
+  checkBans(issues, input.bans);
+  checkLadder(issues, input.ladder);
+  checkShape(issues, input.shape);
+  checkDeception(issues, input.deception);
   return issues.list;
 }
 

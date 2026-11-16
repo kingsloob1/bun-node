@@ -111,6 +111,7 @@ describe("withSecurity with limits", () => {
     const { url } = serve(
       {
         internal: false,
+        bans: { retryAfter: true },
         countedRules: [
           {
             id: "crashes",

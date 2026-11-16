@@ -8,14 +8,20 @@
  * 3. **L3** lists (the CIDR trie, the `internal` list, users and API keys);
  * 4. **L1** in-flight requests per client address (`429`), for tracked
  *    requests;
- * 5. **L4** keys tripped by a counted rule (layers.md §0.2; PR-S3 grows
- *    this into bans);
- * 6. the `request` occurrence for counted rules;
- * 7. **L9** rate limits, counted by the throttle foundation, and the
+ * 5. **L4** bans: written by counted rules, by the offence score's ladder
+ *    (layers.md §0.2) and by hand (`ban()`);
+ * 6. **L6** request shape, on the canonical path (`400` to `431`);
+ * 7. **L8** canary credentials (refused at once) and honeypot routes
+ *    (answered as a real route, banned from the next request);
+ * 8. the `request` occurrence for counted rules;
+ * 9. **L9** rate limits, counted by the throttle foundation, and the
  *    `throttled` occurrence when one refuses;
  *
  * and, after the response, **L14** through `complete()`: the request's slot
  * given back, and `route.notFound` and `server.error` occurrences counted.
+ * Every occurrence (the engine's, L6's and L8's, an app's `signal()`) feeds
+ * the counted rules that count it and adds its weight to the client
+ * address's score.
  *
  * A stage that refuses the request ends it; every hit is recorded. An
  * explicit allow entry ends every later refusing layer, except limits marked
@@ -31,15 +37,23 @@ import {
   createLogger,
   memoryThrottleStore,
   resolveLogger,
+  toDurationMs,
 } from "@kingsleyweb/bun-common";
 import type {
+  Duration,
   Logger,
   LoggerLike,
   ThrottleHandler,
   ThrottleResult,
   ThrottleStore,
 } from "@kingsleyweb/bun-common";
-import { normalizeAddress } from "../ip/address";
+import {
+  addressKey,
+  normalizeAddress,
+  parseAddress,
+  parseCidr,
+} from "../ip/address";
+import type { ParsedAddress } from "../ip/address";
 import { compilePolicy, policyInternals } from "../policy/compile";
 import type {
   CompiledCountedRule,
@@ -50,8 +64,14 @@ import type {
   CompiledService,
   PolicyInternals,
 } from "../policy/compile";
-import type { SecurityAction, SecurityPolicy } from "../policy/types";
+import type {
+  SecurityAction,
+  SecurityPolicy,
+  SubjectKeyPart,
+} from "../policy/types";
 import { ACTION_SEVERITY, refuses } from "./actions";
+import { BanTable, banId } from "./bans";
+import type { Ban, BanSubject, BanWrite } from "./bans";
 import { InFlight } from "./concurrency";
 import type { Slot } from "./concurrency";
 import { CountedState } from "./counted";
@@ -65,7 +85,7 @@ import type {
   SubjectKeys,
 } from "./decision";
 import type { RequestFacts, SecurityIdentity } from "./facts";
-import { resolveClient } from "./identity";
+import { boundKey, resolveClient } from "./identity";
 import type { ResolvedClient } from "./identity";
 import { appliesTo, keyOf, requestRoute } from "./keys";
 import type { RequestRoute } from "./keys";
@@ -75,6 +95,8 @@ import { evaluateLists } from "./lists";
 import type { ListOutcome } from "./lists";
 import { all, then } from "./maybe";
 import type { MaybePromise } from "./maybe";
+import { Scores } from "./scores";
+import { checkShape } from "./shape";
 import { DEFAULT_MAX_KEYS, EvictionMonitor } from "./state";
 import { TrustMonitor } from "./trust";
 import type { SecurityWarning, TrustStatus } from "./trust";
@@ -160,8 +182,14 @@ export interface StateStatus {
   readonly inFlight: number;
   /** Client addresses with a tracked request in flight. */
   readonly inFlightClients: number;
-  /** Keys tripped by a counted rule (ended ones may linger until read). */
+  /** Bans in force that a counted rule wrote. */
   readonly trips: number;
+  /** Bans in force, every source. */
+  readonly bans: number;
+  /** Automatic bans dropped because even their widened range did not fit `bans.maxActive`. */
+  readonly bansDropped: number;
+  /** Client addresses with an offence score. */
+  readonly scores: number;
   /** Entries dropped from a full table since the engine started. */
   readonly evictions: number;
   /** The `state.evictions` warning in force, if any. */
@@ -243,8 +271,50 @@ export interface Security<TRequest = Request> {
   load: (policy: SecurityPolicy | CompiledPolicy) => CompiledPolicy;
   /** The policy in force, the trust check's gauges and the local state. */
   status: () => SecurityStatus;
+  /**
+   * Bans a subject by hand (layers.md L4): an address (an IPv6 one by its
+   * key prefix), a CIDR range, a user id or an API key id, for `duration`
+   * (default `"24h"`; `null` until lifted, deliberately). Merged with a ban
+   * in force for the subject, whose reason it replaces. Manual bans are
+   * never dropped at `bans.maxActive`. Throws a `TypeError` for a bad input.
+   */
+  ban: (input: BanInput) => Ban;
+  /**
+   * Lifts a ban by its id (`ip:203.0.113.5`, `cidr:203.0.113.0/24`,
+   * `user:u_1`): the lifted record, or `undefined` when none is in force.
+   * Lifting an automatic address ban also clears the address's score.
+   */
+  unban: (id: string, options?: UnbanOptions) => Ban | undefined;
+  /** The bans in force. */
+  bans: () => readonly Ban[];
   /** Stops the engine: later `evaluate()` and `explain()` calls throw. */
   close: () => void;
+}
+
+/** What {@link Security.ban} takes: exactly one subject. */
+export interface BanInput {
+  /** An address (banned by its key: IPv4 as itself, IPv6 by `keys.ipv6Prefix`) or a CIDR range. */
+  readonly ip?: string;
+  /** A user id, as `identify()` returns it. */
+  readonly user?: string;
+  /** An API key id, as `identify()` returns it. */
+  readonly apiKey?: string;
+  /** `ban` (the default) or `challenge` (a `block` until challenge providers exist). */
+  readonly action?: "ban" | "challenge";
+  /** How long, its unit written. Default `"24h"`; `null` until lifted. */
+  readonly duration?: Duration | null;
+  /** Why, for operators; never sent to the client. */
+  readonly reason?: string;
+  /** Who banned it. */
+  readonly by?: string;
+  /** The problem code it answers with. Default the policy's `bans.code`. */
+  readonly code?: string;
+}
+
+/** Options for {@link Security.unban}. */
+export interface UnbanOptions {
+  /** Who lifted it. */
+  readonly by?: string;
 }
 
 /** No hits, no tags: shared by every decision without them. */
@@ -289,6 +359,47 @@ interface Context {
   readonly slot: Slot | undefined;
   /** The flags. */
   readonly flags: Flags;
+}
+
+/** One evaluation pass: what every stage after the lists reads, and the hits so far. */
+interface Pass {
+  /** The request's keys. */
+  readonly subject: SubjectKeys;
+  /** Where the request sits. */
+  readonly route: RequestRoute;
+  /** The client's address, parsed; `null` when it counts against nobody. */
+  readonly address: ParsedAddress | null;
+  /** What the lists decided. */
+  readonly flags: Flags;
+  /** The time. */
+  readonly now: number;
+  /** Whether state is written (`evaluate`) or only read (`explain`). */
+  readonly writes: boolean;
+  /** Whether the whole policy runs in dry run. */
+  readonly dryPolicy: boolean;
+  /** The explanation's steps, when explaining. */
+  readonly trace: ExplainStep[] | undefined;
+  /** The hits. */
+  readonly run: Run;
+  /** With writes off, the address's score as this request's offences leave it. */
+  score?: number;
+}
+
+/** A ban type (`ip`, `ip|user`) as a key to look the request up with. */
+const TYPE_KEYS = new Map<string, CompiledKey>();
+
+/** The key of a ban type, cached. */
+function keyOfType(type: string): CompiledKey {
+  let key = TYPE_KEYS.get(type);
+  if (key === undefined) {
+    const parts = (type === "cidr" ? [] : type.split("|")) as SubjectKeyPart[];
+    key = {
+      parts,
+      addressOnly: parts.every((part) => part === "ip" || part === "route"),
+    };
+    if (TYPE_KEYS.size < 256) TYPE_KEYS.set(type, key);
+  }
+  return key;
 }
 
 /** The hits of one decision, as they accumulate. */
@@ -379,6 +490,12 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   readonly #counted: CountedState;
   /** In-flight slots. */
   readonly #inFlight: InFlight;
+  /** Bans in force. */
+  readonly #bans: BanTable;
+  /** Offence scores and ban history. */
+  readonly #scores: Scores;
+  /** When the `bans.aggregated` warning was last raised. */
+  #lastAggregated = Number.NEGATIVE_INFINITY;
   /** Evictions of local state. */
   readonly #evictions: EvictionMonitor;
   /** What each tracked decision needs at `complete()`. */
@@ -423,12 +540,9 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     );
     const counters = store ?? memoryThrottleStore({ maxKeys, now: this.#now });
     this.#limiter = new Limiter(counters, this.#now, this.#logger);
-    this.#counted = new CountedState(
-      counters,
-      maxKeys,
-      this.#evictions,
-      this.#logger,
-    );
+    this.#counted = new CountedState(counters, this.#logger);
+    this.#bans = new BanTable(() => this.#internals.bans.maxActive);
+    this.#scores = new Scores(maxKeys, this.#evictions);
     this.#inFlight = new InFlight(maxKeys, this.#evictions);
     this.#prefix = prefixOf(this.#policy);
     const prepared = this.#limiter.prepare(
@@ -579,7 +693,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
           resolved.address,
           resolved.subject.user,
           resolved.subject.apiKey,
-          facts.path,
+          listPath(facts.path, internals),
           now,
           internals.mode === "dryRun",
         );
@@ -605,18 +719,119 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     this.#internals = internals;
     this.#limits = prepared.set;
     this.#prefix = prefix;
-    this.#counted.prune(
-      new Set(
-        internals.countedRules
-          .filter((rule) => rule.mode === "enforce")
-          .map((rule) => rule.id),
-      ),
+    // A counted rule removed or turned off lifts the bans it wrote.
+    const kept = new Set(
+      internals.countedRules
+        .filter((rule) => rule.mode === "enforce")
+        .map((rule) => `counted:${rule.id}`),
     );
+    this.#bans.prune((rule) => !rule.startsWith("counted:") || kept.has(rule));
     return compiled;
+  }
+
+  ban(input: BanInput): Ban {
+    this.#assertOpen();
+    if (typeof input !== "object" || input === null) {
+      throw new TypeError("bun-security: ban() takes an object");
+    }
+    const given = (["ip", "user", "apiKey"] as const).filter(
+      (key) => input[key] !== undefined,
+    );
+    const only = given[0];
+    if (given.length !== 1 || only === undefined) {
+      throw new TypeError(
+        "bun-security: ban() takes exactly one of ip, user, apiKey",
+      );
+    }
+    const value = input[only];
+    if (typeof value !== "string" || value === "" || value.length > 1024) {
+      throw new TypeError(`bun-security: ban(): ${only} must be a string`);
+    }
+    let subject: BanSubject;
+    if (only === "ip") {
+      const address = parseAddress(value);
+      const cidr = address === null ? parseCidr(value) : null;
+      if (address === null && cidr === null) {
+        throw new TypeError(
+          `bun-security: ban(): ${JSON.stringify(value)} is not an address or CIDR range`,
+        );
+      }
+      subject =
+        address === null
+          ? { type: "cidr", value: cidr?.text ?? value }
+          : {
+              type: "ip",
+              value: addressKey(address, this.#internals.ipv6Prefix),
+            };
+    } else {
+      subject = {
+        type: only,
+        value:
+          keyOf(
+            keyOfType(only),
+            { [only]: boundKey(value) },
+            { method: "", path: "", routePath: undefined, key: "" },
+          ) ?? value,
+      };
+    }
+    const action = input.action ?? "ban";
+    if (action !== "ban" && action !== "challenge") {
+      throw new TypeError(
+        'bun-security: ban(): action must be "ban" or "challenge"',
+      );
+    }
+    const now = this.#now();
+    let length: number;
+    try {
+      length =
+        input.duration === null
+          ? Number.POSITIVE_INFINITY
+          : toDurationMs(input.duration ?? "24h", "ban(): duration");
+    } catch (error) {
+      throw new TypeError(
+        `bun-security: ban(): duration must be a duration such as "1h", or null; ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
+    if (typeof input.duration === "number" || length <= 0) {
+      throw new TypeError(
+        'bun-security: ban(): duration must be a duration with its unit, such as "1h", or null',
+      );
+    }
+    const outcome = this.#bans.add(
+      {
+        subject,
+        action,
+        reason: input.reason ?? "manual ban",
+        source: "manual",
+        expiresAt: Number.isFinite(length) ? now + length : null,
+        ...(input.by === undefined ? {} : { createdBy: input.by }),
+        ...(input.code === undefined ? {} : { code: input.code }),
+      },
+      now,
+    );
+    if (outcome.ban === undefined) {
+      throw new Error("bun-security: ban(): the ban was not written");
+    }
+    return outcome.ban;
+  }
+
+  unban(id: string, options: UnbanOptions = {}): Ban | undefined {
+    this.#assertOpen();
+    const lifted = this.#bans.lift(id, options.by, this.#now());
+    if (lifted?.source === "auto" && lifted.subject.type === "ip") {
+      this.#scores.reset(lifted.subject.value);
+    }
+    return lifted;
+  }
+
+  bans(): readonly Ban[] {
+    return Object.freeze(this.#bans.list(this.#now()));
   }
 
   status(): SecurityStatus {
     const now = this.#now();
+    const active = this.#bans.list(now);
     return Object.freeze({
       policy: this.#policy,
       trust: this.#trust.status(
@@ -628,7 +843,10 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       state: Object.freeze({
         inFlight: this.#inFlight.total,
         inFlightClients: this.#inFlight.clients,
-        trips: this.#counted.trips.size,
+        trips: active.filter((ban) => ban.rule?.startsWith("counted:")).length,
+        bans: active.length,
+        bansDropped: this.#bans.dropped,
+        scores: this.#scores.size,
         evictions: this.#evictions.total,
         warning: this.#evictions.warning(now),
       }),
@@ -638,12 +856,13 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   close(): void {
     this.#closed = true;
     this.#inFlight.clear();
-    this.#counted.trips.clear();
+    this.#bans.clear();
+    this.#scores.clear();
   }
 
   /**
-   * Counts one occurrence of each of `events` for the counted rules, in
-   * order, and answers the hits (trips) they caused.
+   * Counts one occurrence of each of `events` for the counted rules and the
+   * ladder, in order, and answers the hits (trips, bans) they caused.
    */
   #occurAll(
     events: readonly string[],
@@ -652,109 +871,135 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     flags: Flags,
     now: number,
   ): MaybePromise<readonly RuleHit[]> {
-    const run = new Run();
-    const route = requestRoute(facts);
-    const dryPolicy = this.#internals.mode === "dryRun";
+    const pass: Pass = {
+      subject,
+      route: requestRoute(facts),
+      address: null,
+      flags,
+      now,
+      writes: true,
+      dryPolicy: this.#internals.mode === "dryRun",
+      trace: undefined,
+      run: new Run(),
+    };
     // One event after another, so the hits keep the events' order.
     const from = (index: number): MaybePromise<void> => {
       const event = events[index];
       if (event === undefined) return undefined;
-      return then(
-        this.#occur(
-          event,
-          subject,
-          route,
-          flags,
-          now,
-          true,
-          dryPolicy,
-          undefined,
-          run,
-        ),
-        () => from(index + 1),
-      );
+      return then(this.#occur(event, pass, false), () => from(index + 1));
     };
-    return then(from(0), () => Object.freeze(run.hits));
+    return then(from(0), () => Object.freeze(pass.run.hits));
   }
 
   /**
-   * Counts one occurrence of `event` under each counted rule that counts
-   * it, adding a hit to `run` for each that trips (refusing, or `log` with
-   * its would-be action in dry run). With `writes` off it only reads.
+   * One occurrence of `event`: counted under each counted rule that counts
+   * it (a trip bans its key), then its offence weight added to the client
+   * address's score (the ladder may challenge or ban it). With `deferred`
+   * (a honeypot, which must answer as a real route would) the bans apply
+   * from the next request, and their hits are recorded as `log`.
    */
-  #occur(
-    event: string,
-    subject: SubjectKeys,
-    route: RequestRoute,
-    flags: Flags,
-    now: number,
-    writes: boolean,
-    dryPolicy: boolean,
-    trace: ExplainStep[] | undefined,
-    run: Run,
-  ): MaybePromise<void> {
+  #occur(event: string, pass: Pass, deferred: boolean): MaybePromise<void> {
     const rules = this.#internals.countedByEvent.get(event);
-    if (rules === undefined) return undefined;
+    const weight = this.#internals.ladder?.weights.get(event) ?? 0;
+    if (rules === undefined) {
+      if (weight > 0) this.#offend(event, weight, pass, deferred);
+      return undefined;
+    }
     const prefix = this.#prefix;
     const counting: MaybePromise<
-      readonly [CompiledCountedRule, RuleHit | undefined]
+      readonly [CompiledCountedRule, string, CountOutcome]
     >[] = [];
     for (const rule of rules) {
-      const key = this.#countedKey(rule, subject, route, flags, trace, event);
+      const key = this.#countedKey(rule, event, pass);
       if (key === undefined) continue;
       counting.push(
         then(
-          this.#counted.count(prefix, rule, key, writes, now),
-          (outcome): readonly [CompiledCountedRule, RuleHit | undefined] => [
+          this.#counted.count(prefix, rule, key, pass.writes, pass.now),
+          (outcome): readonly [CompiledCountedRule, string, CountOutcome] => [
             rule,
-            this.#tripped(
-              rule,
-              key,
-              event,
-              outcome,
-              now,
-              writes,
-              dryPolicy,
-              trace,
-            ),
+            key,
+            outcome,
           ],
         ),
       );
     }
     return then(all(counting), (results) => {
-      for (const [rule, hit] of results) {
-        if (hit === undefined) continue;
-        run.add(
-          hit,
-          refuses(hit.action)
-            ? {
-                status: 403,
-                code: rule.code,
-                ...(Number.isFinite(rule.duration)
-                  ? { retryAfter: seconds(rule.duration) }
-                  : {}),
-              }
-            : undefined,
-        );
+      for (const [rule, key, outcome] of results) {
+        this.#tripped(rule, key, event, outcome, pass, deferred);
       }
+      if (weight > 0) this.#offend(event, weight, pass, deferred);
     });
   }
 
+  /** Adds `hit` to the pass, as `log` when deferred (it applies from the next request). */
+  #record(
+    pass: Pass,
+    hit: RuleHit,
+    answer: Answer | undefined,
+    deferred: boolean,
+  ): void {
+    if (deferred && refuses(hit.action)) {
+      pass.run.add({
+        ...hit,
+        action: "log",
+        reason: `${hit.reason ?? ""}; applies from the next request`,
+      });
+      return;
+    }
+    pass.run.add(hit, refuses(hit.action) ? answer : undefined);
+  }
+
+  /** How a ban answers: `403` with its code, and `Retry-After` when the policy says so. */
+  #banAnswer(
+    code: string | undefined,
+    until: number | null,
+    now: number,
+  ): Answer {
+    const bans = this.#internals.bans;
+    return {
+      status: 403,
+      code: code ?? bans.code,
+      ...(bans.retryAfter && until !== null
+        ? { retryAfter: seconds(until - now) }
+        : {}),
+    };
+  }
+
+  /** Writes a ban, warning when the table is full and widens it. */
+  #writeBan(write: BanWrite, now: number): void {
+    const outcome = this.#bans.add(write, now);
+    if (
+      (outcome.aggregated || outcome.ban === undefined) &&
+      now - this.#lastAggregated >= 60_000
+    ) {
+      this.#lastAggregated = now;
+      this.#warn(
+        Object.freeze({
+          kind: "bans.aggregated",
+          message: `bun-security: the ban table is full (maxActive ${this.#internals.bans.maxActive}); new address bans are widened to their /24 or /48${outcome.ban === undefined ? ", and some were dropped" : ""}`,
+          service: this.#policy.service,
+          minutes: 1,
+          share: 1,
+          since: now,
+        }),
+      );
+    }
+  }
+
   /**
-   * The hit for one counted occurrence: none below the threshold; at it, the
-   * rule's action (recorded as a trip when enforced and writing), or `log`
-   * with the would-be action in dry run.
+   * One counted occurrence's outcome: nothing below the threshold; at it,
+   * a ban of the rule's key (written when enforced and writing) and the
+   * rule's offence weight, or `log` with the would-be action in dry run.
    */
   #tripped(
     rule: CompiledCountedRule,
     key: string,
     event: string,
     outcome: CountOutcome,
-    now: number,
-    writes: boolean,
-    dryPolicy: boolean,
-    trace: ExplainStep[] | undefined,
-  ): RuleHit | undefined {
+    pass: Pass,
+    deferred: boolean,
+  ): void {
+    const { now, writes, trace } = pass;
     if (!outcome.tripped) {
       trace?.push({
         layer: "L4",
@@ -765,10 +1010,20 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
             ? `"${event}" not counted: the store failed`
             : `"${event}" counted: ${outcome.count} of ${rule.threshold} in ${windowText(rule.window)}`,
       });
-      return undefined;
+      return;
     }
-    const dry = dryPolicy || rule.mode === "dryRun";
+    const dry =
+      pass.dryPolicy ||
+      rule.mode === "dryRun" ||
+      this.#internals.bans.mode === "dryRun";
     const action = tripAction(rule);
+    const subject: BanSubject = { type: rule.key.parts.join("|"), value: key };
+    const ladder = this.#internals.ladder;
+    const length =
+      rule.action === "ladder" && ladder
+        ? this.#scores.escalate(banId(subject), now, ladder, writes && !dry)
+        : rule.duration;
+    const until = Number.isFinite(length) ? now + length : null;
     const reason = `counted rule: ${rule.threshold} "${event}" in ${windowText(rule.window)}${rule.action === "challenge" ? "; challenge: no challenge provider configured, fell back to block" : ""}`;
     const hit: RuleHit = dry
       ? {
@@ -780,34 +1035,120 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         }
       : { layer: "L4", rule: `counted:${rule.id}`, action, reason };
     if (!dry && writes) {
-      this.#counted.trip(rule, key, now);
+      this.#writeBan(
+        {
+          subject,
+          action: rule.action === "challenge" ? "challenge" : "ban",
+          reason,
+          rule: `counted:${rule.id}`,
+          source: "auto",
+          expiresAt: until,
+          ...(rule.code === undefined ? {} : { code: rule.code }),
+        },
+        now,
+      );
       this.#logger.info(
         `bun-security: counted rule "${rule.id}" tripped on "${event}"`,
-        {
-          rule: rule.id,
-          event,
-          durationMs: Number.isFinite(rule.duration) ? rule.duration : null,
-        },
+        { rule: rule.id, event, durationMs: until === null ? null : length },
       );
     }
     trace?.push({
       layer: "L4",
       check: "counted-rule",
       rule: hit.rule,
-      outcome: `"${event}" reached ${rule.threshold} in ${windowText(rule.window)}: ${dry ? `would have tripped (dry run) to ${action}` : `tripped: ${action}`}`,
+      outcome: `"${event}" reached ${rule.threshold} in ${windowText(rule.window)}: ${dry ? `would have tripped (dry run) to ${action}` : `tripped: ${action}${until === null ? " until lifted" : ` for ${windowText(length)}`}`}`,
     });
-    return hit;
+    this.#record(pass, hit, this.#banAnswer(rule.code, until, now), deferred);
+    if (!dry && rule.weight > 0) {
+      this.#offend(`counted:${rule.id}`, rule.weight, pass, deferred);
+    }
+  }
+
+  /**
+   * Adds an offence's weight to the client address's score and applies the
+   * ladder's highest step reached: a challenge, or a ban of escalating
+   * length, after which the score starts again from zero. Only an address
+   * the bans may refuse is scored (not an allow-listed or internal one, nor
+   * a service exempt from bans). With writes off (`explain()`) the score is
+   * kept on the pass, so one request's offences add up there too.
+   */
+  #offend(source: string, weight: number, pass: Pass, deferred: boolean): void {
+    const ladder = this.#internals.ladder;
+    const ip = pass.subject.ip;
+    const { flags, now, writes, trace } = pass;
+    if (ladder === undefined || weight <= 0 || ip === undefined) return;
+    if (
+      flags.allowAll ||
+      flags.internal ||
+      flags.service?.exempt.has("bans") === true
+    ) {
+      return;
+    }
+    let score: number;
+    if (writes) {
+      score = this.#scores.add(ip, weight, now, ladder);
+    } else {
+      pass.score = (pass.score ?? this.#scores.get(ip, now, ladder)) + weight;
+      score = pass.score;
+    }
+    const step = ladder.steps.find((candidate) => score >= candidate.score);
+    trace?.push({
+      layer: "L4",
+      check: "score",
+      rule: "ladder",
+      outcome: `${source} added ${weight}: the score is ${score.toFixed(2)}${step ? `, reaching ${step.score} (${step.action})` : ""}`,
+    });
+    if (step === undefined) return;
+    const dry =
+      pass.dryPolicy ||
+      ladder.mode === "dryRun" ||
+      this.#internals.bans.mode === "dryRun";
+    const subject: BanSubject = { type: "ip", value: ip };
+    const length =
+      step.duration ??
+      this.#scores.escalate(banId(subject), now, ladder, writes && !dry);
+    const action: SecurityAction = step.action === "ban" ? "ban" : "block";
+    const reason = `ladder: score ${score.toFixed(2)} reached ${step.score} (${source})${step.action === "challenge" ? "; challenge: no challenge provider configured, fell back to block" : ""}`;
+    if (!dry && writes) {
+      this.#writeBan(
+        {
+          subject,
+          action: step.action,
+          reason,
+          rule: "ladder",
+          source: "auto",
+          expiresAt: now + length,
+        },
+        now,
+      );
+    }
+    if (step.action === "ban") {
+      if (writes && !dry) this.#scores.reset(ip);
+      else pass.score = 0;
+    }
+    this.#record(
+      pass,
+      dry
+        ? {
+            layer: "L4",
+            rule: "ladder",
+            action: "log",
+            wouldHaveBeen: action,
+            reason: `dry run: ${reason}`,
+          }
+        : { layer: "L4", rule: "ladder", action, reason },
+      this.#banAnswer(undefined, now + length, now),
+      deferred,
+    );
   }
 
   /** The key a counted rule counts the request under, or `undefined` when it does not apply. */
   #countedKey(
     rule: CompiledCountedRule,
-    subject: SubjectKeys,
-    route: RequestRoute,
-    flags: Flags,
-    trace: ExplainStep[] | undefined,
     event: string,
+    pass: Pass,
   ): string | undefined {
+    const { flags, trace } = pass;
     if (flags.service?.exempt.has("countedRules") && !rule.appliesToServices) {
       trace?.push({
         layer: "L4",
@@ -826,8 +1167,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       });
       return undefined;
     }
-    if (!appliesTo(rule.routes, route)) return undefined;
-    const key = keyOf(rule.key, subject, route);
+    if (!appliesTo(rule.routes, pass.route)) return undefined;
+    const key = keyOf(rule.key, pass.subject, pass.route);
     if (key === undefined) {
       trace?.push({
         layer: "L4",
@@ -837,6 +1178,200 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       });
     }
     return key;
+  }
+
+  /**
+   * Layer L4: the bans in force for the request's subjects, the exact ones
+   * by each banned key type and the ranges through the trie. A ban on an
+   * address alone never refuses an internal client; a service exempt from
+   * bans is refused only by the bans of counted rules that apply to
+   * services. Answers whether an enforced ban refused the request.
+   */
+  #banned(pass: Pass): boolean {
+    const { flags, subject, now, writes, trace, run } = pass;
+    if (this.#bans.size === 0 || flags.allowAll) return false;
+    const internals = this.#internals;
+    const exempt = flags.service?.exempt.has("bans") === true;
+    const found: Ban[] = [];
+    for (const type of this.#bans.types()) {
+      const key = keyOfType(type);
+      if (flags.internal && key.addressOnly) continue;
+      const value = keyOf(key, subject, pass.route);
+      if (value === undefined) continue;
+      const ban = this.#bans.find(`${type}:${value}`, now, writes);
+      if (ban) found.push(ban);
+    }
+    if (pass.address && !flags.internal) {
+      found.push(...this.#bans.ranges(pass.address, now));
+    }
+    const applying = exempt
+      ? found.filter((ban) => {
+          const id = ban.rule?.startsWith("counted:")
+            ? ban.rule.slice("counted:".length)
+            : undefined;
+          return (
+            id !== undefined &&
+            internals.countedRules.some(
+              (rule) => rule.id === id && rule.appliesToServices,
+            )
+          );
+        })
+      : found;
+    if (applying.length === 0) return false;
+    // `ban` before `challenge`, then the first found.
+    const ban =
+      applying.find((candidate) => candidate.action === "ban") ?? applying[0];
+    if (ban === undefined) return false;
+    const dry = pass.dryPolicy || internals.bans.mode === "dryRun";
+    const action: SecurityAction = ban.action === "ban" ? "ban" : "block";
+    const reason = `banned: ${ban.reason}${ban.expiresAt === null ? " (until lifted)" : `, ${seconds(ban.expiresAt - now)} s left`}`;
+    run.add(
+      dry
+        ? {
+            layer: "L4",
+            rule: `ban:${ban.id}`,
+            action: "log",
+            wouldHaveBeen: action,
+            reason: `dry run: ${reason}`,
+          }
+        : { layer: "L4", rule: `ban:${ban.id}`, action, reason },
+      dry ? undefined : this.#banAnswer(ban.code, ban.expiresAt, now),
+    );
+    trace?.push({
+      layer: "L4",
+      check: "ban",
+      rule: `ban:${ban.id}`,
+      outcome: `${reason}: ${dry ? "would have refused (dry run)" : `refused: ${action}`}`,
+    });
+    return run.refused;
+  }
+
+  /**
+   * Layer L6: the request's shape. Answers whether an enforced check refused
+   * it, after counting the `shape.refused` event.
+   */
+  #shaped(facts: RequestFacts, pass: Pass): MaybePromise<boolean> {
+    const shape = this.#internals.shape;
+    if (shape === undefined || pass.flags.allowAll) return false;
+    const refusal = checkShape(shape, facts, pass.route);
+    if (refusal === undefined) return false;
+    const dry = pass.dryPolicy || shape.mode === "dryRun";
+    pass.run.add(
+      dry
+        ? {
+            layer: "L6",
+            rule: refusal.rule,
+            action: "log",
+            wouldHaveBeen: "block",
+            reason: `dry run: ${refusal.reason}`,
+          }
+        : {
+            layer: "L6",
+            rule: refusal.rule,
+            action: "block",
+            reason: refusal.reason,
+          },
+      dry ? undefined : { status: refusal.status, code: "rejected" },
+    );
+    pass.trace?.push({
+      layer: "L6",
+      check: "shape",
+      rule: refusal.rule,
+      outcome: `${refusal.reason}: ${dry ? "would have refused (dry run)" : `refused, ${refusal.status}`}`,
+    });
+    if (dry) return false;
+    return then(this.#occur("shape.refused", pass, false), () => true);
+  }
+
+  /**
+   * Layer L8: canary credentials (any use refuses the request and scores the
+   * address 100 through `canary.used`) and honeypot routes (`honeypot.hit`,
+   * scored 10, applied from the next request, the request itself answered
+   * as a real route would). Answers whether the request was refused.
+   */
+  #deceived(facts: RequestFacts, pass: Pass): MaybePromise<boolean> {
+    const deception = this.#internals.deception;
+    if (pass.flags.allowAll) return false;
+    const identity = facts.identity;
+    const canary =
+      (identity?.user === undefined
+        ? undefined
+        : deception.canaryUsers.get(identity.user)) ??
+      (identity?.apiKey === undefined
+        ? undefined
+        : deception.canaryKeys.get(identity.apiKey));
+    if (canary !== undefined) {
+      const reason = `canary credential "${canary}" used`;
+      pass.run.add(
+        pass.dryPolicy
+          ? {
+              layer: "L8",
+              rule: `canary:${canary}`,
+              action: "log",
+              wouldHaveBeen: "ban",
+              reason: `dry run: ${reason}`,
+            }
+          : { layer: "L8", rule: `canary:${canary}`, action: "ban", reason },
+        pass.dryPolicy ? undefined : this.#banAnswer(undefined, null, pass.now),
+      );
+      pass.trace?.push({
+        layer: "L8",
+        check: "canary",
+        rule: `canary:${canary}`,
+        outcome: `${reason}: refused`,
+      });
+      if (pass.writes) {
+        this.#logger.error(`bun-security: ${reason}`, {
+          canary,
+          service: this.#policy.service,
+        });
+        this.#warn(
+          Object.freeze({
+            kind: "canary.used",
+            message: `bun-security: canary credential "${canary}" was used: where it was planted has leaked`,
+            service: this.#policy.service,
+            minutes: 1,
+            share: 1,
+            since: pass.now,
+          }),
+        );
+      }
+      return pass.dryPolicy
+        ? false
+        : then(this.#occur("canary.used", pass, false), () => true);
+    }
+    const honeypots = deception.honeypots;
+    if (honeypots === undefined || !appliesTo(honeypots.patterns, pass.route)) {
+      return false;
+    }
+    const dry = pass.dryPolicy || honeypots.mode === "dryRun";
+    const notFound = honeypots.answer === "not-found";
+    const reason = "honeypot route";
+    pass.run.add(
+      dry
+        ? {
+            layer: "L8",
+            rule: "honeypot",
+            action: "log",
+            ...(notFound ? { wouldHaveBeen: "block" as const } : {}),
+            reason: `dry run: ${reason}`,
+          }
+        : {
+            layer: "L8",
+            rule: "honeypot",
+            action: notFound ? "block" : "log",
+            reason,
+          },
+      !dry && notFound ? { status: 404, code: "not_found" } : undefined,
+    );
+    pass.trace?.push({
+      layer: "L8",
+      check: "honeypot",
+      rule: "honeypot",
+      outcome: `${reason}: ${dry ? "dry run" : notFound ? "answered 404" : "passed on, as a real route"}`,
+    });
+    if (dry) return false;
+    return then(this.#occur("honeypot.hit", pass, true), () => notFound);
   }
 
   /**
@@ -926,7 +1461,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         resolved.address,
         subject.user,
         subject.apiKey,
-        facts.path,
+        listPath(facts.path, internals),
         now,
         dryPolicy,
         trace,
@@ -1029,102 +1564,45 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       }
     }
 
-    // Without limits or counted rules, nothing below applies (plan §4.3:
-    // facts computed only when a rule needs them).
-    if (internals.limits.length === 0 && internals.countedRules.length === 0) {
-      return finish();
-    }
-
-    // ── L4: keys a counted rule tripped ───────────────────────────────────
-    const route = requestRoute(facts);
-    if (this.#counted.trips.size > 0) {
-      const bansExempt = flags.service?.exempt.has("bans") === true;
-      for (const rule of internals.countedRules) {
-        if (shieldedBy(flags, rule.key)) continue;
-        if (bansExempt && !rule.appliesToServices) continue;
-        const key = keyOf(rule.key, subject, route);
-        if (key === undefined) continue;
-        const trip = this.#counted.tripOf(rule, key, now, writes);
-        if (trip === undefined) continue;
-        const dry = dryPolicy || rule.mode === "dryRun";
-        const action = tripAction(rule);
-        const left = trip.until - now;
-        const reason = `tripped by counted rule "${rule.id}"${Number.isFinite(left) ? `, ${seconds(left)} s left` : ", until the rule is removed"}`;
-        run.add(
-          dry
-            ? {
-                layer: "L4",
-                rule: `counted:${rule.id}`,
-                action: "log",
-                wouldHaveBeen: action,
-                reason: `dry run: ${reason}`,
-              }
-            : { layer: "L4", rule: `counted:${rule.id}`, action, reason },
-          dry
-            ? undefined
-            : {
-                status: 403,
-                code: rule.code,
-                ...(Number.isFinite(left) ? { retryAfter: seconds(left) } : {}),
-              },
-        );
-        trace?.push({
-          layer: "L4",
-          check: "trip",
-          rule: `counted:${rule.id}`,
-          outcome: `${reason}: ${dry ? "would have refused (dry run)" : `refused: ${action}`}`,
+    // ── L4 bans, L6 shape, L8 deception ───────────────────────────────────
+    const pass: Pass = {
+      subject,
+      route: requestRoute(facts),
+      address: resolved.address,
+      flags,
+      now,
+      writes,
+      dryPolicy,
+      trace,
+      run,
+    };
+    if (this.#banned(pass)) return finish();
+    return then(this.#shaped(facts, pass), (shapeRefused) => {
+      if (shapeRefused) return finish();
+      return then(this.#deceived(facts, pass), (deceived) => {
+        if (deceived || run.refused) return finish();
+        // Without limits, counted rules or a weight on `request`, nothing
+        // below applies (plan §4.3).
+        if (
+          internals.limits.length === 0 &&
+          internals.countedRules.length === 0 &&
+          (internals.ladder?.weights.get("request") ?? 0) === 0
+        ) {
+          return finish();
+        }
+        // ── The `request` occurrence, then L9 rate limits ─────────────────
+        return then(this.#occur("request", pass, false), () => {
+          if (run.refused) return finish();
+          return then(
+            this.#limit(internals.limits, limitSet, pass),
+            (throttled) =>
+              throttled
+                ? then(this.#occur("throttled", pass, false), finish)
+                : finish(),
+          );
         });
-        if (run.refused) return finish();
-      }
-    }
-
-    // ── The `request` occurrence, then L9 rate limits ─────────────────────
-    return then(
-      this.#occur(
-        "request",
-        subject,
-        route,
-        flags,
-        now,
-        writes,
-        dryPolicy,
-        trace,
-        run,
-      ),
-      () => {
-        if (run.refused) return finish();
-        return then(
-          this.#limit(
-            internals.limits,
-            limitSet,
-            subject,
-            route,
-            flags,
-            writes,
-            dryPolicy,
-            trace,
-            run,
-          ),
-          (throttled) =>
-            throttled
-              ? then(
-                  this.#occur(
-                    "throttled",
-                    subject,
-                    route,
-                    flags,
-                    now,
-                    writes,
-                    dryPolicy,
-                    trace,
-                    run,
-                  ),
-                  finish,
-                )
-              : finish(),
-        );
-      },
-    );
+      });
+    });
   }
 
   /**
@@ -1135,14 +1613,9 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   #limit(
     limits: readonly CompiledLimit[],
     limitSet: LimitSet,
-    subject: SubjectKeys,
-    route: RequestRoute,
-    flags: Flags,
-    writes: boolean,
-    dryPolicy: boolean,
-    trace: ExplainStep[] | undefined,
-    run: Run,
+    pass: Pass,
   ): MaybePromise<boolean> {
+    const { subject, route, flags, writes, dryPolicy, trace, run } = pass;
     const counting: MaybePromise<
       [CompiledLimit, ThrottleResult | undefined]
     >[] = [];
@@ -1345,6 +1818,15 @@ function flagsOf(
     internal: lists?.internal === true,
     service,
   };
+}
+
+/**
+ * The path list entries match: the canonical path, folded to lower case
+ * unless the policy's shape says the app's routes are case-sensitive (the
+ * entries' own `paths` are folded the same way when compiled).
+ */
+function listPath(path: string, internals: PolicyInternals): string {
+  return internals.caseSensitive ? path : path.toLowerCase();
 }
 
 /** The store key prefix of a policy: per service, so services sharing a store never count together. */

@@ -12,6 +12,19 @@ import { facts, fakeClock, seededRandom } from "../helpers";
 
 const POLICY: SecurityPolicy = {
   concurrency: { perIp: 3, total: 6 },
+  ladder: {
+    halfLife: "10s",
+    steps: [
+      { score: 12, action: "challenge", duration: "2s" },
+      { score: 25, action: "ban" },
+    ],
+    base: "3s",
+    memory: "1m",
+  },
+  deception: {
+    honeypots: { paths: ["/.env"], answer: "not-found" },
+    canaries: [{ id: "leaked", user: "canary" }],
+  },
   lists: [{ ip: "198.51.100.0/24", action: "allow" }],
   limits: [
     { id: "sliding", limit: 8, window: "10s" },
@@ -70,11 +83,22 @@ function randomFacts(random: () => number): RequestFacts {
     "198.51.100.5",
     "10.0.0.2",
   ]);
-  const user = random() < 0.5 ? pick(["ann", "ben"]) : undefined;
+  const user =
+    random() < 0.5
+      ? random() < 0.02
+        ? "canary"
+        : pick(["ann", "ben"])
+      : undefined;
   const [method, path] = pick([
     ["GET", "/"],
     ["POST", "/login"],
     ["GET", "/login"],
+    ["GET", "/"],
+    ["POST", "/login"],
+    ["GET", "/login"],
+    ["GET", "/.env"],
+    ["GET", "/a%2Fb"],
+    ["TRACE", "/"],
   ] as const);
   return facts({
     client,
@@ -114,7 +138,11 @@ describe("explain() and evaluate() agree with state in play", () => {
           i,
           decision: decided,
         });
-        for (const hit of decided.hits) rules.add(`${hit.rule}:${hit.action}`);
+        for (const hit of decided.hits) {
+          // Bans are named by subject; count them by kind.
+          const rule = hit.rule.startsWith("ban:") ? "ban" : hit.rule;
+          rules.add(`${rule}:${hit.action}`);
+        }
         open.push([request, decided]);
         // Answer some of the requests in flight.
         while (open.length > 0 && random() < 0.6) {
@@ -137,6 +165,15 @@ describe("explain() and evaluate() agree with state in play", () => {
         "limit:fixed:block",
         "limit:bucket:block",
         "limit:watch:log",
+        "ban:ban",
+        "ban:block",
+        "ladder:block",
+        "ladder:ban",
+        "ladder:log",
+        "honeypot:block",
+        "canary:leaked:ban",
+        "shape.path:block",
+        "shape.method:block",
         "counted:flood:ban",
         "counted:repeat:ban",
         "counted:dry:log",

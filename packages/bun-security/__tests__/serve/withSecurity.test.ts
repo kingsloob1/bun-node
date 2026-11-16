@@ -366,6 +366,9 @@ function fixedEngine(decision: Decision): Security<Request> {
     complete: (facts, decided, outcome) =>
       real.complete(facts, decided, outcome),
     signal: (facts, event) => real.signal(facts, event),
+    ban: (input) => real.ban(input),
+    unban: (id, options) => real.unban(id, options),
+    bans: () => real.bans(),
     identify: () => undefined,
     load: (policy) => real.load(policy),
     status: () => real.status(),
