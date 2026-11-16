@@ -3987,7 +3987,7 @@ app.post(
   "/login",
   throttle({
     limits: {
-      account: { limit: 10, window: "1m", key: (req) => `${req.ip}|${req.body?.email}` },
+      account: { limit: 10, window: "1m", key: (req) => `${req.clientAddress}|${req.body?.email}` },
       address: { limit: 30, window: "1m" },
     },
   }),
@@ -4005,7 +4005,7 @@ A refused request gets a `429` `application/problem+json` body
 |---|---|---|
 | `limit`, `window` | `window: "1m"` | One limit, named `default`. `limit` is a positive integer, or a function of the request answering one (express-rate-limit's `limit` as a function: a premium account gets more); such a limit is documented as `"dynamic"`, and under `"gcra"` its bucket survives a change of quota. A window always carries its unit: `"30s"`, `"1m"`, `"1h 30m"`, `{ seconds: 30 }`. A bare number is refused, by the type and at run time (is `60` seconds or ms?), and so is a window under a second unless `allowSubSecond: true`. |
 | `limits` | none | Several named limits (`{ burst: { limit: 20, window: "1s" }, sustained: { limit: 600, window: "1m" } }`), each with its own `key` and `cost` if it likes. Any of them refuses; every one counts. |
-| `key` | `req.ip`, IPv6 reduced to its `/56`, IPv4-mapped unmapped | Who a request counts against: `ip\|account`, a user id, an API key. `"unknown"` for a request without an address (a socket-free `fetch()`). Behind a proxy, `req.ip` is the client only when the adapter's `trustProxy` trusts the proxy; otherwise every client behind it shares the proxy's count. |
+| `key` | `req.clientAddress`, IPv6 reduced to its `/56` | Who a request counts against: `ip\|account`, a user id, an API key. `"unknown"` for a request without an address (a socket-free `fetch()`). [`req.clientAddress`](#the-security-view-reqclientaddress) is the client `req.ip` names, normalised (IPv4-mapped unmapped) and never a malformed `X-Forwarded-For` entry, so junk in the header cannot open a fresh count; for every request whose `req.ip` is an address the key is the one `req.ip` gave before 3.3. Behind a proxy, it is the client only when the adapter's `trustProxy` trusts the proxy; otherwise every client behind it shares the proxy's count. |
 | `ipv6Subnet` | `56` | The prefix an IPv6 address is reduced to by the default key (express-rate-limit 8's default); `false` keeps the whole address. |
 | `cost` | `1` | What a request costs: a number, or a function of the request. |
 | `skip` | none | `(req, res) => boolean`: a skipped request is neither counted nor refused (a service token, an allow-listed network). |
@@ -5065,7 +5065,7 @@ Each file is a standalone script whose opening comment says what it shows.
 | `14-typed-client` | [`webrtc.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/14-typed-client/webrtc.ts) | `signallingRelay` and a typed WebRTC data channel |
 | `14-typed-client` | [`graphql.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/14-typed-client/graphql.ts) | bun-client's typed GraphQL client against a hand-written server |
 | `15-trust-proxy` | [`client-ip.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/15-trust-proxy/client-ip.ts) | `trustProxy` and `clientIpHeader`: the walk, the Cloudflare → Railway chain and its spoofing attempts, `set("trust proxy")`, `ws.data.ip`, each asserted |
-| `16-throttle` | [`adapter-wide.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/adapter-wide.ts) | The adapter's `throttle` option over mounted routers and the not-found handler, the headers, the `429`, the default `req.ip` key over a socket |
+| `16-throttle` | [`adapter-wide.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/adapter-wide.ts) | The adapter's `throttle` option over mounted routers and the not-found handler, the headers, the `429`, the default address key (`req.clientAddress`) over a socket |
 | `16-throttle` | [`per-route.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/per-route.ts) | `skipThrottle()`, same-name overrides, a login keyed on address+account and on address, `scope: "global"` |
 | `16-throttle` | [`stores-and-failures.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/stores-and-failures.ts) | The bounded memory store, a shared store, fail-open and fail-closed, `onLimited`, the three algorithms |
 | `16-throttle` | [`runtime-update.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-common/16-throttle/runtime-update.ts) | `update()` while serving, `peek()`, `reset()`, a fallback store |

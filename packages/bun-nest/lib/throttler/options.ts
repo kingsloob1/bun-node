@@ -29,7 +29,9 @@ export type Resolvable<T> = T | ((context: ExecutionContext) => T | Promise<T>);
 /**
  * Who a request counts against: an address, an account, an API key
  * (`@nestjs/throttler`'s `getTracker`). Default: the client's address
- * (`req.ip`, an IPv6 address reduced to its {@link BunThrottlerModuleOptions.ipv6SubnetPrefix}).
+ * (`req.clientAddress`, the normalised client `req.ip` names, never a
+ * malformed forwarded entry; an IPv6 address reduced to its
+ * {@link BunThrottlerModuleOptions.ipv6SubnetPrefix}).
  */
 export type BunThrottlerGetTracker = (
   req: BunRequest,

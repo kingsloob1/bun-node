@@ -94,7 +94,7 @@ function targetOf(
  *
  * ```ts
  * @Throttle({
- *   account: { limit: 10, ttl: "1m", getTracker: (req) => `${req.ip}|${req.body?.email}` },
+ *   account: { limit: 10, ttl: "1m", getTracker: (req) => `${req.clientAddress}|${req.body?.email}` },
  *   address: { limit: 30, ttl: "1m" },
  * })
  * @Post("sign-in")
