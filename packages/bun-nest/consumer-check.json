@@ -5,7 +5,8 @@
     "packages/bun-common",
     "packages/bun-jobs",
     "packages/bun-cache",
-    "packages/bun-security"
+    "packages/bun-security",
+    "packages/bun-sql"
   ],
   "consumerDependencies": ["@nestjs/terminus@^12.1.0"],
   "entries": [

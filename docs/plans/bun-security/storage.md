@@ -128,6 +128,13 @@ interface SecurityStoreDriver {
 }
 ```
 
+**Built in stages** (the user's decision, 2026-11-16): PR-D1 builds the
+documents, the policy versions (`appendVersion`, `listVersions`, and
+`getVersion`, added there) and the change feed. Bans, the audit chain, the
+signed bundles and the analytics operations join the interface with the
+control-plane PRs in M2 that define their records (PR-CP1 events and
+analytics, PR-CP2 bundles); `capabilities.analytics` stays `false` until then.
+
 Every write returns the new `revision` (documents) or `seq` (changes); every
 mutation also appends a `Change { seq, kind, id, revision }` in the same
 statement or transaction, so `changesSince` never misses a write (an outbox,

@@ -29,7 +29,9 @@
     "rate-limit",
     "defence"
   ],
-  "sideEffects": false,
+  "sideEffects": [
+    "./lib/testing/crossprocess-worker.ts"
+  ],
   "exports": {
     ".": {
       "@kingsleyweb/source": "./lib/index.ts",
@@ -91,6 +93,26 @@
       "types": "./dts/intel/index.d.ts",
       "default": "./lib/intel/index.ts"
     },
+    "./store": {
+      "@kingsleyweb/source": "./lib/store/index.ts",
+      "types": "./dts/store/index.d.ts",
+      "default": "./lib/store/index.ts"
+    },
+    "./lib/store": {
+      "@kingsleyweb/source": "./lib/store/index.ts",
+      "types": "./dts/store/index.d.ts",
+      "default": "./lib/store/index.ts"
+    },
+    "./testing": {
+      "@kingsleyweb/source": "./lib/testing/index.ts",
+      "types": "./dts/testing/index.d.ts",
+      "default": "./lib/testing/index.ts"
+    },
+    "./lib/testing": {
+      "@kingsleyweb/source": "./lib/testing/index.ts",
+      "types": "./dts/testing/index.d.ts",
+      "default": "./lib/testing/index.ts"
+    },
     "./lib/*.ts": {
       "@kingsleyweb/source": "./lib/*.ts",
       "types": "./dts/*.d.ts",
@@ -138,7 +160,8 @@
     "format:check": "bun fmt --check"
   },
   "dependencies": {
-    "@kingsleyweb/bun-common": "workspace:^"
+    "@kingsleyweb/bun-common": "workspace:^",
+    "@kingsleyweb/bun-sql": "workspace:^"
   },
   "peerDependencies": {
     "@kingsleyweb/bun-cache": "workspace:^",

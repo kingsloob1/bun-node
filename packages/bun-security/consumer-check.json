@@ -319,11 +319,74 @@
       "peers": ["@kingsleyweb/bun-cache"],
       "values": ["cacheStore"],
       "types": ["CacheStoreOptions"]
+    },
+    {
+      "$comment": "The security store (storage.md §3, §5, §6, PR-D1): the driver interface, memoryStore, sqliteStore over bun-sql, and the read-only policyFile.",
+      "spelling": "@kingsleyweb/bun-security/store",
+      "values": [
+        "memoryStore",
+        "sqliteStore",
+        "policyFile",
+        "isPolicyFromStore",
+        "storeSchema",
+        "storeTables",
+        "DOC_KINDS",
+        "MAX_PAGE_LIMIT",
+        "DEFAULT_STORE_PREFIX",
+        "DEFAULT_POLICY_POLL_MS",
+        "DEFAULT_POLICY_RECONCILE_MS"
+      ],
+      "types": [
+        "SecurityStoreDriver",
+        "SecurityStoreCapabilities",
+        "ListQuery",
+        "StoredDoc",
+        "PutResult",
+        "AppendResult",
+        "Change",
+        "DocKind",
+        "PolicyHead",
+        "PolicyVersionInput",
+        "PolicyVersionRecord",
+        "PolicyFromStore",
+        "PolicySourceStatus",
+        "MemoryStoreOptions",
+        "SqliteStoreOptions",
+        "PolicyFileOptions",
+        "StoreCodec",
+        "StoreCodecContext"
+      ],
+      "snippet": "const store: t.SecurityStoreDriver = m.sqliteStore({ path: \"./security.sqlite\", syncSchema: { dryRun: true } });\nconst put: Promise<t.PutResult> = store.put(\"service\", \"checkout\", { owner: \"payments\" }, null);\nconst page: Promise<t.Page<t.StoredDoc>> = store.list(\"service\", { limit: 50, sort: \"updatedAt\", direction: \"desc\" });\nconst appended: Promise<t.AppendResult> = store.appendVersion(\"checkout\", { id: \"v2\", policy: {} }, \"v1\");\nconst feed = store.changesSince(0n, 100);\nexport type _feedNotAny = Expect<IsAny<Awaited<typeof feed>>>;\nconst _seq: bigint = 0n as t.Change[\"seq\"];\nconst source: t.PolicyFromStore = { store: m.policyFile(\"./security.json\", { debounceMs: 50 }), id: \"default\", lastKnownGood: \"./lkg.json\" };\nconst _isSource: boolean = m.isPolicyFromStore(source);\nconst _caps: boolean = m.memoryStore().capabilities.readOnly;\nexport const _all = [put, page, appended];"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-security/lib/store",
+      "values": ["memoryStore"],
+      "types": ["SecurityStoreDriver"]
+    },
+    {
+      "$comment": "The security store kit (storage.md §9): a bun:test suite, and a store that fails on demand.",
+      "spelling": "@kingsleyweb/bun-security/testing",
+      "values": ["runSecurityStoreConformance", "faultyStore"],
+      "types": [
+        "StoreConformanceFactory",
+        "StoreConformanceInstance",
+        "StoreConformanceOptions",
+        "StoreConformanceCrossProcess",
+        "FaultyStoreOptions",
+        "StoreOperation"
+      ],
+      "snippet": "import { memoryStore } from \"@kingsleyweb/bun-security/store\";\nconst run: Promise<void> = m.runSecurityStoreConformance(\"mine\", () => ({ store: memoryStore() }), { raceSize: 5 });\nconst faulty = m.faultyStore(memoryStore(), { fail: (op: t.StoreOperation) => (op === \"put\" ? new Error(\"down\") : undefined), delayMs: 1 });\nexport type _faultyNotAny = Expect<IsAny<typeof faulty>>;\nexport const _r = run;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-security/lib/testing",
+      "values": ["faultyStore"],
+      "types": ["StoreOperation"]
     }
   ],
   "workspaceDependencies": [
     "packages/bun-contract",
     "packages/bun-common",
-    "packages/bun-cache"
+    "packages/bun-cache",
+    "packages/bun-sql"
   ]
 }

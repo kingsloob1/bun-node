@@ -55,7 +55,9 @@ export type TrustWarningKind = "trust.internal" | "trust.unread-forwarding";
  * (layers.md L4); `canary.used`, a canary credential used (layers.md L8);
  * `store.unavailable`, the shared store failing for 30 s (topologies.md
  * §6.2); `login.risky-success`, a login succeeding from an address with many
- * failed ones (layers.md L11.2).
+ * failed ones (layers.md L11.2); `policy.refused`, a version of a policy
+ * followed in a security store that did not compile, and
+ * `policy.unavailable`, that store failing (storage.md §6).
  */
 export type SecurityWarningKind =
   | TrustWarningKind
@@ -64,7 +66,9 @@ export type SecurityWarningKind =
   | "canary.used"
   | "store.unavailable"
   | "login.risky-success"
-  | "crawler.conflict";
+  | "crawler.conflict"
+  | "policy.refused"
+  | "policy.unavailable";
 
 /**
  * A warning (layers.md L2.5, L9.6): the trust configuration looks wrong, or
