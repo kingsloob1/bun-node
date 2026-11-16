@@ -687,43 +687,31 @@ describe("explain", () => {
   });
 });
 
-describe("the stand-in request (lib/engine/limits.ts)", () => {
-  it("the foundation's throttle, configured as the engine configures it, reads only `route` and `headersSent`", () => {
-    const read: string[] = [];
-    const spy = <T extends object>(target: T, what: string): T =>
-      new Proxy(target, {
-        get(object, property, receiver) {
-          if (typeof property === "string") read.push(`${what}.${property}`);
-          return Reflect.get(object, property, receiver) as unknown;
-        },
-      });
-    const keys = new WeakMap<object, string>();
-    const handler = throttle({
-      limits: {
-        only: {
-          limit: 1,
-          window: "1m",
-          key: (req) => keys.get(req) ?? "",
-          cost: 1,
-        },
-      },
-      store: memoryThrottleStore(),
-      prefix: "p",
+describe("counting by key (lib/engine/limits.ts, kingsloob1/bun-node#791)", () => {
+  it("counts in the entries a throttle's count() with the same prefix and scope reads", () => {
+    const clock = fakeClock();
+    const store = memoryThrottleStore({ now: clock.now });
+    const security = engine(
+      { limits: [{ id: "only", limit: 3, window: "1m" }] },
+      clock,
+      store,
+    );
+    decide(security, facts({ client: "203.0.113.9" }));
+    decide(security, facts({ client: "203.0.113.9" }));
+    const direct = throttle({
+      limits: { only: { limit: 3, window: "1m" } },
+      store,
+      prefix: "bun-security:-",
       scope: "global",
-      algorithm: "sliding-window",
-      headers: false,
-      failMode: "open",
-      onLimited: () => undefined,
+      now: clock.now,
     });
-    for (let i = 0; i < 2; i++) {
-      const req = spy({}, "req");
-      keys.set(req, "k");
-      handler(
-        req as BunRequest,
-        spy({ headersSent: true }, "res") as unknown as BunResponse,
-        () => undefined,
-      );
-    }
-    expect([...new Set(read)].sort()).toEqual(["req.route", "res.headersSent"]);
+    const peeked = direct.peekCount("203.0.113.9");
+    if (peeked instanceof Promise) throw new Error("expected synchronous");
+    // Two counted by the engine, plus the one peeked.
+    expect(peeked[0]?.used).toBe(3);
+    // Negative control: another key shares nothing.
+    const other = direct.peekCount("203.0.113.10");
+    if (other instanceof Promise) throw new Error("expected synchronous");
+    expect(other[0]?.used).toBe(1);
   });
 });

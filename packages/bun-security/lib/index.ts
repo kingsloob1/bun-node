@@ -10,7 +10,8 @@
  *   engine decides from.
  *
  * `./serve` wraps a plain `Bun.serve` handler (`withSecurity`,
- * `hardenServe`).
+ * `hardenServe`); `./http` is the bun-common integration; `./stores` the
+ * shared store over bun-cache (`cacheStore`, `hybridThrottleStore`).
  */
 export { ACTION_SEVERITY } from "./engine/actions";
 export type { Ban, BanSubject } from "./engine/bans";
@@ -47,12 +48,20 @@ export {
   type CreateSecurityOptions,
   type EvaluateOptions,
   type ExplainOptions,
+  type MessageDecision,
   type RequestOutcome,
   type Security,
   type SecurityStatus,
+  type SharedStoreStatus,
+  type SocketLimiter,
   type StateStatus,
   type UnbanOptions,
 } from "./engine/security";
+export type {
+  SharedStateIntervals,
+  SharedStateStore,
+  StoreHealth,
+} from "./engine/shared";
 export type { EvaluationStage } from "./engine/stages";
 export { DEFAULT_MAX_KEYS } from "./engine/state";
 export { DEFAULT_MAX_REGEX_INPUT } from "./rules/compile";
@@ -112,6 +121,7 @@ export type {
   LimitAlgorithm,
   LimitRule,
   ListAction,
+  MessagePolicy,
   ListEntry,
   PolicyScope,
   SecurityAction,
@@ -122,6 +132,9 @@ export type {
   ServiceIdentityPolicy,
   ShapePolicy,
   ShapeRoute,
+  StateMode,
+  StatePolicy,
+  StoreErrorMode,
   SubjectKeyPart,
   TrustCheckPolicy,
 } from "./policy/types";

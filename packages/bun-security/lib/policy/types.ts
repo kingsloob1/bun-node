@@ -186,6 +186,25 @@ export type SubjectKeyPart =
 export type LimitAlgorithm = "sliding-window" | "fixed-window" | "gcra";
 
 /**
+ * Where a limit counts (topologies.md §3.2): `local`, in this process alone
+ * (exact per process; across N processes up to N× the limit); `shared`, in
+ * the engine's shared store, one round trip per request (exact across every
+ * process sharing it); `hybrid`, in this process and synced to the shared
+ * store in batches (no round trip on the request; approximate, overshooting
+ * by about `rate × sync interval × processes`).
+ */
+export type StateMode = "local" | "shared" | "hybrid";
+
+/**
+ * What a limit or counted rule does when the shared store fails
+ * (topologies.md §6.1): `local` counts in this process at its local share
+ * (the limit ÷ `state.nodes`, at least 1); `open` lets the request through
+ * uncounted and records the failure; `closed` answers `503` with
+ * `Retry-After` (limits only).
+ */
+export type StoreErrorMode = "local" | "open" | "closed";
+
+/**
  * A rate limit (layers.md L9): at most `limit` requests per `window` for one
  * key, counted by bun-common's throttle foundation. Past it, the request is
  * answered `429` with `Retry-After`; a refused request counts too, and
@@ -240,6 +259,18 @@ export interface LimitRule {
   readonly evenWhenAllowed?: boolean;
   /** The `code` of the `429`'s problem+json body. Default `"rate_limited"`. */
   readonly code?: string;
+  /**
+   * Where it counts. Default the policy's `state.mode`, else `"shared"` when
+   * the engine has a shared store and `"local"` when it has none. `shared`
+   * and `hybrid` need a shared store (`createSecurity`'s `store`); `hybrid`
+   * refuses `algorithm: "gcra"`.
+   */
+  readonly state?: StateMode;
+  /**
+   * What it does when the shared store fails. Default the policy's
+   * `state.onStoreError`, else `"local"`. Ignored for a `local` limit.
+   */
+  readonly onStoreError?: StoreErrorMode;
 }
 
 /** What a tripped counted rule does to its key (layers.md §0.2). */
@@ -303,6 +334,86 @@ export interface CountedRule {
   readonly appliesToServices?: boolean;
   /** The `code` of its bans' problem+json body. Default the policy's `bans.code` (`"banned"`). */
   readonly code?: string;
+  /**
+   * Where its counters live: `"local"` or `"shared"` (`"hybrid"` is for
+   * limits only). Default `"shared"` when the engine has a shared store,
+   * else `"local"`; the policy's `state.mode` applies when it is one of the
+   * two.
+   */
+  readonly state?: "local" | "shared";
+  /**
+   * What it does when the shared store fails: `"local"` (count in this
+   * process at the threshold's local share) or `"open"` (do not count).
+   * Default the policy's `state.onStoreError` when that is one of the two,
+   * else `"local"`.
+   */
+  readonly onStoreError?: "local" | "open";
+}
+
+/**
+ * How limits and counted rules share state across processes (topologies.md
+ * §3.2, §6.1): defaults for every rule, each of which may name its own.
+ */
+export interface StatePolicy {
+  /** Where limits count by default; see {@link StateMode}. Default `"shared"` with a shared store, `"local"` without. */
+  readonly mode?: StateMode;
+  /** What rules do when the shared store fails, by default; see {@link StoreErrorMode}. Default `"local"`. */
+  readonly onStoreError?: StoreErrorMode;
+  /**
+   * How many processes (enforcement points) share the store: a rule's local
+   * share, which it counts at when the store fails, is its limit or
+   * threshold divided by this, rounded down, at least 1. A positive whole
+   * number. Default `1`.
+   */
+  readonly nodes?: number;
+  /**
+   * Who shares this service's bans, offence scores and the ladder's ban
+   * history on the shared store's namespace: `"shared"`, every service on
+   * the namespace that is `"shared"` too (an address banned by one is
+   * refused by all); `"service"`, this service's processes alone (its bans
+   * and scores are never read by another service, nor another's by it, so a
+   * false positive in one product locks no one out of another). `"service"`
+   * needs the policy's `service`. Default `"shared"`. Limits and counted
+   * rules are per service either way.
+   */
+  readonly scope?: "shared" | "service";
+}
+
+/**
+ * WebSocket message limits (layers.md L9.5): a token bucket per connection,
+ * and limits per subject across connections. A message over a limit is
+ * dropped; a second breach on the connection within {@link breach} closes
+ * it with {@link closeCode}. Off unless configured.
+ */
+export interface MessagePolicy {
+  /**
+   * Messages per connection: the bucket refills at `limit` per `window` and
+   * holds {@link burst} times `limit`. `false` or absent: none.
+   */
+  readonly perConnection?:
+    | {
+        /** Messages per window: a positive whole number. */
+        readonly limit: number;
+        /** The window, its unit written (`"1s"`). */
+        readonly window: Duration;
+        /** Accept a window under one second. Default `false`. */
+        readonly subSecond?: boolean;
+      }
+    | false;
+  /** The bucket's size as a multiple of `perConnection.limit`: a number of at least 1. Default `2` (bun-jobs' socket). */
+  readonly burst?: number;
+  /** A second breach within this long closes the connection. Default `"10s"`. */
+  readonly breach?: Duration;
+  /** The close code: 1008 (policy violation, the default), 1013 (try again later), or 4000 to 4999. */
+  readonly closeCode?: number;
+  /**
+   * Limits per subject across every connection (a limit's grammar: `key`,
+   * `routes` matched against the upgrade request, `state`). Its `code` is
+   * the close reason.
+   */
+  readonly limits?: readonly LimitRule[];
+  /** The section's mode: in `dryRun` a breach is recorded and nothing is dropped or closed. Default `"enforce"`. */
+  readonly mode?: SecurityMode;
 }
 
 /**
@@ -561,4 +672,8 @@ export interface SecurityPolicy {
   readonly deception?: DeceptionPolicy;
   /** Request rules and the managed probe set (layers.md L7). */
   readonly requestRules?: RequestRulesPolicy;
+  /** Shared state's defaults (topologies.md §3.2, §6.1). */
+  readonly state?: StatePolicy;
+  /** WebSocket message limits (layers.md L9.5). */
+  readonly messages?: MessagePolicy;
 }

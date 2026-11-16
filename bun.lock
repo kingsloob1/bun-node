@@ -261,15 +261,18 @@
         "@kingsleyweb/bun-common": "workspace:^",
       },
       "devDependencies": {
+        "@kingsleyweb/bun-cache": "workspace:^",
         "@types/bun": "catalog:",
         "bun-types": "catalog:",
         "typescript": "catalog:",
       },
       "peerDependencies": {
+        "@kingsleyweb/bun-cache": "workspace:^",
         "@types/bun": ">=1.4.2",
         "typescript": "^5.9.3 || ^6.0.0",
       },
       "optionalPeers": [
+        "@kingsleyweb/bun-cache",
         "@types/bun",
         "typescript",
       ],

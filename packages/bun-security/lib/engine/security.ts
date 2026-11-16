@@ -31,6 +31,12 @@
  * store in play answers synchronously (the default memory store),
  * `evaluate()` does too. `explain()` is the same function with state writes
  * off and a trace on.
+ *
+ * With a shared store (`store`, topologies.md §3), limits and counted rules
+ * count there as their `state` says, bans reach every process through the
+ * ban log and its reconcile (`banSync.ts`), offence scores and the ladder's
+ * history sync in batches (`scoreSync.ts`), and a failing store degrades
+ * each rule as its `onStoreError` says. Bans are always looked up in memory.
  */
 import {
   ConfigError,
@@ -43,8 +49,6 @@ import type {
   Duration,
   Logger,
   LoggerLike,
-  ThrottleHandler,
-  ThrottleResult,
   ThrottleStore,
 } from "@kingsleyweb/bun-common";
 import {
@@ -74,6 +78,8 @@ import type {
 import { ACTION_SEVERITY, refuses } from "./actions";
 import { BanTable, banId } from "./bans";
 import type { Ban, BanSubject, BanWrite } from "./bans";
+import { BanSync, scopeKey } from "./banSync";
+import type { BanSink } from "./banSync";
 import { InFlight } from "./concurrency";
 import type { Slot } from "./concurrency";
 import { CountedState } from "./counted";
@@ -92,12 +98,14 @@ import type { ResolvedClient } from "./identity";
 import { appliesTo, keyOf, requestRoute } from "./keys";
 import type { RequestRoute } from "./keys";
 import { Limiter } from "./limits";
-import type { LimitSet } from "./limits";
+import type { LimitCount, LimitSet } from "./limits";
 import { evaluateLists } from "./lists";
 import type { ListOutcome } from "./lists";
 import { all, then } from "./maybe";
 import type { MaybePromise } from "./maybe";
 import { Scores } from "./scores";
+import { ScoreSync } from "./scoreSync";
+import type { SharedStateStore } from "./shared";
 import { checkShape } from "./shape";
 import { inStage, keyStage } from "./stages";
 import type { EvaluationStage } from "./stages";
@@ -149,6 +157,17 @@ export interface CreateSecurityOptions<TRequest = Request> {
    * raised. A positive whole number. Default `100_000`.
    */
   readonly maxKeys?: number;
+  /**
+   * The shared store (topologies.md §3): state shared with every process
+   * that uses the same store, such as `cacheStore(cache)` from
+   * `@kingsleyweb/bun-security/stores`. Limits count there by default
+   * (`shared`, or `hybrid` per limit), counted rules too, bans propagate
+   * through it, offence scores sync through it. Without one every rule is
+   * `local`, and a policy naming `shared` or `hybrid` is refused.
+   */
+  readonly store?: SharedStateStore;
+  /** The most ban writes queued while the shared store is failing; past it the oldest are dropped. Default `10_000`. */
+  readonly maxPendingBans?: number;
 }
 
 /** Options for {@link Security.evaluate}. */
@@ -193,6 +212,26 @@ export interface RequestOutcome {
   readonly routeNotFound?: boolean;
 }
 
+/** The shared store's state, for {@link Security.status}. */
+export interface SharedStoreStatus {
+  /** The store's name. */
+  readonly name: string;
+  /** Whether it is answering. */
+  readonly healthy: boolean;
+  /** When the current run of failures began, epoch ms. */
+  readonly failingSince: number | undefined;
+  /** Ban writes waiting for it. */
+  readonly pendingBans: number;
+  /** Ban writes dropped from a full queue. */
+  readonly droppedBans: number;
+  /** The last ban log record read. */
+  readonly banCursor: number;
+  /** When the bans were last reloaded whole from it, epoch ms. */
+  readonly reconciledAt: number | undefined;
+  /** Offence scores and ban histories waiting to sync. */
+  readonly pendingScores: number;
+}
+
 /** The engine's local state, for {@link Security.status}. */
 export interface StateStatus {
   /** Tracked requests in flight. */
@@ -211,6 +250,8 @@ export interface StateStatus {
   readonly evictions: number;
   /** The `state.evictions` warning in force, if any. */
   readonly warning: SecurityWarning | undefined;
+  /** The shared store's state; absent without one. */
+  readonly store?: SharedStoreStatus;
 }
 
 /** What {@link Security.status} reports. */
@@ -304,8 +345,49 @@ export interface Security<TRequest = Request> {
   unban: (id: string, options?: UnbanOptions) => Ban | undefined;
   /** The bans in force. */
   bans: () => readonly Ban[];
-  /** Stops the engine: later `evaluate()` and `explain()` calls throw. */
+  /**
+   * Resolves once the bans have been loaded from the shared store at start
+   * (or the load failed, which is logged): a service that waits for it
+   * enforces the fleet's bans from its first request. At once without a
+   * shared store. Never rejects.
+   */
+  ready: () => Promise<void>;
+  /**
+   * Writes what is waiting for the shared store now (ban writes, offence
+   * scores, hybrid counts) and reads the ban log. Never rejects: failures
+   * are logged and kept for later. At once without a shared store.
+   */
+  flush: () => Promise<void>;
+  /**
+   * The message limits of one WebSocket connection (layers.md L9.5), from
+   * its upgrade request's facts: call `message()` for each inbound message.
+   * Throws when the engine is closed.
+   */
+  socket: (facts: RequestFacts) => SocketLimiter;
+  /**
+   * Stops the engine: later `evaluate()` and `explain()` calls throw. With a
+   * shared store, its timers stop and a last write starts; `flush()` waits
+   * for it.
+   */
   close: () => void;
+}
+
+/** What to do with one inbound WebSocket message (layers.md L9.5). */
+export interface MessageDecision {
+  /** `allow` it; `drop` it unanswered; `close` the connection. */
+  readonly action: "allow" | "drop" | "close";
+  /** The close code, with `close`. */
+  readonly code?: number;
+  /** The close reason (the limit's code), with `close`. */
+  readonly reason?: string;
+  /** Every rule that matched, dry-run ones as `log`. */
+  readonly hits: readonly RuleHit[];
+}
+
+/** One WebSocket connection's message limits, from {@link Security.socket}. */
+export interface SocketLimiter {
+  /** Counts one inbound message and answers what to do with it: synchronous while every limit in play is local. */
+  message: () => MessageDecision | Promise<MessageDecision>;
 }
 
 /** What {@link Security.ban} takes: exactly one subject. */
@@ -343,6 +425,9 @@ const FORWARDING_HEADERS = [
   "forwarded",
   "x-real-ip",
 ] as const;
+
+/** The `Retry-After` of a `503` for a failing shared store (`onStoreError: "closed"`), in seconds. */
+const STORE_RETRY_AFTER = 5;
 
 /** How often one kind of hook error is logged at most. */
 const ERROR_LOG_INTERVAL = 10_000;
@@ -433,6 +518,28 @@ function keyOfType(type: string): CompiledKey {
   return key;
 }
 
+/** One WebSocket connection's state for its message limits. */
+interface Connection {
+  /** The upgrade request's keys. */
+  readonly subject: SubjectKeys;
+  /** Where the upgrade request sat. */
+  readonly route: RequestRoute;
+  /** What the lists decided for it. */
+  readonly flags: Flags;
+  /** Tokens left in its bucket. */
+  tokens: number;
+  /** When the bucket was last refilled. */
+  refilledAt: number;
+  /** When it last breached a limit. */
+  lastBreach: number;
+}
+
+/** A message let through with no hits. */
+const ALLOW_MESSAGE: MessageDecision = Object.freeze({
+  action: "allow",
+  hits: EMPTY,
+});
+
 /** The hits of one decision, as they accumulate. */
 class Run {
   /** Every hit, in order. */
@@ -519,6 +626,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   #internals: PolicyInternals;
   /** Its limits' throttles. */
   #limits: LimitSet;
+  /** Its message limits' throttles. */
+  #messageLimits: LimitSet;
   /** The store key prefix of the policy in force. */
   #prefix: string;
   /** The trust check. */
@@ -531,6 +640,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   readonly #options: CreateSecurityOptions<TRequest>;
   /** The limits' throttles, kept across policies. */
   readonly #limiter: Limiter;
+  /** The message limits' throttles, kept across policies. */
+  readonly #messageLimiter: Limiter;
   /** Counted-rule counters and trips. */
   readonly #counted: CountedState;
   /** In-flight slots. */
@@ -539,6 +650,20 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   readonly #bans: BanTable;
   /** Offence scores and ban history. */
   readonly #scores: Scores;
+  /** The shared store, if any. */
+  readonly #store: SharedStateStore | undefined;
+  /** The ban log over the shared store. */
+  readonly #banSync: BanSync | undefined;
+  /** The scores' sync over the shared store. */
+  readonly #scoreSync: ScoreSync | undefined;
+  /** The background timers. */
+  readonly #timers: ReturnType<typeof setInterval>[] = [];
+  /** The first load of the bans. */
+  #ready: Promise<void> = Promise.resolve();
+  /** The last write after `close()`. */
+  #final: Promise<void> | undefined;
+  /** Whether the `store.unavailable` warning was raised for the current failure. */
+  #storeWarned = false;
   /** When the `bans.aggregated` warning was last raised. */
   #lastAggregated = Number.NEGATIVE_INFINITY;
   /** Evictions of local state. */
@@ -571,6 +696,27 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         "createSecurity(): throttleStore must be a ThrottleStore, with increment(key, cost, ttl) and get(key)",
       );
     }
+    const shared = options.store;
+    if (
+      shared !== undefined &&
+      (typeof shared !== "object" ||
+        shared === null ||
+        typeof shared.throttle !== "object" ||
+        typeof shared.increment !== "function" ||
+        typeof shared.getMany !== "function" ||
+        typeof shared.health !== "function")
+    ) {
+      throw new ConfigError(
+        "createSecurity(): store must be a SharedStateStore, such as cacheStore(cache) from @kingsleyweb/bun-security/stores",
+      );
+    }
+    const maxPendingBans = options.maxPendingBans ?? 10_000;
+    if (!Number.isSafeInteger(maxPendingBans) || maxPendingBans < 1) {
+      throw new ConfigError(
+        `createSecurity(): maxPendingBans must be a positive whole number; got ${String(maxPendingBans)}`,
+        { maxPendingBans },
+      );
+    }
     this.#policy = compilePolicy(options.policy);
     // Compiled now, so the first request pays nothing for them.
     requestRulesOf(this.#policy);
@@ -586,18 +732,235 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       () => this.#policy.service,
     );
     const counters = store ?? memoryThrottleStore({ maxKeys, now: this.#now });
-    this.#limiter = new Limiter(counters, this.#now, this.#logger);
-    this.#counted = new CountedState(counters, this.#logger);
+    const stores = {
+      local: counters,
+      shared: shared?.throttle,
+      hybrid: shared?.hybrid,
+    };
+    this.#limiter = new Limiter(stores, this.#now, this.#logger, "limit");
+    this.#messageLimiter = new Limiter(
+      stores,
+      this.#now,
+      this.#logger,
+      "message limit",
+    );
+    this.#counted = new CountedState(counters, shared?.throttle, this.#logger);
     this.#bans = new BanTable(() => this.#internals.bans.maxActive);
     this.#scores = new Scores(maxKeys, this.#evictions);
     this.#inFlight = new InFlight(maxKeys, this.#evictions);
     this.#prefix = prefixOf(this.#policy);
+    this.#checkCounted(this.#internals);
     const prepared = this.#limiter.prepare(
       this.#internals.limits,
       this.#prefix,
+      this.#internals.nodes,
+    );
+    const preparedMessages = this.#messageLimiter.prepare(
+      this.#internals.messages?.limits ?? [],
+      `${this.#prefix}:messages`,
+      this.#internals.nodes,
     );
     prepared.commit();
+    preparedMessages.commit();
     this.#limits = prepared.set;
+    this.#messageLimits = preparedMessages.set;
+    this.#store = shared;
+    if (shared !== undefined) {
+      const sink: BanSink = {
+        merge: (ban) => {
+          this.#bans.merge(ban, this.#now());
+        },
+        remove: (id) => {
+          this.#bans.remove(id);
+        },
+        reconcile: (set, complete) => {
+          this.#bans.reconcile(
+            set,
+            complete,
+            (id) => this.#banSync?.pending(id) === true,
+            this.#now(),
+          );
+        },
+        keep: (ban) => this.#keepBan(ban),
+        scope: () => this.#scopeKey(),
+        list: () => this.#bans.list(this.#now()),
+      };
+      this.#banSync = new BanSync(
+        shared,
+        sink,
+        this.#now,
+        this.#logger,
+        maxPendingBans,
+      );
+      this.#scoreSync = new ScoreSync(
+        shared,
+        this.#scores,
+        this.#now,
+        this.#logger,
+        10 * shared.intervals.sync,
+        () => this.#scorePrefix(),
+      );
+      this.#start(shared);
+    }
+  }
+
+  /** Starts the shared store's background work: the first load, the timers, the bus. */
+  #start(shared: SharedStateStore): void {
+    const banSync = this.#banSync;
+    const scoreSync = this.#scoreSync;
+    if (banSync === undefined || scoreSync === undefined) return;
+    const every = (ms: number, run: () => Promise<unknown>): void => {
+      const timer = setInterval(() => {
+        if (this.#closed) return;
+        run().catch((error: unknown) => {
+          this.#logger.error("bun-security: a shared-store task threw", {
+            error,
+          });
+        });
+      }, ms);
+      timer.unref?.();
+      this.#timers.push(timer);
+    };
+    this.#ready = banSync.reload().catch((error: unknown) => {
+      this.#logger.warn(
+        `bun-security: the bans could not be loaded from the shared store "${shared.name}" at start; they will be at the next reconcile`,
+        { error },
+      );
+    });
+    every(shared.intervals.poll, async () => {
+      this.#checkStore();
+      await banSync.write();
+      await banSync.read();
+    });
+    every(shared.intervals.reconcile, async () => {
+      try {
+        await banSync.reload();
+        await banSync.compact();
+      } catch (error) {
+        this.#logger.warn(
+          `bun-security: the bans could not be reconciled with the shared store "${shared.name}"`,
+          { error },
+        );
+      }
+    });
+    every(shared.intervals.sync, () => scoreSync.sync(this.#internals.ladder));
+    if (shared.listen !== undefined) {
+      shared
+        .listen(
+          () => {
+            if (!this.#closed) void banSync.read();
+          },
+          () => {
+            if (!this.#closed) {
+              banSync.reload().catch(() => undefined);
+            }
+          },
+        )
+        .then(
+          (stop) => {
+            if (this.#closed) void stop();
+            else this.#unlisten = stop;
+          },
+          (error: unknown) => {
+            this.#logger.warn(
+              `bun-security: could not listen to the shared store "${shared.name}"'s bus; bans propagate by polling`,
+              { error },
+            );
+          },
+        );
+    }
+  }
+
+  /** Stops listening to the bus. */
+  #unlisten: (() => Promise<void>) | undefined;
+
+  /** Raises `store.unavailable` once the shared store has failed for 30 s; clears it on recovery. */
+  #checkStore(): void {
+    const store = this.#store;
+    if (store === undefined) return;
+    const health = store.health();
+    if (health.healthy) {
+      this.#storeWarned = false;
+      return;
+    }
+    const now = this.#now();
+    const since = health.failingSince;
+    if (this.#storeWarned || since === undefined || now - since < 30_000) {
+      return;
+    }
+    this.#storeWarned = true;
+    this.#warn(
+      Object.freeze({
+        kind: "store.unavailable",
+        message: `bun-security: the shared store "${store.name}" has been failing for ${Math.round((now - since) / 1000)} s; limits run as their onStoreError says and bans apply from memory`,
+        service: this.#policy.service,
+        minutes: Math.max(1, Math.round((now - since) / 60_000)),
+        share: 1,
+        since,
+      }),
+    );
+  }
+
+  /**
+   * Refuses a policy whose counted rules need a shared store the engine
+   * lacks (`state: "shared"`).
+   */
+  #checkCounted(internals: PolicyInternals): void {
+    if (this.#options.store !== undefined) return;
+    const rule = internals.countedRules.find((r) => r.state === "shared");
+    if (rule !== undefined) {
+      throw new ConfigError(
+        `bun-security: counted rule "${rule.id}" counts in the shared store (state "shared"), but the engine has none: give createSecurity a store, such as cacheStore(cache) from @kingsleyweb/bun-security/stores`,
+        { rule: rule.id },
+      );
+    }
+  }
+
+  /**
+   * Whether a ban applies here: not one this service's counted rule wrote
+   * when the policy in force has removed that rule or turned it off.
+   */
+  #keepBan(ban: Ban): boolean {
+    // Another scope's ban (state.scope) never applies here.
+    if (scopeKey(ban) !== this.#scopeKey()) return false;
+    if (
+      ban.source !== "auto" ||
+      ban.rule === undefined ||
+      !ban.rule.startsWith("counted:") ||
+      ban.service !== this.#policy.service
+    ) {
+      return true;
+    }
+    const id = ban.rule.slice("counted:".length);
+    return this.#internals.countedRules.some(
+      (rule) => rule.id === id && rule.mode === "enforce",
+    );
+  }
+
+  /** This engine's ban scope ({@link scopeKey}): `shared`, or its service's own. */
+  #scopeKey(): string {
+    return this.#internals.scope === "service"
+      ? `service:${this.#policy.service ?? ""}`
+      : "shared";
+  }
+
+  /** What the engine's ban writes carry: its service, and `scope: "service"` when its scope is its own. */
+  #stamp(): { service?: string; scope?: "service" } {
+    return {
+      ...(this.#policy.service === undefined
+        ? {}
+        : { service: this.#policy.service }),
+      ...(this.#internals.scope === "service"
+        ? { scope: "service" as const }
+        : {}),
+    };
+  }
+
+  /** The shared store's key prefix of this engine's scores: none when shared, its service's when its own. */
+  #scorePrefix(): string {
+    return this.#internals.scope === "service"
+      ? `svc:${this.#policy.service ?? ""}:`
+      : "";
   }
 
   get policy(): CompiledPolicy {
@@ -775,21 +1138,37 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     requestRulesOf(compiled);
     const internals = policyInternals(compiled);
     const prefix = prefixOf(compiled);
+    this.#checkCounted(internals);
+    const previous = this.#internals;
+    const before = this.#policy.service;
     // Built first: a refused throttle leaves the old policy in force.
-    const prepared = this.#limiter.prepare(internals.limits, prefix);
+    const prepared = this.#limiter.prepare(
+      internals.limits,
+      prefix,
+      internals.nodes,
+    );
+    const preparedMessages = this.#messageLimiter.prepare(
+      internals.messages?.limits ?? [],
+      `${prefix}:messages`,
+      internals.nodes,
+    );
     prepared.commit();
+    preparedMessages.commit();
     // One assignment each, no await between: a request sees one policy.
     this.#policy = compiled;
     this.#internals = internals;
     this.#limits = prepared.set;
+    this.#messageLimits = preparedMessages.set;
     this.#prefix = prefix;
-    // A counted rule removed or turned off lifts the bans it wrote.
-    const kept = new Set(
-      internals.countedRules
-        .filter((rule) => rule.mode === "enforce")
-        .map((rule) => `counted:${rule.id}`),
-    );
-    this.#bans.prune((rule) => !rule.startsWith("counted:") || kept.has(rule));
+    // A counted rule removed or turned off lifts the bans it wrote here.
+    const scopeChanged =
+      previous.scope !== internals.scope || before !== compiled.service;
+    this.#bans.prune((ban) => this.#keepBan(ban));
+    if (scopeChanged) {
+      // Another scope: its scores start afresh, its bans come from the store.
+      this.#scores.clear();
+      this.#banSync?.reapply();
+    }
     return compiled;
   }
 
@@ -871,26 +1250,212 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         expiresAt: Number.isFinite(length) ? now + length : null,
         ...(input.by === undefined ? {} : { createdBy: input.by }),
         ...(input.code === undefined ? {} : { code: input.code }),
+        ...this.#stamp(),
       },
       now,
     );
     if (outcome.ban === undefined) {
       throw new Error("bun-security: ban(): the ban was not written");
     }
+    this.#banSync?.record({ op: "ban", ban: outcome.ban });
     return outcome.ban;
   }
 
   unban(id: string, options: UnbanOptions = {}): Ban | undefined {
     this.#assertOpen();
-    const lifted = this.#bans.lift(id, options.by, this.#now());
+    const now = this.#now();
+    const lifted = this.#bans.lift(id, options.by, now);
     if (lifted?.source === "auto" && lifted.subject.type === "ip") {
       this.#scores.reset(lifted.subject.value);
+      this.#scoreSync?.reset(lifted.subject.value);
+    }
+    // Lifted everywhere, whether or not this process held it.
+    if (typeof id === "string" && id.length <= 2304) {
+      const scope = this.#scopeKey();
+      this.#banSync?.record({
+        op: "lift",
+        id,
+        at: now,
+        ...(scope === "shared" ? {} : { scope }),
+      });
     }
     return lifted;
   }
 
   bans(): readonly Ban[] {
     return Object.freeze(this.#bans.list(this.#now()));
+  }
+
+  socket(facts: RequestFacts): SocketLimiter {
+    this.#assertOpen();
+    const internals = this.#internals;
+    const now = this.#now();
+    const resolved = resolveClient(facts, internals);
+    const lists = resolved.service?.exempt.has("lists")
+      ? undefined
+      : evaluateLists(
+          internals,
+          resolved.address,
+          resolved.subject.user,
+          resolved.subject.apiKey,
+          listPath(facts.path, internals),
+          now,
+          internals.mode === "dryRun",
+        );
+    const connection: Connection = {
+      subject: resolved.subject,
+      route: requestRoute(facts),
+      flags: flagsOf(lists, resolved.service),
+      tokens: internals.messages?.perConnection?.capacity ?? 0,
+      refilledAt: now,
+      lastBreach: Number.NEGATIVE_INFINITY,
+    };
+    return Object.freeze({
+      message: () => this.#message(connection),
+    });
+  }
+
+  /** One inbound message on `connection` (layers.md L9.5). */
+  #message(connection: Connection): MaybePromise<MessageDecision> {
+    if (this.#closed) return ALLOW_MESSAGE;
+    const internals = this.#internals;
+    const messages = internals.messages;
+    if (
+      messages === undefined ||
+      internals.mode === "off" ||
+      connection.flags.allowAll
+    ) {
+      return ALLOW_MESSAGE;
+    }
+    const now = this.#now();
+    const dry = internals.mode === "dryRun" || messages.mode === "dryRun";
+    const hits: RuleHit[] = [];
+    const breach = (
+      rule: string,
+      reason: string,
+      code: string,
+    ): MessageDecision => {
+      if (dry) {
+        hits.push({
+          layer: "L9",
+          rule,
+          action: "log",
+          wouldHaveBeen: "block",
+          reason: `dry run: ${reason}`,
+        });
+        return { action: "allow", hits: Object.freeze(hits) };
+      }
+      const again = now - connection.lastBreach < messages.breach;
+      connection.lastBreach = now;
+      hits.push({
+        layer: "L9",
+        rule,
+        action: "block",
+        reason: again
+          ? `${reason}; a second breach within ${windowText(messages.breach)}: closed`
+          : reason,
+      });
+      return again
+        ? {
+            action: "close",
+            code: messages.closeCode,
+            reason: code,
+            hits: Object.freeze(hits),
+          }
+        : { action: "drop", hits: Object.freeze(hits) };
+    };
+    // The connection's own bucket.
+    const bucket = messages.perConnection;
+    if (bucket !== undefined) {
+      connection.tokens = Math.min(
+        bucket.capacity,
+        connection.tokens +
+          ((now - connection.refilledAt) * bucket.limit) / bucket.window,
+      );
+      connection.refilledAt = now;
+      if (connection.tokens < 1) {
+        return breach(
+          "message:per-connection",
+          `message rate: ${bucket.limit} per ${windowText(bucket.window)} on the connection`,
+          "rate_limited",
+        );
+      }
+      connection.tokens -= 1;
+    }
+    // Limits per subject across connections.
+    const counting: MaybePromise<[CompiledLimit, LimitCount]>[] = [];
+    const { flags, subject, route } = connection;
+    for (const limit of messages.limits) {
+      const built = this.#messageLimits.get(limit.id);
+      if (built === undefined) continue;
+      if (flags.internal && limit.key.addressOnly) continue;
+      if (
+        flags.service?.exempt.has("globalLimits") &&
+        !limit.appliesToServices
+      ) {
+        continue;
+      }
+      if (!appliesTo(limit.routes, route)) continue;
+      const key = keyOf(limit.key, subject, route);
+      if (key === undefined) continue;
+      counting.push(
+        then(
+          this.#messageLimiter.count(built, limit, key, false),
+          (value): [CompiledLimit, LimitCount] => [limit, value],
+        ),
+      );
+    }
+    if (counting.length === 0) {
+      return hits.length === 0
+        ? ALLOW_MESSAGE
+        : { action: "allow", hits: Object.freeze(hits) };
+    }
+    return then(all(counting), (results): MessageDecision => {
+      for (const [limit, counted] of results) {
+        const rule = `message:${limit.id}`;
+        const limitDry = limit.mode === "dryRun";
+        if (counted.kind === "failed" && counted.mode === "closed") {
+          if (dry || limitDry) {
+            hits.push({
+              layer: "L9",
+              rule,
+              action: "log",
+              wouldHaveBeen: "block",
+              reason: "dry run: the shared store failed: onStoreError closed",
+            });
+            continue;
+          }
+          hits.push({
+            layer: "L9",
+            rule,
+            action: "block",
+            reason: "the shared store failed: onStoreError closed",
+          });
+          return {
+            action: "close",
+            code: 1013,
+            reason: "unavailable",
+            hits: Object.freeze(hits),
+          };
+        }
+        if (counted.kind !== "counted" || !counted.result.limited) continue;
+        const reason = `message limit: ${counted.result.limit} per ${windowText(limit.window)}${counted.via === "local share" ? " (local share)" : ""}`;
+        if (limitDry) {
+          hits.push({
+            layer: "L9",
+            rule,
+            action: "log",
+            wouldHaveBeen: "block",
+            reason: `dry run: ${reason}`,
+          });
+          continue;
+        }
+        return breach(rule, reason, limit.code);
+      }
+      return hits.length === 0
+        ? ALLOW_MESSAGE
+        : { action: "allow", hits: Object.freeze(hits) };
+    });
   }
 
   status(): SecurityStatus {
@@ -913,12 +1478,66 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         scores: this.#scores.size,
         evictions: this.#evictions.total,
         warning: this.#evictions.warning(now),
+        ...(this.#store === undefined ? {} : { store: this.#storeStatus() }),
       }),
     });
   }
 
+  /** The shared store's state. */
+  #storeStatus(): SharedStoreStatus | undefined {
+    const store = this.#store;
+    const banSync = this.#banSync;
+    if (store === undefined || banSync === undefined) return undefined;
+    const health = store.health();
+    const bans = banSync.status();
+    return Object.freeze({
+      name: store.name,
+      healthy: health.healthy,
+      failingSince: health.failingSince,
+      pendingBans: bans.pending,
+      droppedBans: bans.dropped,
+      banCursor: bans.cursor,
+      reconciledAt: bans.reconciledAt,
+      pendingScores: this.#scoreSync?.pending ?? 0,
+    });
+  }
+
+  ready(): Promise<void> {
+    return this.#ready;
+  }
+
+  flush(): Promise<void> {
+    if (this.#final !== undefined) return this.#final;
+    return this.#flush();
+  }
+
+  /** Writes and reads what waits on the shared store; never rejects. */
+  async #flush(): Promise<void> {
+    const banSync = this.#banSync;
+    if (banSync === undefined) return;
+    try {
+      await banSync.write();
+      await this.#scoreSync?.sync(this.#internals.ladder);
+      await this.#store?.flush?.();
+      if (!this.#closed) await banSync.read();
+    } catch (error) {
+      this.#logger.warn("bun-security: flushing to the shared store failed", {
+        error,
+      });
+    }
+  }
+
   close(): void {
+    if (this.#closed) return;
     this.#closed = true;
+    for (const timer of this.#timers.splice(0)) clearInterval(timer);
+    const unlisten = this.#unlisten;
+    this.#unlisten = undefined;
+    if (this.#store !== undefined) {
+      this.#final = this.#flush().then(async () => {
+        await unlisten?.().catch(() => undefined);
+      });
+    }
     this.#inFlight.clear();
     this.#bans.clear();
     this.#scores.clear();
@@ -984,7 +1603,14 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       if (key === undefined) continue;
       counting.push(
         then(
-          this.#counted.count(prefix, rule, key, pass.writes, pass.now),
+          this.#counted.count(
+            prefix,
+            rule,
+            key,
+            pass.writes,
+            pass.now,
+            this.#internals.nodes,
+          ),
           (outcome): readonly [CompiledCountedRule, string, CountOutcome] => [
             rule,
             key,
@@ -1037,7 +1663,10 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
 
   /** Writes a ban, warning when the table is full and widens it. */
   #writeBan(write: BanWrite, now: number): void {
-    const outcome = this.#bans.add(write, now);
+    const outcome = this.#bans.add({ ...write, ...this.#stamp() }, now);
+    if (outcome.ban !== undefined) {
+      this.#banSync?.record({ op: "ban", ban: outcome.ban });
+    }
     if (
       (outcome.aggregated || outcome.ban === undefined) &&
       now - this.#lastAggregated >= 60_000
@@ -1078,7 +1707,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         outcome:
           outcome.count === undefined
             ? `"${event}" not counted: the store failed`
-            : `"${event}" counted: ${outcome.count} of ${rule.threshold} in ${windowText(rule.window)}`,
+            : `"${event}" counted: ${outcome.count} of ${outcome.threshold ?? rule.threshold} in ${windowText(rule.window)}${outcome.threshold !== undefined && outcome.threshold !== rule.threshold ? " (the local share: the shared store failed)" : ""}`,
       });
       return;
     }
@@ -1091,7 +1720,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     const ladder = this.#internals.ladder;
     const length =
       rule.action === "ladder" && ladder
-        ? this.#scores.escalate(banId(subject), now, ladder, writes && !dry)
+        ? this.#escalate(banId(subject), now, ladder, writes && !dry)
         : rule.duration;
     const until = Number.isFinite(length) ? now + length : null;
     const reason = `counted rule: ${rule.threshold} "${event}" in ${windowText(rule.window)}${rule.action === "challenge" ? "; challenge: no challenge provider configured, fell back to block" : ""}`;
@@ -1157,6 +1786,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     let score: number;
     if (writes) {
       score = this.#scores.add(ip, weight, now, ladder);
+      this.#scoreSync?.added(ip, weight);
     } else {
       pass.score = (pass.score ?? this.#scores.get(ip, now, ladder)) + weight;
       score = pass.score;
@@ -1176,7 +1806,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     const subject: BanSubject = { type: "ip", value: ip };
     const length =
       step.duration ??
-      this.#scores.escalate(banId(subject), now, ladder, writes && !dry);
+      this.#escalate(banId(subject), now, ladder, writes && !dry);
     const action: SecurityAction = step.action === "ban" ? "ban" : "block";
     const reason = `ladder: score ${score.toFixed(2)} reached ${step.score} (${source})${step.action === "challenge" ? "; challenge: no challenge provider configured, fell back to block" : ""}`;
     if (!dry && writes) {
@@ -1193,8 +1823,12 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       );
     }
     if (step.action === "ban") {
-      if (writes && !dry) this.#scores.reset(ip);
-      else pass.score = 0;
+      if (writes && !dry) {
+        this.#scores.reset(ip);
+        this.#scoreSync?.reset(ip);
+      } else {
+        pass.score = 0;
+      }
     }
     this.#record(
       pass,
@@ -1210,6 +1844,18 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       this.#banAnswer(undefined, now + length, now),
       deferred,
     );
+  }
+
+  /** {@link Scores.escalate}, with a recorded ban's history synced. */
+  #escalate(
+    id: string,
+    now: number,
+    ladder: NonNullable<PolicyInternals["ladder"]>,
+    record: boolean,
+  ): number {
+    const length = this.#scores.escalate(id, now, ladder, record);
+    if (record) this.#scoreSync?.banned(id);
+    return length;
   }
 
   /** The key a counted rule counts the request under, or `undefined` when it does not apply. */
@@ -1848,7 +2494,9 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   /**
    * Layer L9: counts the request against every limit that applies, through
    * the throttle foundation; adds a hit for each that refuses it (or would,
-   * in dry run). Answers whether an enforced limit refused it.
+   * in dry run), and for a shared store's failure. Answers whether an
+   * enforced limit refused it with a `429` (a `503` of `onStoreError:
+   * "closed"` refuses it too, but is not a `throttled` occurrence).
    */
   #limit(
     limits: readonly CompiledLimit[],
@@ -1856,13 +2504,11 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     pass: Pass,
   ): MaybePromise<boolean> {
     const { subject, route, flags, writes, dryPolicy, trace, run } = pass;
-    const counting: MaybePromise<
-      [CompiledLimit, ThrottleResult | undefined]
-    >[] = [];
+    const counting: MaybePromise<[CompiledLimit, LimitCount]>[] = [];
     for (const limit of limits) {
       if (!inStage(limit, pass.stage)) continue;
-      const handler: ThrottleHandler | undefined = limitSet.get(limit.id);
-      if (handler === undefined) continue;
+      const built = limitSet.get(limit.id);
+      if (built === undefined) continue;
       const skipped =
         flags.allowAll && !limit.evenWhenAllowed
           ? "an allow entry let the request through"
@@ -1892,27 +2538,19 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         });
         continue;
       }
-      let result: MaybePromise<ThrottleResult | undefined>;
-      try {
-        result = this.#limiter.count(handler, key, !writes);
-      } catch {
-        result = undefined;
-      }
       counting.push(
-        then(result, (value): [CompiledLimit, ThrottleResult | undefined] => [
-          limit,
-          value,
-        ]),
+        then(
+          this.#limiter.count(built, limit, key, !writes),
+          (value): [CompiledLimit, LimitCount] => [limit, value],
+        ),
       );
     }
-    const settled = all(counting);
-    const read = (
-      results: [CompiledLimit, ThrottleResult | undefined][],
-    ): boolean => {
+    return then(all(counting), (results) => {
       let throttled = false;
-      for (const [limit, result] of results) {
+      for (const [limit, counted] of results) {
         const rule = `limit:${limit.id}`;
-        if (result === undefined) {
+        const dry = dryPolicy || limit.mode === "dryRun";
+        if (counted.kind === "uncounted") {
           trace?.push({
             layer: "L9",
             check: "limit",
@@ -1921,13 +2559,43 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
           });
           continue;
         }
-        const usage = `${result.used} of ${limit.limit} in ${windowText(limit.window)}`;
+        if (counted.kind === "failed") {
+          const closed = counted.mode === "closed";
+          const reason = `the shared store failed: onStoreError ${counted.mode}`;
+          run.add(
+            dry || !closed
+              ? {
+                  layer: "L9",
+                  rule,
+                  action: "log",
+                  ...(closed ? { wouldHaveBeen: "block" as const } : {}),
+                  reason: dry && closed ? `dry run: ${reason}` : reason,
+                }
+              : { layer: "L9", rule, action: "block", reason },
+            !dry && closed
+              ? {
+                  status: 503,
+                  code: "unavailable",
+                  retryAfter: STORE_RETRY_AFTER,
+                }
+              : undefined,
+          );
+          trace?.push({
+            layer: "L9",
+            check: "limit",
+            rule,
+            outcome: `${reason}: ${closed ? (dry ? "would have refused (dry run)" : "refused, 503") : "let through, not counted"}`,
+          });
+          continue;
+        }
+        const { result, via } = counted;
+        const quota = via === "local share" ? result.limit : limit.limit;
+        const usage = `${result.used} of ${quota} in ${windowText(limit.window)}${via === "local share" ? " (the local share: the shared store failed)" : ""}`;
         if (!result.limited) {
           trace?.push({ layer: "L9", check: "limit", rule, outcome: usage });
           continue;
         }
-        const dry = dryPolicy || limit.mode === "dryRun";
-        const reason = `rate limit: ${limit.limit} per ${windowText(limit.window)}`;
+        const reason = `rate limit: ${quota} per ${windowText(limit.window)}${via === "local share" ? " (local share)" : ""}`;
         run.add(
           dry
             ? {
@@ -1955,18 +2623,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         });
       }
       return throttled;
-    };
-    return settled instanceof Promise
-      ? settled.then(read, () => {
-          // A failing peek (explain): the limits are not known.
-          trace?.push({
-            layer: "L9",
-            check: "limit",
-            outcome: "the store failed: the limits could not be read",
-          });
-          return false;
-        })
-      : read(settled);
+    });
   }
 
   /**

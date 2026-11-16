@@ -148,6 +148,7 @@ assertType<
     | "state.evictions"
     | "bans.aggregated"
     | "canary.used"
+    | "store.unavailable"
   >
 >();
 
