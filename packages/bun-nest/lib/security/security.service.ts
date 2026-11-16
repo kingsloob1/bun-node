@@ -63,6 +63,11 @@ import {
   routeOf,
 } from "@kingsleyweb/bun-security/lib/http/middleware";
 import { carriesStack } from "@kingsleyweb/bun-security/lib/http/scrub";
+import {
+  answerChallenge,
+  completeQuietly,
+  isChallengeAnswer,
+} from "@kingsleyweb/bun-security/lib/serve/challenge";
 import { createState, stateOf } from "@kingsleyweb/bun-security/lib/http/state";
 import { SecurityRefusalException } from "./security.exception";
 
@@ -264,6 +269,7 @@ export class SecurityService {
   #earlyRefusal(
     request: Request,
     decision: Decision,
+    facts?: RequestFacts,
   ): Response | Promise<Response> {
     const withHeaders = (response: Response): Response => {
       void this.#headers?.({
@@ -275,7 +281,11 @@ export class SecurityService {
       });
       return response;
     };
-    const answer = refusalFor(this.#settings, this.#logger, decision, request);
+    // A challenge, when the engine has a challenge flow (layers.md L10.2).
+    const answer = refusalFor(this.#settings, this.#logger, decision, request, {
+      flow: this.security.challenge,
+      facts,
+    });
     return answer instanceof Promise
       ? answer.then(withHeaders)
       : withHeaders(answer);
@@ -310,8 +320,32 @@ export class SecurityService {
         const act = (
           decision: Decision,
         ): Response | undefined | Promise<Response | undefined> => {
+          const flow = security.challenge;
+          if (isChallengeAnswer(flow, decision, request)) {
+            // An answer to a challenge, taken before the body is read; an
+            // admitted one gives its in-flight slot back once answered.
+            const answered = answerChallenge(
+              security,
+              flow,
+              request,
+              facts,
+              this.#logger,
+            );
+            return REFUSING.has(decision.action)
+              ? answered
+              : answered.then((response) => {
+                  completeQuietly(
+                    security,
+                    facts,
+                    decision,
+                    response.status,
+                    this.#logger,
+                  );
+                  return response;
+                });
+          }
           if (REFUSING.has(decision.action)) {
-            return this.#earlyRefusal(request, decision);
+            return this.#earlyRefusal(request, decision, facts);
           }
           const state = createState(request, security);
           state.facts = facts;

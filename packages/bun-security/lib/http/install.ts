@@ -34,6 +34,11 @@ import { requestFacts } from "../engine/facts";
 import type { RequestFacts } from "../engine/facts";
 import { isThenable } from "../engine/maybe";
 import type { Security } from "../engine/security";
+import {
+  answerChallenge,
+  completeQuietly,
+  isChallengeAnswer,
+} from "../serve/challenge";
 import { securityHeaders } from "./headers";
 import type { SecurityHeadersOptions } from "./headers";
 import {
@@ -171,8 +176,20 @@ export async function installSecurity<
     facts: RequestFacts,
     decision: Decision,
   ): Response | undefined | Promise<Response | undefined> => {
+    const flow = security.challenge;
+    if (isChallengeAnswer(flow, decision, request)) {
+      // Answered here, before the body is read: an admitted answer's slot
+      // is given back once it is.
+      const answered = answerChallenge(security, flow, request, facts, logger);
+      return refuses(decision.action)
+        ? answered
+        : answered.then((response) => {
+            completeQuietly(security, facts, decision, response.status, logger);
+            return response;
+          });
+    }
     if (refuses(decision.action)) {
-      return refusalFor(options, logger, decision, request);
+      return refusalFor(options, logger, decision, request, { flow, facts });
     }
     const state = createState(request, security);
     state.facts = facts;

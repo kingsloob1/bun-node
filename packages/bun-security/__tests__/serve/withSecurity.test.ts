@@ -358,6 +358,7 @@ function fixedEngine(decision: Decision): Security<Request> {
   return {
     policy: real.policy,
     closed: false,
+    challenge: undefined,
     evaluate: async () => {
       await Bun.sleep(1);
       return decision;

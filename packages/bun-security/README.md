@@ -11,9 +11,9 @@ from a policy compiled once, before your handler sees it.
 > canonical path, honeypots, canary credentials and trap fields, connection
 > limits, outcome signals, the plain `Bun.serve` integration, and the
 > bun-common adapter integration with security headers and CSRF, shared
-> state across processes (`./stores`) and WebSocket message limits. Request
-> rules, challenges, the sensitive-endpoint profiles and the control plane
-> follow in later PRs.
+> state across processes (`./stores`), WebSocket message limits, request
+> rules, and challenges with bot signals. The sensitive-endpoint profiles
+> and the control plane follow in later PRs.
 
 ```sh
 bun add @kingsleyweb/bun-security
@@ -101,8 +101,11 @@ per-minute gauges.
 ## Lists
 
 Each entry names one subject (`ip`: an address or CIDR range; `user`; `apiKey`
-id) and an action: `allow`, `block`, `challenge` (a `block` until challenge
-providers land) or `drop`. Entries take an `id`, `reason`, `createdBy`,
+id) and an action: `allow`, `block`, `challenge` (see
+[Challenges](#challenges); a `block` without a challenge flow) or `drop`.
+`allow`, `block` and `drop` answer before [bans](#bans) are looked at; a
+`challenge` entry lets the bans decide first, so a banned client gets its
+ban, and only one with no ban is challenged. Entries take an `id`, `reason`, `createdBy`,
 `code`, `expiresAt` (an ISO 8601 timestamp with its time zone), `paths`
 (route prefixes), `scope`, `override`, `locked` and `mode`.
 
@@ -184,7 +187,7 @@ countedRules: [
   app's own: `security.signal(facts, "auth.failure")`.
 - At the threshold the counter is cleared (one burst, one trip) and the key is
   banned (see [Bans](#bans)): `action: "ban"` (the default) or `"challenge"`
-  (a block until challenge providers land) for `duration`, or with
+  (see [Challenges](#challenges)) for `duration`, or with
   `duration: null` until lifted (`security.unban()`, or the rule removed or
   turned off); `action: "ladder"` bans for the ladder's escalating length and
   takes no `duration`. The tripping request is refused too, and the trip adds
@@ -428,8 +431,8 @@ requestRules: {
   with `all`, `any` and `not`.
 - **Actions:** `block` (the default; `status` and `code` choose the answer),
   `ban` (the client address, for `duration`, or the ladder's escalating
-  length), `drop` (no answer), `challenge` (a `block` until challenge
-  providers exist), `log`. `mode: "dryRun"` records what a rule would have
+  length), `drop` (no answer), `challenge` (see
+  [Challenges](#challenges)), `log`. `mode: "dryRun"` records what a rule would have
   done; `off` skips it.
 - **Scoring:** each enforced hit counts the `pattern.hit` event (the managed
   set's `probe.hit`) for counted rules, and adds the rule's `weight` (default
@@ -564,6 +567,80 @@ app.ws("/live", securityWebSocket(security, handlers, {
 
 Messages are handed on in their order. Elsewhere, call
 `security.socket(facts).message()` per message.
+
+## Challenges
+
+A `challenge` (a list entry's, a counted rule's, the ladder's 15-minute
+step, a ban's, a request rule's, the bot signals') asks the client to prove
+it is a browser with a person behind it before it goes on. Give the engine
+a challenge flow from `@kingsleyweb/bun-security/challenge`:
+
+```ts
+import { challenges, powChallenge } from "@kingsleyweb/bun-security/challenge";
+
+const security = createSecurity({
+  policy,
+  challenge: challenges({
+    provider: powChallenge({ secret: process.env.POW_SECRET! }), // or turnstile(), hcaptcha()
+    secret: process.env.CLEARANCE_SECRET!, // signs clearances: 32+ characters, the same on every instance
+  }),
+});
+```
+
+- **Without a flow** every `challenge` is a `block`, as it always was (the
+  hit's reason says so).
+- **A challenged browser** (HTML first in `Accept`) gets a small page under
+  a strict CSP of its own (`default-src 'none'`, scripts by nonce and the
+  provider's origin only, `form-action 'self'`). It posts the answer to
+  `/__bun-security/challenge` (`path`), which verifies it and sends the
+  browser back where it was going with a **clearance cookie**:
+  HMAC-signed, `HttpOnly`, `SameSite=Lax`, `Secure` and `__Host-` over HTTPS,
+  bound to the client's /24 (/64 for IPv6) and a hash of its `User-Agent`,
+  valid 30 minutes (`ttl`). `page` renders your own page instead.
+- **An API client** gets `403` problem+json, `code: "challenge_required"`,
+  with `challenge: { provider, field, path, data }`. It posts
+  `{ "answer": … }` as JSON to `path` and gets `{ clearance, header }`; it
+  sends the token back in `x-security-clearance`.
+- **A cleared client passes challenges, never blocks or bans**: the hit is
+  logged ("challenge passed"), and a ban, a block list entry or a rule that
+  blocks still refuses it.
+- **Answers are signalled**: `challenge.passed` and `challenge.failed`, for
+  a counted rule or the ladder's weights (`weights: { "challenge.failed": 1 }`
+  climbs a bot that keeps failing to a ban).
+- The answer endpoint is taken in the early stage under `installSecurity`
+  and bun-nest's `SecurityModule` (before the body is read by anything
+  else), by `withSecurity`, and by `securityMiddleware` alone. A blocked or
+  banned client's answers are refused, not verified. Under bun-nest, a
+  route-stage challenge (`SecurityGuard`) is still answered with the
+  refusal exception's `challenge_required` and no challenge.
+
+**Providers.** `powChallenge({ secret })` is the built-in proof of work, no
+third party: ALTCHA's v1 wire format (its MIT widget can solve it), bound to
+the client's network, single use, valid 5 minutes (`expiresIn`), harder as
+the request's risk grows (`maxNumber`, default 50,000 tries at risk 0,
+`riskFactor`, `maxNumberCap`). Pass the engine's shared store as `store`
+and an answer is single use across processes too (the local cache decides
+alone while the store fails). It slows a bot farm per request; it does not
+stop a determined one. `turnstile({ siteKey, secret })` and
+`hcaptcha({ siteKey, secret })` verify the widget's token at the provider
+over `fetch` (an injectable `fetch`, a `timeoutMs`), checking `success`, the
+`hostname` (the request's, or `hostnames`) and `action` when set; a network
+failure fails the answer. Your own provider implements `ChallengeProvider`:
+`issue(context)` and `verify(answer, context)`.
+
+**Bot signals** (off unless the policy has a `botSignals` section) add to
+a request's `risk`: `noUserAgent`, `libraryUserAgent` (curl, python-requests,
+Go's, Java's, okhttp, axios, …), `headlessUserAgent`, `missingFetchMetadata`
+(a browser's page request without `Sec-Fetch-Mode`, or any request on a
+`browserPaths` route) and `clientHintsMismatch` (`Sec-CH-UA` beside a
+User-Agent that is not Chromium's), each 1 point (`weights`, `0` for off).
+None refuses alone; `challengeAt` challenges a request whose signals reach
+it, and `mode: "dryRun"` only logs that. They read headers alone, so they
+run in the early stage.
+
+```ts
+botSignals: { challengeAt: 2, browserPaths: ["/app/**"], weights: { headlessUserAgent: 2 } },
+```
 
 ## The policy
 

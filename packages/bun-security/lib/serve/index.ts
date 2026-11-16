@@ -29,6 +29,12 @@ import type { Decision } from "../engine/decision";
 import { requestFacts } from "../engine/facts";
 import type { RequestFacts, SecurityIdentity } from "../engine/facts";
 import type { Security } from "../engine/security";
+import {
+  answerChallenge,
+  challengeResponse,
+  completeQuietly,
+  isChallengeAnswer,
+} from "./challenge";
 import { dropResponse, refusalResponse } from "./respond";
 
 /** The part of a `Bun.serve` server `withSecurity` uses. */
@@ -228,6 +234,24 @@ export function withSecurity<
     if (decision.action === "drop") {
       return dropResponse();
     }
+    const flow = security.challenge;
+    if (isChallengeAnswer(flow, decision, request)) {
+      const answered = answerChallenge(security, flow, request, facts, logger);
+      if (refuses(decision.action)) return answered;
+      // An admitted request took an in-flight slot: give it back.
+      return answered.then((response) => {
+        completeQuietly(security, facts, decision, response.status, logger);
+        return response;
+      });
+    }
+    const challenged = challengeResponse(
+      flow,
+      decision,
+      request,
+      facts,
+      logger,
+    );
+    if (challenged !== undefined) return challenged;
     if (refuses(decision.action)) {
       const render = options.renderBlock;
       return render

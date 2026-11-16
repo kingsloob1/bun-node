@@ -63,6 +63,11 @@ export type {
   StoreHealth,
 } from "./engine/shared";
 export type { EvaluationStage } from "./engine/stages";
+export {
+  BOT_SIGNALS,
+  type BotSignalName,
+  type BotSignalsPolicy,
+} from "./engine/signals";
 export { DEFAULT_MAX_KEYS } from "./engine/state";
 export { DEFAULT_MAX_REGEX_INPUT } from "./rules/compile";
 export { MANAGED_RULE_IDS } from "./rules/managed";
