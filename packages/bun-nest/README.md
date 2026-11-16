@@ -1179,7 +1179,7 @@ none is set.
 |---|---|---|
 | `setOnRequestHook((req, res, done) => …)` | First for every request, before middleware, body parsing and routes (as platform-express) | Yes: it can answer the request itself, or `done(error)` |
 | `setOnResponseHook((req, res) => …)` | After the response is sent (for a `write()` stream, after it ends), as platform-express's `res.on("finish")` | No |
-| `addBeforeWriteHook((context) => …)` | After the response is produced, before anything of it is written | Yes: it can refuse it |
+| `addBeforeWriteHook((context) => …)` | After the response is produced, before anything of it is written, the error handling's answers included | Yes: it can change its headers, replace it, hold it or refuse it |
 | `addBeforeReadHook((request, server) => …)` | First for every request, before the adapter reads anything of it: no body, cookie or query parsed, no middleware, guard or route run | Yes: it can answer it (a `Response`), close the connection (a body that errors), or hold it (a promise) |
 
 `setOnRequestHook` and `setOnResponseHook` are platform-express's, with the
@@ -1193,15 +1193,22 @@ every response the request ends with, those of the adapter's error handling
 except a page `finalhandler` answers when no Nest error handler is
 registered.
 
-`addBeforeWriteHook` is bun-nest's own, made for response validation: it sees
-what an interceptor's `map()` cannot, such as a redirect, a `StreamableFile`, a
-plain `@Res()` response, a not-found answer and the headers the adapter adds.
-The hook gets a context with:
+`addBeforeWriteHook` has bun-common's `addBeforeWriteHook` contract: it sees
+what an interceptor's `map()` and a response's transforms cannot, such as a
+redirect, a `StreamableFile`, a plain `@Res()` response, a not-found answer,
+the headers the adapter adds, and the answers the error handling writes on a
+response of its own (an error in middleware registered on the adapter itself
+or while the body is read, a refused response's, the payload guard's `413`;
+an error in Nest middleware is answered by Nest's exception layer, in phase
+`"response"`). It serves response validation
+and headers every answer must carry. The hook gets a context with:
 
 - `phase`: `"response"`, or `"error"` for a response the error handling
   produced;
-- `status` and `headers`: the native `Response`'s, exactly what will be
-  written. The headers are live; changing them is unsupported;
+- `native`: the native `Response` that will be written, as produced or as the
+  last hook replaced it;
+- `status` and `headers`: `native`'s, exactly what will be written. The
+  headers are live, and a change made in place is written;
 - `body`: the body by kind (`empty`, `json`, `text`, `binary`, `blob`,
   `form`, `response`, `streamable-file` or `stream`), with the value of a
   buffered body. A stream is never read;
@@ -1210,16 +1217,20 @@ The hook gets a context with:
   (`BunBeforeWriteResponseContext | BunBeforeWriteErrorContext`), so a check
   on `phase === "response"` narrows it to the response.
 
-Return to let the response go. Throw, or reject, to refuse it: the response is
-discarded (a `StreamableFile`'s source destroyed) and the error goes to Nest's
-exception layer, so the client gets a `500`, or the status of an
-`HttpException`. None of the refused response's own headers (`Location`,
+Return nothing to let the response go, with any header changed in place. Any other value that is not a `Response` (or a promise of one) is a refusal with a `TypeError`, as in bun-common.
+Return a `Response` to replace it: later hooks see it, and it is written
+instead (the one replaced is not cancelled, so the replacement may reuse its
+body). Throw, or reject, to refuse it: the response is discarded (its body and
+a replacement's cancelled, a `StreamableFile`'s source destroyed) and the
+error goes to Nest's exception layer, so the client gets a `500`, or the status
+of an `HttpException`. None of the refused response's own headers (`Location`,
 `Set-Cookie`, `Content-*`, `ETag`, `Last-Modified`) reach that answer; its
 request-wide ones (CORS, `Vary`, a security hook's) do. A returned promise holds
 the response, unwritten, until it settles; past the adapter's
 `requestTimeout`, when one is set, the hold fails as a stuck handler does. A
-throw in phase `"error"` is logged and the response sent, so a check cannot
-loop. A `write()` stream is checked as it opens, before its first byte; its
+throw in phase `"error"` is logged and the response sent as the hooks before
+it left it, so a check cannot loop; changes and replacements apply there as in
+phase `"response"`. A `write()` stream is checked as it opens, before its first byte; its
 chunks are not. `HEAD` is checked as the GET it reuses. Hooks run in
 registration order, and the first refusal wins. `addBeforeWriteHook` returns a
 function that removes the hook.
@@ -1238,6 +1249,10 @@ adapter.addBeforeWriteHook(({ phase, status, headers }) => {
   if (phase === "response" && status === 302 && !headers.get("location")?.startsWith("/app")) {
     throw new Error("redirect outside /app");
   }
+});
+// Every answer, an error's included, carries the header.
+adapter.addBeforeWriteHook(({ headers }) => {
+  headers.set("x-content-type-options", "nosniff");
 });
 
 const app = await NestFactory.create(AppModule, adapter);
@@ -4618,7 +4633,8 @@ dependencies with `@Inject`, so a subclass of it injects on a cold boot
 without emitted metadata. `selfTest: false` turns the self-test off.
 
 The security headers and scrubbing ride on bun-common's response transforms,
-because `addBeforeWriteHook` may only refuse a response: they reach every
+which predate `addBeforeWriteHook`'s ability to change a response
+(bun-node#801): they reach every
 answer written on the request's response (a route's, Nest's not-found and
 exception answers, an early refusal), not one the adapter's own error
 handling writes on a fresh response (an error in middleware or body

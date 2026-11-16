@@ -14,6 +14,7 @@ import type { WebSocketAdapter, WsMessageHandler } from "@nestjs/common";
 import type { AbstractHttpAdapter } from "@nestjs/core/adapters/http-adapter";
 import type { Observable } from "rxjs";
 import type {
+  BunBeforeWriteHook,
   MiddlewareFactoryRespType,
   RenderOptions,
 } from "../lib/BunHttpAdapter";
@@ -267,3 +268,31 @@ const _binaryAck: MessageBinaryAckType<[Buffer]> = {
 };
 
 export {};
+
+// --- addBeforeWriteHook: bun-common's contract (bun-node#801) --------------
+// A hook may pass, replace (a Response or a promise of one), or hold; the
+// context exposes the native response, and every phase has a request.
+http.addBeforeWriteHook((context) => {
+  context.headers.set("x-content-type-options", "nosniff");
+  const native: Response = context.native;
+  void native;
+});
+http.addBeforeWriteHook((context) =>
+  context.phase === "error" ? new Response("scrubbed") : undefined,
+);
+http.addBeforeWriteHook(async (context) => {
+  await Promise.resolve();
+  return context.status >= 500 ? new Response("held") : undefined;
+});
+// Hooks written to the earlier contract still fit.
+const legacy: (context: Parameters<BunBeforeWriteHook>[0]) => void = () =>
+  undefined;
+http.addBeforeWriteHook(legacy);
+export type BeforeWriteReturnOk = Expect<
+  Equal<
+    ReturnType<BunBeforeWriteHook>,
+    Response | void | PromiseLike<Response | void>
+  >
+>;
+// @ts-expect-error -- a hook returns a Response, not a body
+http.addBeforeWriteHook(() => "replaced");
