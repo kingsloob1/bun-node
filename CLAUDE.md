@@ -43,8 +43,11 @@ published packages under `packages/`:
   milestone M1: `createSecurity` decides each request locally from a
   compiled policy (client identity on bun-common's trust-proxy foundation,
   service identity, the trust check, allow and deny lists over a CIDR trie,
-  dry run, `explain()`); `./serve` wraps a plain `Bun.serve`. Bun only;
-  bun-common is its one runtime dependency.
+  dry run, `explain()`); `./serve` wraps a plain `Bun.serve`; `./store` holds
+  durable configuration (`memoryStore`, `sqliteStore`, the read-only
+  `policyFile`) and `createSecurity` can follow a policy kept there; its
+  conformance kit is `./testing`. Bun only; bun-common and bun-sql are its
+  runtime dependencies.
 - **`@kingsleyweb/bun-sql`** — the SQL layer bun-jobs, bun-cache and
   bun-security share ([storage.md §4](docs/plans/bun-security/storage.md),
   PR-D0a): the four engines' dialects, table definitions rendered to DDL,

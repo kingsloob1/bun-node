@@ -164,6 +164,18 @@ describe("package.json exports", () => {
     }
   });
 
+  it("gives the security store ./store, and its kit ./testing (PR-D1)", () => {
+    for (const area of ["store", "testing"]) {
+      for (const key of [`./${area}`, `./lib/${area}`]) {
+        expect(manifest.exports[key]).toEqual({
+          "@kingsleyweb/source": `./lib/${area}/index.ts`,
+          types: `./dts/${area}/index.d.ts`,
+          default: `./lib/${area}/index.ts`,
+        });
+      }
+    }
+  });
+
   it("checks every literal subpath in the consumer check", () => {
     const spellings = new Set(
       checkConfig.entries?.map((entry) => entry.spelling),
@@ -192,18 +204,22 @@ describe("what scripts/publish.ts requires of a new package (docs/releasing.md)"
     expect(existsSync(join(ROOT, "LICENSE"))).toBe(true);
   });
 
-  it("declares sideEffects false (proved by treeShaking.test.ts)", () => {
-    expect(manifest.sideEffects).toBe(false);
+  it("declares sideEffects as the one module that runs at load (proved by treeShaking.test.ts)", () => {
+    expect(manifest.sideEffects).toEqual([
+      "./lib/testing/crossprocess-worker.ts",
+    ]);
   });
 });
 
 describe("this package's dependencies", () => {
   // Every module's declarations import bun-common (trust-proxy types, the
-  // duration type, ConfigError); a declaration must never import an
-  // undeclared package, so it is a runtime dependency.
-  it("declares bun-common as a runtime dependency on workspace:^, and nothing else", () => {
+  // duration type, ConfigError), and the store's import bun-sql (its sync
+  // types, sqliteStore's dialect); a declaration must never import an
+  // undeclared package, so both are runtime dependencies.
+  it("declares bun-common and bun-sql as runtime dependencies on workspace:^, and nothing else", () => {
     expect(manifest.dependencies).toEqual({
       "@kingsleyweb/bun-common": "workspace:^",
+      "@kingsleyweb/bun-sql": "workspace:^",
     });
   });
 

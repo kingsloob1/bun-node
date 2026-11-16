@@ -118,15 +118,15 @@ function runsAtLoad(source: string): boolean {
 }
 
 describe("sideEffects", () => {
-  it("is false, and no module runs anything at load", async () => {
+  it("lists exactly the modules that run at load: the store kit's cross-process worker", async () => {
     const found: string[] = [];
     for await (const file of new Glob("**/*.ts").scan(join(ROOT, "lib"))) {
       if (runsAtLoad(readFileSync(join(ROOT, "lib", file), "utf8"))) {
         found.push(`./lib/${file}`);
       }
     }
-    expect(found).toEqual([]);
-    expect(MANIFEST.sideEffects).toBe(false);
+    expect(found).toEqual(["./lib/testing/crossprocess-worker.ts"]);
+    expect(MANIFEST.sideEffects).toEqual(found);
   });
 
   it("negative control: the reader sees a statement that runs at load", () => {

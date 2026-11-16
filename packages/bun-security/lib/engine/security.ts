@@ -138,12 +138,22 @@ import type { CheckKind } from "../sensitive/identifiers";
 import { cookieValue, Keyring } from "../sensitive/keys";
 import { LoginDefences } from "../sensitive/login";
 import { SecurityRefusal } from "../sensitive/refusal";
+import type { PolicyFromStore, PolicySourceStatus } from "../store/follow";
+import { isPolicyFromStore, PolicyFollower } from "../store/follow";
 import type { SecurityWarning, TrustStatus } from "./trust";
 
 /** Options for {@link createSecurity}. */
 export interface CreateSecurityOptions<TRequest = Request> {
-  /** The policy: a {@link SecurityPolicy}, compiled here, or a compiled one. */
-  readonly policy: SecurityPolicy | CompiledPolicy;
+  /**
+   * The policy: a {@link SecurityPolicy}, compiled here, or a compiled one;
+   * or a policy kept in a security store, `{ store, id }` (`./store`:
+   * `policyFile`, `sqliteStore`, `memoryStore`), which the engine loads and
+   * follows (storage.md §6). From a store, the engine starts on the
+   * last-known-good file's policy (or an empty one) and `ready()` resolves
+   * once the store's has been tried; a version it refuses is never swapped
+   * in (`policy.refused`).
+   */
+  readonly policy: SecurityPolicy | CompiledPolicy | PolicyFromStore;
   /**
    * Who the app says is calling (plan §4.2): user, session, tenant, API key
    * id. The integration calls it with its own request and puts the answer
@@ -370,6 +380,8 @@ export interface StateStatus {
 export interface SecurityStatus {
   /** The policy in force. */
   readonly policy: CompiledPolicy;
+  /** Where the policy came from, when it is followed in a store (`createSecurity`'s `policy: { store }`). */
+  readonly policySource?: PolicySourceStatus;
   /** The trust check's gauges and warnings. */
   readonly trust: TrustStatus;
   /** The local state's sizes and evictions. */
@@ -889,6 +901,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   readonly #timers: ReturnType<typeof setInterval>[] = [];
   /** The first load of the bans. */
   #ready: Promise<void> = Promise.resolve();
+  /** The follower of a policy kept in a store, when the policy is one. */
+  readonly #follower: PolicyFollower | undefined;
   /** The last write after `close()`. */
   #final: Promise<void> | undefined;
   /** Whether the `store.unavailable` warning was raised for the current failure. */
@@ -962,7 +976,12 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         { maxPendingBans },
       );
     }
-    this.#policy = compilePolicy(options.policy);
+    const source = isPolicyFromStore(options.policy)
+      ? options.policy
+      : undefined;
+    this.#follower =
+      source === undefined ? undefined : this.#followerOf(source);
+    this.#policy = this.#initialPolicy(options.policy);
     checkIntel(this.#policy, options.intel, "createSecurity()");
     // Compiled now, so the first request pays nothing for them.
     requestRulesOf(this.#policy);
@@ -1101,7 +1120,61 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       );
       this.#start(shared);
     }
+    if (this.#follower !== undefined) {
+      const started = this.#follower.start();
+      const bans = this.#ready;
+      this.#ready = Promise.all([bans, started]).then(() => undefined);
+    }
     this.#reportConflicts();
+  }
+
+  /** The follower of a policy kept in a store; see `lib/store/follow.ts`. */
+  #followerOf(source: PolicyFromStore): PolicyFollower {
+    const now = (): number => (this.#options.now ?? Date.now)();
+    const logger = (): Logger => this.#logger;
+    return new PolicyFollower(source, {
+      load: (policy) => {
+        this.load(policy as SecurityPolicy);
+      },
+      warn: (kind, message, since) => {
+        this.#warn(
+          Object.freeze({
+            kind,
+            message,
+            service: this.#policy.service,
+            minutes: Math.max(1, Math.round((now() - since) / 60_000)),
+            share: 1,
+            since,
+          }),
+        );
+      },
+      get logger() {
+        return logger();
+      },
+      now,
+    });
+  }
+
+  /**
+   * The policy to start on: the one given, compiled; from a store, the
+   * last-known-good file's (an empty one without, or when it is refused).
+   */
+  #initialPolicy(
+    policy: SecurityPolicy | CompiledPolicy | PolicyFromStore,
+  ): CompiledPolicy {
+    const follower = this.#follower;
+    if (follower === undefined) {
+      return compilePolicy(policy as SecurityPolicy | CompiledPolicy);
+    }
+    const initial = follower.initial();
+    if (initial !== undefined) {
+      try {
+        return compilePolicy(initial as SecurityPolicy);
+      } catch {
+        follower.initialRefused();
+      }
+    }
+    return compilePolicy({});
   }
 
   /** Starts the shared store's background work: the first load, the timers, the bus. */
@@ -2307,6 +2380,9 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     const active = this.#bans.list(now);
     return Object.freeze({
       policy: this.#policy,
+      ...(this.#follower === undefined
+        ? {}
+        : { policySource: this.#follower.status() }),
       trust: this.#trust.status(
         now,
         this.#internals.trustCheck,
@@ -2374,6 +2450,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#follower?.stop();
     for (const timer of this.#timers.splice(0)) clearInterval(timer);
     const unlisten = this.#unlisten;
     this.#unlisten = undefined;

@@ -151,6 +151,8 @@ assertType<
     | "store.unavailable"
     | "login.risky-success"
     | "crawler.conflict"
+    | "policy.refused"
+    | "policy.unavailable"
   >
 >();
 

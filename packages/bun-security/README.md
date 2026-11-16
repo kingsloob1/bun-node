@@ -14,15 +14,17 @@ from a policy compiled once, before your handler sees it.
 > state across processes (`./stores`), WebSocket message limits, request
 > rules, challenges with bot signals, the sensitive endpoints (sign-in,
 > codes, resets: presets, the login defences, device cookies, identifier
-> checks), IP intelligence (`./intel`), verified crawlers, and API keys. The
-> control plane follows in later PRs.
+> checks), IP intelligence (`./intel`), verified crawlers, API keys, and
+> the security store (`./store`: a policy from a file or a SQLite database,
+> followed as it changes). The control plane follows in later PRs.
 
 ```sh
 bun add @kingsleyweb/bun-security
 ```
 
-Bun 1.4.2 or later. Its one runtime dependency is `@kingsleyweb/bun-common`;
-`./stores` needs `@kingsleyweb/bun-cache` (an optional peer).
+Bun 1.4.2 or later. Its runtime dependencies are `@kingsleyweb/bun-common`
+and `@kingsleyweb/bun-sql` (the store's SQL layer); `./stores` needs
+`@kingsleyweb/bun-cache` (an optional peer).
 
 ## A plain `Bun.serve`
 
@@ -937,6 +939,81 @@ tell "upgrade needed" from "malformed". `securityPolicySchema` is
 the same validation as a [Standard Schema](https://standardschema.dev).
 `security.load(policy)` swaps a new policy in at once, keeping the old one if
 the new one is refused.
+
+## A policy from a file or a store
+
+`createSecurity`'s `policy` can name a policy kept in a security store
+(`./store`) instead of holding one, and the engine follows it as it changes
+(storage.md §6 in the plan):
+
+```ts
+import { createSecurity } from "@kingsleyweb/bun-security";
+import { policyFile, sqliteStore } from "@kingsleyweb/bun-security/store";
+
+// GitOps: a reviewed JSON file in the app's repository, reloaded when it changes.
+const security = createSecurity({
+  policy: { store: policyFile("./security.json"), lastKnownGood: "./.security-lkg.json" },
+});
+await security.ready(); // the file's policy is in force
+
+// Or published versions in a SQLite file several processes share.
+const shared = createSecurity({ policy: { store: sqliteStore({ path: "./security.sqlite" }), id: "checkout" } });
+```
+
+- **Following.** The engine loads the policy's head version, then follows the
+  store's change feed: pushed where the store can (`policyFile`,
+  `memoryStore`), polled every 250 ms where it cannot (`sqliteStore`,
+  `pollIntervalMs`), and reconciled with the head every 60 s whatever the feed
+  said (`reconcileIntervalMs`).
+- **A refused version is never swapped in.** A version that does not compile
+  leaves the last known good policy in force, raises one `policy.refused`
+  warning, and is not retried; the next good version loads. A failing store
+  raises `policy.unavailable` once and changes nothing.
+- **Last known good on disk** (`lastKnownGood: path`): every policy the
+  engine accepts is written there atomically, mode `0600`, and read first at
+  start, so a restart during a store outage enforces what was enforced
+  before. Without it, the engine starts on an empty policy until the store
+  answers; `ready()` resolves once the store has been tried.
+- `security.status().policySource` says which version is in force, whether
+  it came from the last-known-good file, what was refused, and whether the
+  store is failing.
+
+### The store
+
+A security store holds documents with revisions (services, groups, operators,
+list entries, … by kind), each policy's published versions with a head moved
+by compare-and-set, and a change feed every write appends to in the same
+transaction:
+
+```ts
+const store = sqliteStore({ path: "./security.sqlite" });
+const read = await store.get("service", "checkout");
+const written = await store.put("service", "checkout", { owner: "payments" }, read?.revision ?? null);
+if (!written.ok) console.log("changed meanwhile:", written.conflict); // re-read and retry
+
+await store.appendVersion("checkout", { id: "v2", policy, createdBy: "ann" }, "v1"); // ok: false if the head moved
+const page = await store.list("service", { limit: 50, sort: "updatedAt", direction: "desc" });
+const next = await store.list("service", { limit: 50, sort: "updatedAt", direction: "desc", cursor: page.next });
+const { changes, head } = await store.changesSince(0n, 100);
+```
+
+| Store | Durable | Processes | Change feed | Notes |
+|---|---|---|---|---|
+| `memoryStore()` | no | one | pushed | tests, examples, one process |
+| `sqliteStore({ path })` | yes | several on one host (WAL) | polled | bun-sql's SQLite dialect; `syncSchema` on connect or by call; a `codec` encodes every body at rest (where field sealing plugs in) |
+| `policyFile(path)` | the file | one | pushed (file watching) | read-only: one policy, every write refused |
+
+- **Optimistic concurrency.** Every `put` names the revision it read (`null`:
+  it must not exist yet); a stale one answers `{ ok: false, conflict }` with
+  the document as it is now. `appendVersion` names the head it was based on
+  the same way. Two writers never both win.
+- **Pages** are keyset pages: `next` is an opaque cursor bound to its walk
+  (the kind, sort, direction and prefix); used with another walk it is
+  refused, never read as page one.
+- **`./testing`** has `runSecurityStoreConformance(name, factory, options)`,
+  the `bun:test` suite every store passes (and a third-party one must), with
+  a two-process race for a `multiProcess` store, and `faultyStore(store,
+  { fail, delayMs })` for testing what an engine does when its store fails.
 
 ## Deciding and explaining
 
