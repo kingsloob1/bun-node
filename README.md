@@ -39,9 +39,10 @@ prefer Bun and native APIs over third-party dependencies.
 | [bun-client](packages/bun-client/README.md) | `@kingsleyweb/bun-client` | A typed HTTP client for these servers, with no dependency and safe in a browser: one call per verb keyed by the server's own path literal, named operations, results discriminated by status, retries with `Retry-After`, timeouts, middleware and single-flight auth refresh; `./query` puts the routes on TanStack's query-core (an optional peer) with cache tags, `ETag` revalidation and optimistic updates. |
 | [bun-cache](packages/bun-cache/README.md) | `@kingsleyweb/bun-cache` | Caching over pluggable drivers: one typed API (TTLs, tags, single-flight, stale-while-revalidate, counters, an L1 memory tier kept coherent by a bus) over memory, file, SQLite, Postgres, MySQL, MariaDB, Redis, MongoDB, S3, Azure Blob Storage and Cloudflare drivers, an HTTP response cache for bun-common and a Keyv store. |
 | [bun-security](packages/bun-security/README.md) | `@kingsleyweb/bun-security` | A request-defence engine for Bun services, being built (plan [`bun-security`](docs/plans/bun-security/README.md), milestone M1): a policy compiled once and decided locally per request, client identity on bun-common's trusted-proxy foundation (IPv6 keyed by /64, service identities, trust misconfiguration detection), allow and deny lists over a CIDR trie with a built-in internal never-block list, rate limits on bun-common's throttle foundation, counted rules, bans with an offence score and escalation ladder, request shape on a canonical path, honeypots and canary credentials, connection limits and outcome signals, dry run and `explain()`; `./serve` protects and hardens a plain `Bun.serve`. |
+| [bun-sql](packages/bun-sql/README.md) | `@kingsleyweb/bun-sql` | The SQL layer the other packages share: one dialect per engine (Postgres, MySQL, MariaDB, SQLite), table and index definitions rendered to DDL, a schema sync that adds what is missing and changes only what cannot stall a running service unless asked, connection helpers, opaque keyset page cursors and a MongoDB index sync, one subpath per area. |
 | [bun-ui](packages/bun-ui/README.md) | `@kingsleyweb/bun-ui` | Every browser UI of the repo in one package, one subpath each: `@kingsleyweb/bun-ui/jobs` is the React management UI for bun-jobs' management API, served by a `jobsUi()` router that mounts beside `createJobsApi` (bun-jobs is an optional peer only that subpath needs); `@kingsleyweb/bun-ui/docs` is a self-hosted viewer for one OpenAPI 3.1 or AsyncAPI 3.0 document, served by a `docsUi()` handler under a strict self-only CSP. |
 
-bun-nest, bun-jobs, bun-cache, bun-security and bun-ui depend on
+bun-nest, bun-jobs, bun-cache, bun-security, bun-sql and bun-ui depend on
 bun-common, which depends on bun-contract; bun-client depends on bun-contract
 alone.
 
@@ -198,7 +199,8 @@ bun-node/
 │   ├── bun-nest/          # NestJS adapter: lib/, __tests__/
 │   ├── bun-jobs/          # jobs and queues: lib/, __tests__/, bench/ (its own package)
 │   ├── bun-client/        # the typed HTTP client, no dependency: lib/, __tests__/
-│   └── bun-security/      # the request-defence engine: lib/, __tests__/
+│   ├── bun-security/      # the request-defence engine: lib/, __tests__/
+│   └── bun-sql/           # the shared SQL layer: lib/, __tests__/
 ├── examples/
 │   ├── bun-common/        # one runnable project per package
 │   ├── bun-nest/

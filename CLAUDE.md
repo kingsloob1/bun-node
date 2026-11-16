@@ -45,6 +45,14 @@ published packages under `packages/`:
   service identity, the trust check, allow and deny lists over a CIDR trie,
   dry run, `explain()`); `./serve` wraps a plain `Bun.serve`. Bun only;
   bun-common is its one runtime dependency.
+- **`@kingsleyweb/bun-sql`** — the SQL layer bun-jobs, bun-cache and
+  bun-security share ([storage.md §4](docs/plans/bun-security/storage.md),
+  PR-D0a): the four engines' dialects, table definitions rendered to DDL,
+  the schema sync and collation guard, connection helpers, keyset cursors and
+  a MongoDB index sync, one subpath per area. Extracted from bun-jobs and
+  bun-cache, which still keep their own copies until PR-D0b and PR-D0c move
+  them onto it (`__tests__/parity/` compares the copies). Bun only;
+  bun-common is its one runtime dependency, `mongodb` an optional peer.
 
 Each package: `lib/` source, `__tests__/` (bun:test), a `bun check`
 typecheck (`bun run check`), and `bun lint` plus `bun fmt --check` against
@@ -120,7 +128,7 @@ bun run test               # type-check the tests, then run them in parallel —
 **Lint and format, since PR E of [bun-lint-fmt](docs/plans/bun-lint-fmt/README.md)
 §7.** The gate is `bun run lint` (`bun lint`; in a `lint` script it is the
 linter) and `bun run format:check` (`bun fmt --check`), two steps (Q6), in each
-of the 17 directories with a `lint` script (the eight packages, the five
+of the 18 directories with a `lint` script (the nine packages, the five
 `examples/*`, `playground/`, `benchmarks/`, `templates/compute-provider/` and
 `tools/vscode-bun-lint/`), `bun run lint:scripts` and
 `bun run format:check:scripts` from the root for `scripts/`, and
@@ -1156,12 +1164,12 @@ in the package `.gitignore`, and `./scripts/**/*` in its `tsconfig.json`
   for the whole package: `false`, or the exact modules with an effect at
   load (bun-ui `["**/*.css", "./app/*/main.tsx"]`; bun-common its four
   `lib/contract/` modules that install the logger resolution; bun-jobs and
-  bun-cache their process and thread entries; bun-security `false`; bun-nest `false`, its decorators
+  bun-cache their process and thread entries; bun-security and bun-sql `false`; bun-nest `false`, its decorators
   applied by call staying on classes in their own module). A module that only
   re-exports drops its bare imports with it, so the importer of an effect
   module is listed too. The check is each package's
-  `__tests__/treeShaking.test.ts`, in all eight: `Bun.build` a one-export app
-  (bun-jobs, bun-cache, bun-nest and bun-security target Bun), assert its bytes stay under a
+  `__tests__/treeShaking.test.ts`, in all nine: `Bun.build` a one-export app
+  (bun-jobs, bun-cache, bun-nest, bun-security and bun-sql target Bun), assert its bytes stay under a
   measured bound, and that each listed effect survives, with negative controls
   on a copy of the package with the field removed or narrowed. Bun at run time
   ignores the field, so no other suite can show it wrong, and a wrong `false`

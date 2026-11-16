@@ -1,0 +1,175 @@
+{
+  "name": "@kingsleyweb/bun-sql",
+  "type": "module",
+  "version": "3.2.0",
+  "private": false,
+  "description": "The SQL layer bun-jobs, bun-cache and bun-security share: one dialect per engine (Postgres, MySQL, MariaDB, SQLite) answering what each does its own way, table and index definitions rendered to DDL, a schema sync that adds what is missing and changes only what cannot stall a running service unless asked, a collation guard, connection helpers (MySQL's allowPublicKeyRetrieval passed as the option Bun honours, transient-lock retries), opaque keyset page cursors bound to their walk, and a MongoDB index sync",
+  "author": "okafor obinna <kingsloob1@gmail.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-sql#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kingsloob1/bun-node.git",
+    "directory": "packages/bun-sql"
+  },
+  "bugs": {
+    "url": "https://github.com/kingsloob1/bun-node/issues"
+  },
+  "keywords": [
+    "bun",
+    "sql",
+    "postgres",
+    "mysql",
+    "mariadb",
+    "sqlite",
+    "mongodb",
+    "schema",
+    "migration",
+    "schema-sync",
+    "keyset",
+    "cursor"
+  ],
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "@kingsleyweb/source": "./lib/index.ts",
+      "types": "./dts/index.d.ts",
+      "default": "./lib/index.ts"
+    },
+    "./lib": {
+      "@kingsleyweb/source": "./lib/index.ts",
+      "types": "./dts/index.d.ts",
+      "default": "./lib/index.ts"
+    },
+    "./dialect": {
+      "@kingsleyweb/source": "./lib/dialect/index.ts",
+      "types": "./dts/dialect/index.d.ts",
+      "default": "./lib/dialect/index.ts"
+    },
+    "./lib/dialect": {
+      "@kingsleyweb/source": "./lib/dialect/index.ts",
+      "types": "./dts/dialect/index.d.ts",
+      "default": "./lib/dialect/index.ts"
+    },
+    "./schema": {
+      "@kingsleyweb/source": "./lib/schema/index.ts",
+      "types": "./dts/schema/index.d.ts",
+      "default": "./lib/schema/index.ts"
+    },
+    "./lib/schema": {
+      "@kingsleyweb/source": "./lib/schema/index.ts",
+      "types": "./dts/schema/index.d.ts",
+      "default": "./lib/schema/index.ts"
+    },
+    "./sync": {
+      "@kingsleyweb/source": "./lib/sync/index.ts",
+      "types": "./dts/sync/index.d.ts",
+      "default": "./lib/sync/index.ts"
+    },
+    "./lib/sync": {
+      "@kingsleyweb/source": "./lib/sync/index.ts",
+      "types": "./dts/sync/index.d.ts",
+      "default": "./lib/sync/index.ts"
+    },
+    "./cursor": {
+      "@kingsleyweb/source": "./lib/cursor/index.ts",
+      "types": "./dts/cursor/index.d.ts",
+      "default": "./lib/cursor/index.ts"
+    },
+    "./lib/cursor": {
+      "@kingsleyweb/source": "./lib/cursor/index.ts",
+      "types": "./dts/cursor/index.d.ts",
+      "default": "./lib/cursor/index.ts"
+    },
+    "./connection": {
+      "@kingsleyweb/source": "./lib/connection/index.ts",
+      "types": "./dts/connection/index.d.ts",
+      "default": "./lib/connection/index.ts"
+    },
+    "./lib/connection": {
+      "@kingsleyweb/source": "./lib/connection/index.ts",
+      "types": "./dts/connection/index.d.ts",
+      "default": "./lib/connection/index.ts"
+    },
+    "./mongo": {
+      "@kingsleyweb/source": "./lib/mongo/index.ts",
+      "types": "./dts/mongo/index.d.ts",
+      "default": "./lib/mongo/index.ts"
+    },
+    "./lib/mongo": {
+      "@kingsleyweb/source": "./lib/mongo/index.ts",
+      "types": "./dts/mongo/index.d.ts",
+      "default": "./lib/mongo/index.ts"
+    },
+    "./lib/*.ts": {
+      "@kingsleyweb/source": "./lib/*.ts",
+      "types": "./dts/*.d.ts",
+      "default": "./lib/*.ts"
+    },
+    "./lib/*.js": {
+      "@kingsleyweb/source": "./lib/*.ts",
+      "types": "./dts/*.d.ts",
+      "default": "./lib/*.ts"
+    },
+    "./lib/*": {
+      "@kingsleyweb/source": "./lib/*.ts",
+      "types": "./dts/*.d.ts",
+      "default": "./lib/*.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "lib/index.ts",
+  "types": "dts/index.d.ts",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "directories": {
+    "lib": "lib",
+    "test": "__tests__"
+  },
+  "files": [
+    "dts",
+    "lib"
+  ],
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "scripts": {
+    "build:types": "bun scripts/build-declarations.ts",
+    "bun-version": "bun --version",
+    "prepack": "bun scripts/build-declarations.ts",
+    "test": "bun test --check --parallel --timings=bun-timings.json",
+    "test:serial": "bun test --check",
+    "test:timings": "rm -f bun-timings.json && bun test --check --parallel --timings=bun-timings.json --update-timings",
+    "check": "bun check",
+    "lint": "bun lint",
+    "format": "bun fmt",
+    "format:check": "bun fmt --check"
+  },
+  "dependencies": {
+    "@kingsleyweb/bun-common": "workspace:^"
+  },
+  "peerDependencies": {
+    "@types/bun": ">=1.4.2",
+    "mongodb": ">=6",
+    "typescript": "^5.9.3 || ^6.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@types/bun": {
+      "optional": true
+    },
+    "mongodb": {
+      "optional": true
+    },
+    "typescript": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "bun-types": "catalog:",
+    "mongodb": "catalog:",
+    "typescript": "catalog:"
+  }
+}

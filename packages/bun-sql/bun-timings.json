@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "files": {
+    "__tests__/engines/statements.test.ts": 2816,
+    "__tests__/engines/schemaSync.test.ts": 2620,
+    "__tests__/parity/schema.test.ts": 1852,
+    "__tests__/treeShaking.test.ts": 300,
+    "__tests__/engines/mongo.test.ts": 217,
+    "__tests__/unit/surface.test.ts": 188,
+    "__tests__/parity/helpers.test.ts": 169,
+    "__tests__/parity/dialect.test.ts": 108,
+    "__tests__/packaging.test.ts": 12
+  }
+}
