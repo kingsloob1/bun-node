@@ -363,6 +363,9 @@ function fixedEngine(decision: Decision): Security<Request> {
       return decision;
     },
     explain: (facts, options) => real.explain(facts, options),
+    complete: (facts, decided, outcome) =>
+      real.complete(facts, decided, outcome),
+    signal: (facts, event) => real.signal(facts, event),
     identify: () => undefined,
     load: (policy) => real.load(policy),
     status: () => real.status(),

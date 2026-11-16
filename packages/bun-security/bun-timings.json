@@ -1,17 +1,25 @@
 {
   "version": 1,
   "files": {
-    "__tests__/serve/hardenServe.test.ts": 13082,
-    "__tests__/ip/trie.test.ts": 1479,
-    "__tests__/treeShaking.test.ts": 1298,
-    "__tests__/serve/withSecurity.test.ts": 910,
-    "__tests__/engine/explain.test.ts": 856,
-    "__tests__/engine/trust.test.ts": 704,
-    "__tests__/engine/lists.test.ts": 652,
-    "__tests__/engine/identity.test.ts": 640,
-    "__tests__/policy/compile.test.ts": 636,
-    "__tests__/ip/address.test.ts": 572,
-    "__tests__/engine/facts.test.ts": 549,
-    "__tests__/packaging.test.ts": 70
+    "__tests__/serve/hardenServe.test.ts": 12468,
+    "__tests__/ip/trie.test.ts": 788,
+    "__tests__/engine/counted.test.ts": 576,
+    "__tests__/engine/explainState.test.ts": 566,
+    "__tests__/treeShaking.test.ts": 519,
+    "__tests__/serve/withSecurity.test.ts": 500,
+    "__tests__/engine/state.test.ts": 465,
+    "__tests__/engine/explain.test.ts": 438,
+    "__tests__/serve/withSecurity.limits.test.ts": 403,
+    "__tests__/engine/limits.test.ts": 398,
+    "__tests__/policy/version.test.ts": 349,
+    "__tests__/engine/lists.test.ts": 330,
+    "__tests__/policy/compile.test.ts": 321,
+    "__tests__/engine/identity.test.ts": 262,
+    "__tests__/ip/address.test.ts": 239,
+    "__tests__/engine/facts.test.ts": 222,
+    "__tests__/engine/concurrency.test.ts": 191,
+    "__tests__/engine/trust.test.ts": 137,
+    "__tests__/policy/rules.test.ts": 107,
+    "__tests__/packaging.test.ts": 12
   }
 }

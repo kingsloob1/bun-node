@@ -4,10 +4,16 @@
  * guards ever compiles, the check fails with TS2578.
  */
 import type {
+  ConcurrencyPolicy,
+  CountedRule,
   Decision,
+  LimitRule,
   ListEntry,
+  RuleHit,
   SecurityAction,
   SecurityPolicy,
+  SecurityWarningKind,
+  SubjectKeyPart,
   TrustCheckPolicy,
 } from "../lib/index";
 import { createSecurity } from "../lib/index";
@@ -73,3 +79,61 @@ export const options = hardenServe({
 });
 assertType<Equal<typeof options.port, number>>();
 assertType<Equal<typeof options.idleTimeout, number>>();
+
+// The policy format's version is 1; a newer one is not a v1 policy.
+export const versioned: SecurityPolicy = { version: 1 };
+// @ts-expect-error version 2 is not this package's format
+export const newer: SecurityPolicy = { version: 2 };
+
+// T-L9-3 at compile time: a limit's window and a counted rule's take a unit.
+export const limit: LimitRule = { id: "l", limit: 10, window: "1m" };
+// @ts-expect-error a bare number is ambiguous
+export const limitNumber: LimitRule = { id: "l", limit: 10, window: 60 };
+export const composite: LimitRule = {
+  id: "c",
+  limit: 10,
+  window: { minutes: 1 },
+  key: ["ip", "user"],
+};
+// @ts-expect-error `address` is not a key part
+export const badPart: SubjectKeyPart = "address";
+export const rule: CountedRule = {
+  id: "r",
+  event: "auth.failure",
+  threshold: 10,
+  window: "15m",
+  duration: null,
+};
+// @ts-expect-error a duration takes a unit too
+export const ruleNumber: CountedRule = { ...rule, duration: 3600 };
+// @ts-expect-error a counted rule bans or challenges; blocking one request is a limit's job
+export const ruleBlock: CountedRule = { ...rule, action: "block" };
+export const concurrency: ConcurrencyPolicy = { perIp: 64, total: false };
+// @ts-expect-error a cap is a number or false
+export const concurrencyTrue: ConcurrencyPolicy = { total: true };
+
+// complete() and signal() answer the hits they caused.
+export const engine = createSecurity({
+  policy: { limits: [limit], countedRules: [rule] },
+});
+assertType<
+  Equal<
+    ReturnType<typeof engine.signal>,
+    readonly RuleHit[] | Promise<readonly RuleHit[]>
+  >
+>();
+assertType<
+  Equal<ReturnType<typeof engine.complete>, ReturnType<typeof engine.signal>>
+>();
+assertType<
+  Equal<
+    Parameters<typeof engine.evaluate>[1],
+    { readonly track?: boolean } | undefined
+  >
+>();
+assertType<
+  Equal<
+    SecurityWarningKind,
+    "trust.internal" | "trust.unread-forwarding" | "state.evictions"
+  >
+>();
