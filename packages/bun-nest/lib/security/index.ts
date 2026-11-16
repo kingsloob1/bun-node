@@ -21,6 +21,7 @@ export {
   SecurityProfile,
   SkipSecurity,
 } from "./security.decorator";
+export { SecurityChallengeException } from "./security.challenge";
 export { SecurityRefusalException } from "./security.exception";
 export { SecurityGuard } from "./security.guard";
 export type {

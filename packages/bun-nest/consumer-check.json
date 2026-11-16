@@ -349,6 +349,7 @@
         "SkipSecurity",
         "InjectSecurity",
         "SecurityRefusalException",
+        "SecurityChallengeException",
         "BUN_SECURITY",
         "BUN_SECURITY_OPTIONS",
         "SECURITY_PROFILE_METADATA",

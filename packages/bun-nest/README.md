@@ -4597,7 +4597,15 @@ The engine runs in the same three stages as bun-common's `installSecurity`:
   refusal is a `SecurityRefusalException`, an `HttpException` whose response
   is the same problem body (`{ type, title, status, code }`), with
   `Retry-After` and `Cache-Control: no-store` set first; an exception filter
-  of the app's own can render it from its `decision`.
+  of the app's own can render it from its `decision`. A `challenge`, when
+  the engine has a challenge flow (`challenge: challenges(...)` from
+  `@kingsleyweb/bun-security/challenge`), is a `SecurityChallengeException`
+  (still a `SecurityRefusalException`) carrying the flow's answer: for an
+  API client the problem with its `challenge` descriptor, sent by Nest's
+  exception layer; for a browser the challenge page under its strict CSP,
+  sent by the guard itself (Nest's layer sends only JSON for an error), so
+  the exception's `sent` is `true` and a filter of the app's own must leave
+  the response alone. The answer to it is taken in the early stage.
 - **The response stage**: a middleware the module registers while Nest builds
   the application, ahead of Nest's body parsers, middleware and routes, marks
   route-not-found (no route matched and the answer is a `404`, so Nest's own

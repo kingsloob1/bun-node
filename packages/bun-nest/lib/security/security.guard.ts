@@ -10,6 +10,8 @@ import {
   SECURITY_PROFILE_METADATA,
   SKIP_SECURITY_METADATA,
 } from "./security.constants";
+import { challengeRefusal } from "./security.challenge";
+import { SecurityRefusalException } from "./security.exception";
 import { SecurityService } from "./security.service";
 
 /**
@@ -19,7 +21,9 @@ import { SecurityService } from "./security.service";
  * counted rules keyed on the caller or the route, the lists' user and
  * API-key entries, bans of the caller, canary credentials, then the CSRF
  * check. A refusal is a `SecurityRefusalException` for Nest's exception
- * layer. Other contexts (WebSocket gateways, microservices) pass.
+ * layer; a challenge, when the engine has a challenge flow, is a
+ * `SecurityChallengeException` carrying the flow's page or descriptor.
+ * Other contexts (WebSocket gateways, microservices) pass.
  *
  * `SecurityModule` provides it as `APP_GUARD` unless `globalGuard: false`.
  * Its constructor parameters are declared explicitly (`@Inject`), so
@@ -47,11 +51,15 @@ export class SecurityGuard implements CanActivate {
       readonly string[] | undefined
     >(SKIP_SECURITY_METADATA, targets);
     const http = context.switchToHttp();
-    return this.service.routeStage(
-      http.getRequest<BunRequest>(),
-      http.getResponse<BunResponse>(),
-      profile,
-      skip,
-    );
+    const req = http.getRequest<BunRequest>();
+    const res = http.getResponse<BunResponse>();
+    return this.service
+      .routeStage(req, res, profile, skip)
+      .catch(async (error: unknown) => {
+        // A challenge is answered with the flow's page or descriptor.
+        throw error instanceof SecurityRefusalException
+          ? await challengeRefusal(this.service.security, req, res, error)
+          : error;
+      });
   }
 }
