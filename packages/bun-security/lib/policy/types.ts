@@ -14,6 +14,7 @@
 import type { Duration } from "@kingsleyweb/bun-common";
 import type { RequestRulesPolicy } from "../rules/types";
 import type { BotSignalsPolicy } from "../engine/signals";
+import type { ApiKeysPolicy } from "../apikeys/policy";
 import type { CrawlersPolicy } from "../crawlers/policy";
 
 /**
@@ -311,6 +312,14 @@ export interface LimitRule {
    * endpoints' limits (layers.md L11). Every route when absent.
    */
   readonly profile?: string;
+  /**
+   * Only requests whose API key is on this plan count (`identify()`'s
+   * `apiKeyPlan`): a key's limit from its plan (layers.md L12), with
+   * `key: "apiKey"` (or `["apiKey", "route"]` per key and route). Every
+   * request when absent. Counted in the route stage. WebSocket message
+   * limits never count a limit with a plan.
+   */
+  readonly apiKeyPlan?: string;
 }
 
 /** What a tripped counted rule does to its key (layers.md §0.2). */
@@ -853,6 +862,11 @@ export interface SecurityPolicy {
    * Google, Bing, Apple and DuckDuckGo; `{ mode: "off" }` turns it off.
    */
   readonly crawlers?: CrawlersPolicy;
+  /**
+   * The API key anomalies (layers.md L12): `newAsn` and `manyAddresses`.
+   * Off unless named.
+   */
+  readonly apiKeys?: ApiKeysPolicy;
   /**
    * The built-in rules by id (`per-ip`, `login.account`, …): `true` turns
    * one on as it ships (enforced, or in dry run for `not_found_per_minute`),

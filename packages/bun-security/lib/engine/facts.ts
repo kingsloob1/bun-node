@@ -26,8 +26,16 @@ export interface SecurityIdentity {
   readonly session?: string;
   /** The tenant (organisation, workspace) the request acts for. */
   readonly tenant?: string;
-  /** The API key's **id** (never the key). */
+  /** The API key's **id** (never the key). Keyed by its HMAC under `createSecurity`'s `secret`. */
   readonly apiKey?: string;
+  /** The API key's plan (`"free"`, `"pro"`): the limits with that `apiKeyPlan` count it. */
+  readonly apiKeyPlan?: string;
+  /**
+   * The most distinct addresses this key may be used from in the
+   * `manyAddresses` window, in place of the policy's limit; `false` for
+   * none (a key embedded in a mobile app is legitimately everywhere).
+   */
+  readonly apiKeyMaxAddresses?: number | false;
   /** The scopes the credential carries. */
   readonly scopes?: readonly string[];
   /**

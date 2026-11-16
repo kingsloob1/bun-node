@@ -64,6 +64,14 @@ export class Keyring {
     return this.#mac("username", username.trim().toLowerCase());
   }
 
+  /**
+   * The key of an API key's id (layers.md L12): its HMAC, so the id is
+   * never stored or shared in clear (limits, bans, distinct counts).
+   */
+  apiKey(id: string): string {
+    return this.#mac("apiKey", id);
+  }
+
   /** The key of a destination (an email address, a phone number), normalised. */
   destination(destination: string): string {
     return this.#mac("destination", normaliseDestination(destination));

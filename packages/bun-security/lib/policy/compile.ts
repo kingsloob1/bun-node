@@ -80,6 +80,8 @@ export interface CompiledLimit {
   readonly onStoreError: StoreErrorMode;
   /** Only requests of routes with this profile count; every route when undefined. */
   readonly profile: string | undefined;
+  /** Only requests whose API key is on this plan count; every request when undefined. */
+  readonly apiKeyPlan: string | undefined;
 }
 
 /** A counted rule as the engine reads it. */
@@ -903,6 +905,7 @@ function compileLimits(
         onStoreError:
           limit.onStoreError ?? source.state?.onStoreError ?? "local",
         profile: limit.profile,
+        apiKeyPlan: limit.apiKeyPlan,
       } satisfies CompiledLimit),
     );
   }

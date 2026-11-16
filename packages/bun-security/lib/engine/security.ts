@@ -115,6 +115,9 @@ import { botSignalsOf, readSignals } from "./signals";
 import type { ChallengeFlow } from "../challenge/flow";
 import type { IntelLookup } from "../intel/types";
 import { checkIntel } from "./intelNeeds";
+import { apiKeysOf } from "../apikeys/policy";
+import type { CompiledAnomaly } from "../apikeys/policy";
+import { ApiKeyWatch } from "../apikeys/watch";
 import { crawlerConflicts } from "../crawlers/conflicts";
 import type { CrawlerConflict } from "../crawlers/conflicts";
 import { crawlersOf, covered } from "../crawlers/policy";
@@ -238,6 +241,37 @@ export interface CreateSecurityOptions<TRequest = Request> {
    * an ordinary client for that request (and nothing is cached). Default `500`.
    */
   readonly verifyTimeoutMs?: number;
+  /**
+   * Called when an API key looks compromised (layers.md L12): an anomaly
+   * whose action is `ban` suspended it, or `revokeApiKey()` was called.
+   * Revoking the key is the app's job; the ban covers the gap. Called with
+   * the key's id as `identify()` gave it; its errors are logged.
+   */
+  readonly onKeyCompromised?: (event: KeyCompromise) => void;
+}
+
+/** What `onKeyCompromised` is told. */
+export interface KeyCompromise {
+  /** The API key's id, as `identify()` gave it (or `revokeApiKey()` was given). */
+  readonly apiKey: string;
+  /** Why: `revoked` (by hand), `apiKey.newAsn` or `apiKey.manyAddresses`. */
+  readonly reason: "revoked" | "apiKey.newAsn" | "apiKey.manyAddresses";
+  /** What was seen, for the owner's alert. */
+  readonly detail: string;
+  /** The ban that suspends the key, when one was written. */
+  readonly ban?: Ban;
+  /** When, epoch ms. */
+  readonly at: number;
+}
+
+/** Options for {@link Security.revokeApiKey}. */
+export interface RevokeApiKeyOptions {
+  /** How long the key is banned. Default `null`: until lifted. */
+  readonly duration?: Duration | null;
+  /** Why, for operators. Default `"revoked"`. */
+  readonly reason?: string;
+  /** Who revoked it. */
+  readonly by?: string;
 }
 
 /** What `signal()` can be told beside the event (layers.md L11.1). */
@@ -353,6 +387,12 @@ export interface Security<TRequest = Request> {
    * `load()`; call this again once the range feeds have loaded.
    */
   readonly crawlerConflicts: () => readonly CrawlerConflict[];
+  /**
+   * Revoke-and-ban (layers.md L12): bans the API key `id` at once (until
+   * lifted by default) and calls `onKeyCompromised`, so the app revokes it.
+   * Throws a `TypeError` for a bad id or duration.
+   */
+  readonly revokeApiKey: (id: string, options?: RevokeApiKeyOptions) => Ban;
   /** The challenge flow, when the engine was given one (`createSecurity`'s `challenge`). */
   readonly challenge: ChallengeFlow | undefined;
   /** Whether {@link close} was called. */
@@ -602,6 +642,8 @@ interface Pass {
   score?: number;
   /** The request's crawler claim (layers.md L3.2), if its `User-Agent` names an allowed crawler. */
   readonly crawler?: CrawlerRequest | undefined;
+  /** The request's API key plan, from `identify()` (layers.md L12). */
+  readonly apiKeyPlan?: string | undefined;
 }
 
 /**
@@ -869,6 +911,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   readonly #signalled = new WeakSet<RequestFacts>();
   /** Device cookies issued for facts, until the integration sets them. */
   readonly #devices = new WeakMap<RequestFacts, string>();
+  /** What the API key anomalies remember (layers.md L12). */
+  readonly #apiKeys: ApiKeyWatch;
   /** Crawler verification (layers.md L3.2). */
   readonly #verifier: CrawlerVerifier;
   /** Each claimant request's crawler state, by its facts. */
@@ -979,6 +1023,13 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       );
     }
     this.#keyring = new Keyring(options.secret);
+    this.#apiKeys = new ApiKeyWatch(
+      shared,
+      new DistinctCounts(shared, maxKeys, this.#evictions, this.#logger),
+      maxKeys,
+      this.#evictions,
+      this.#logger,
+    );
     this.#login = new LoginDefences({
       local: counters,
       shared: shared?.throttle,
@@ -1212,6 +1263,222 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       : "";
   }
 
+  revokeApiKey(id: string, options: RevokeApiKeyOptions = {}): Ban {
+    this.#assertOpen();
+    if (typeof id !== "string" || id === "" || id.length > 1024) {
+      throw new TypeError(
+        "bun-security: revokeApiKey(): id must be an API key id",
+      );
+    }
+    const ban = this.ban({
+      apiKey: id,
+      duration: options.duration === undefined ? null : options.duration,
+      reason: options.reason ?? "revoked",
+      ...(options.by === undefined ? {} : { by: options.by }),
+    });
+    this.#compromised({
+      apiKey: id,
+      reason: "revoked",
+      detail: options.reason ?? "revoked",
+      ban,
+      at: this.#now(),
+    });
+    return ban;
+  }
+
+  /** Tells the app an API key looks compromised; its errors are logged. */
+  #compromised(event: KeyCompromise): void {
+    const hook = this.#options.onKeyCompromised;
+    if (hook === undefined) return;
+    try {
+      hook(event);
+    } catch (error) {
+      this.#hookError("onKeyCompromised", error);
+    }
+  }
+
+  /**
+   * Layer L12: the API key anomalies of the request's key (route stage, or
+   * one stage): a new ASN, too many addresses. Each found counts its event
+   * and does its action; a `ban` suspends the key and calls
+   * `onKeyCompromised` once per anomaly. Answers whether it refused.
+   */
+  #keyWatch(
+    facts: RequestFacts,
+    pass: Pass,
+    policy: CompiledPolicy,
+  ): MaybePromise<boolean> {
+    const key = pass.subject.apiKey;
+    const id = facts.identity?.apiKey;
+    const { flags } = pass;
+    if (
+      key === undefined ||
+      id === undefined ||
+      pass.stage === "early" ||
+      flags.allowAll ||
+      flags.internal ||
+      flags.service !== undefined
+    ) {
+      return false;
+    }
+    const compiled = apiKeysOf(policy);
+    if (compiled.newAsn === undefined && compiled.manyAddresses === undefined)
+      return false;
+    const { now, writes } = pass;
+    const found: MaybePromise<ApiKeyFinding | undefined>[] = [];
+    const newAsn = compiled.newAsn;
+    const asn =
+      newAsn === undefined || pass.address === null
+        ? undefined
+        : this.#options.intel?.lookup(pass.address).asn;
+    if (newAsn !== undefined && asn !== undefined) {
+      found.push(
+        then(
+          this.#apiKeys.asn(key, asn, newAsn.remember, now, writes),
+          (verdict) =>
+            verdict === "new"
+              ? {
+                  event: "apiKey.newAsn",
+                  tag: "api-key:new-asn",
+                  anomaly: newAsn,
+                  detail: `used from AS${asn}, an ASN it has not used before`,
+                  marker: `${key}:asn:${asn}`,
+                  ttl: newAsn.remember,
+                }
+              : undefined,
+        ),
+      );
+    }
+    const many = compiled.manyAddresses;
+    const limit = facts.identity?.apiKeyMaxAddresses ?? many?.limit;
+    if (
+      many !== undefined &&
+      limit !== false &&
+      limit !== undefined &&
+      pass.subject.ip !== undefined
+    ) {
+      const count = {
+        key: `apikey:${key}`,
+        element: pass.subject.ip,
+        window: many.window,
+        state: this.#options.store === undefined ? "local" : "shared",
+        onStoreError: "local",
+      } as const;
+      const index = Math.floor(now / many.window);
+      found.push(
+        then(
+          writes
+            ? this.#apiKeys.distinct.add(count, now)
+            : this.#apiKeys.distinct.peek(count, now),
+          (seen) =>
+            seen !== undefined && seen > limit
+              ? {
+                  event: "apiKey.manyAddresses",
+                  tag: "api-key:many-addresses",
+                  anomaly: many,
+                  detail: `used from ${seen} distinct addresses in ${windowText(many.window)}, more than ${limit}`,
+                  marker: `${key}:many:${index}`,
+                  ttl: many.window,
+                }
+              : undefined,
+        ),
+      );
+    }
+    return then(all(found), (findings) => {
+      const from = (index: number): MaybePromise<boolean> => {
+        const finding = findings[index];
+        if (index >= findings.length) return pass.run.refused;
+        if (finding === undefined) return from(index + 1);
+        return then(this.#keyAnomaly(finding, id, key, pass), () =>
+          from(index + 1),
+        );
+      };
+      return from(0);
+    });
+  }
+
+  /** Applies one API key anomaly. */
+  #keyAnomaly(
+    finding: ApiKeyFinding,
+    id: string,
+    key: string,
+    pass: Pass,
+  ): MaybePromise<void> {
+    const { anomaly, event, tag, detail } = finding;
+    const { run, trace, now, writes } = pass;
+    const dry = pass.dryPolicy || anomaly.mode === "dryRun";
+    const reason = `${event}: ${detail}`;
+    const rule = event;
+    if (dry || anomaly.action === "log") {
+      run.add({
+        layer: "L12",
+        rule,
+        action: "log",
+        ...(dry && anomaly.action !== "log"
+          ? { wouldHaveBeen: anomaly.action }
+          : {}),
+        reason: dry ? `dry run: ${reason}` : reason,
+      });
+    } else if (anomaly.action === "tag") {
+      run.tags.add(tag);
+      run.add({ layer: "L12", rule, action: "tag", reason });
+    } else if (anomaly.action === "challenge") {
+      run.add(
+        { layer: "L12", rule, action: "challenge", reason },
+        { status: 403, code: "challenge_required" },
+      );
+    } else {
+      const until = anomaly.duration === null ? null : now + anomaly.duration;
+      run.add(
+        { layer: "L12", rule, action: "ban", reason },
+        this.#banAnswer(undefined, until, now),
+      );
+    }
+    trace?.push({
+      layer: "L12",
+      check: "apiKey",
+      rule,
+      outcome: `${reason}: ${dry ? `would have done: ${anomaly.action} (dry run)` : anomaly.action}`,
+    });
+    if (dry || !writes) return undefined;
+    // The event, the ban and the hook, once per key and anomaly (and window).
+    return then(
+      this.#apiKeys.once(finding.marker, finding.ttl, now),
+      (first) => {
+        if (!first) return undefined;
+        let ban: Ban | undefined;
+        if (anomaly.action === "ban") {
+          const until =
+            anomaly.duration === null ? null : now + anomaly.duration;
+          this.#writeBan(
+            {
+              subject: { type: "apiKey", value: key },
+              action: "ban",
+              reason,
+              rule,
+              source: "auto",
+              expiresAt: until,
+            },
+            now,
+          );
+          ban = this.#bans
+            .list(now)
+            .find(
+              (b) => b.subject.type === "apiKey" && b.subject.value === key,
+            );
+          this.#compromised({
+            apiKey: id,
+            reason: event,
+            detail,
+            ...(ban === undefined ? {} : { ban }),
+            at: now,
+          });
+        }
+        return then(this.#occur(event, pass, false), () => undefined);
+      },
+    );
+  }
+
   crawlerConflicts(): readonly CrawlerConflict[] {
     return crawlerConflicts(this.#policy, this.#options.intel, [
       ...this.#bans.list(this.#now()),
@@ -1443,7 +1710,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
           internals,
           resolved.address,
           resolved.subject.user,
-          resolved.subject.apiKey,
+          listedKey(facts),
           listPath(facts.path, internals),
           now,
           internals.mode === "dryRun",
@@ -1537,10 +1804,19 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   ): ResolvedClient {
     const username = data?.username ?? facts.identity?.username;
     const destination = data?.destination ?? facts.identity?.destination;
-    if (username === undefined && destination === undefined) return resolved;
+    const apiKey = resolved.subject.apiKey;
+    if (
+      username === undefined &&
+      destination === undefined &&
+      apiKey === undefined
+    ) {
+      return resolved;
+    }
     const subject: { -readonly [K in keyof SubjectKeys]: SubjectKeys[K] } = {
       ...resolved.subject,
     };
+    // An API key's id is keyed by its HMAC (layers.md L12), as usernames are.
+    if (apiKey !== undefined) subject.apiKey = this.#keyring.apiKey(apiKey);
     if (typeof username === "string" && username.trim() !== "") {
       subject.username = this.#keyring.username(username.slice(0, 1024));
       const device = sensitiveOf(this.#policy).login?.device;
@@ -1755,7 +2031,13 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         value:
           keyOf(
             keyOfType(only),
-            { [only]: boundKey(value) },
+            {
+              // An API key is banned under its HMAC, as requests key it.
+              [only]:
+                only === "apiKey"
+                  ? this.#keyring.apiKey(boundKey(value))
+                  : boundKey(value),
+            },
             {
               method: "",
               path: "",
@@ -1839,14 +2121,18 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     this.#assertOpen();
     const internals = this.#internals;
     const now = this.#now();
-    const resolved = resolveClient(facts, internals);
+    const resolved = this.#withAccount(
+      resolveClient(facts, internals),
+      facts,
+      undefined,
+    );
     const lists = resolved.service?.exempt.has("lists")
       ? undefined
       : evaluateLists(
           internals,
           resolved.address,
           resolved.subject.user,
-          resolved.subject.apiKey,
+          listedKey(facts),
           listPath(facts.path, internals),
           now,
           internals.mode === "dryRun",
@@ -1946,7 +2232,12 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       ) {
         continue;
       }
-      if (!appliesTo(limit.routes, route) || !inProfile(limit.profile, route)) {
+      if (
+        !appliesTo(limit.routes, route) ||
+        !inProfile(limit.profile, route) ||
+        // A connection carries no plan: a plan's limit never counts messages.
+        limit.apiKeyPlan !== undefined
+      ) {
         continue;
       }
       const key = keyOf(limit.key, subject, route);
@@ -3032,7 +3323,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         internals,
         resolved.address,
         subject.user,
-        subject.apiKey,
+        listedKey(facts),
         listPath(facts.path, internals),
         now,
         dryPolicy,
@@ -3155,6 +3446,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       run,
       stage,
       crawler,
+      apiKeyPlan: facts.identity?.apiKeyPlan,
     };
     if (this.#banned(pass)) return finish();
     if (challengeEntry !== undefined) {
@@ -3170,7 +3462,11 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         if (ruled) return finish();
         return then(this.#spoofed(pass), (spoofed) => {
           if (spoofed || this.#signaled(facts, pass, policy)) return finish();
-          return this.#afterRules(facts, pass, finish, internals, limitSet);
+          return then(this.#keyWatch(facts, pass, policy), (watched) =>
+            watched
+              ? finish()
+              : this.#afterRules(facts, pass, finish, internals, limitSet),
+          );
         });
       });
     });
@@ -3430,6 +3726,13 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       if (!appliesTo(limit.routes, route) || !inProfile(limit.profile, route)) {
         continue;
       }
+      // A plan's limit counts only keys on that plan (layers.md L12).
+      if (
+        limit.apiKeyPlan !== undefined &&
+        limit.apiKeyPlan !== pass.apiKeyPlan
+      ) {
+        continue;
+      }
       const key = keyOf(limit.key, subject, route);
       // The crawlers' own limit counts verified crawlers only: silent for the rest.
       if (key === undefined && limit.key.parts.includes("crawler")) continue;
@@ -3643,6 +3946,31 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     }
     return decision;
   }
+}
+
+/**
+ * The API key id the lists match (their `apiKey` entries name ids): the
+ * identity's, bounded. Everything the engine keeps keys it by its HMAC.
+ */
+function listedKey(facts: RequestFacts): string | undefined {
+  const id = facts.identity?.apiKey;
+  return id === undefined ? undefined : boundKey(id);
+}
+
+/** One API key anomaly found for a request. */
+interface ApiKeyFinding {
+  /** Its event. */
+  readonly event: "apiKey.newAsn" | "apiKey.manyAddresses";
+  /** The decision tag its `tag` action adds. */
+  readonly tag: string;
+  /** Its settings. */
+  readonly anomaly: CompiledAnomaly;
+  /** What was seen. */
+  readonly detail: string;
+  /** Its once-marker. */
+  readonly marker: string;
+  /** How long the marker holds, ms. */
+  readonly ttl: number;
 }
 
 /** The flags later layers read, from the lists' outcome. */

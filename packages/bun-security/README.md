@@ -14,7 +14,7 @@ from a policy compiled once, before your handler sees it.
 > state across processes (`./stores`), WebSocket message limits, request
 > rules, challenges with bot signals, the sensitive endpoints (sign-in,
 > codes, resets: presets, the login defences, device cookies, identifier
-> checks), IP intelligence (`./intel`), and verified crawlers. The
+> checks), IP intelligence (`./intel`), verified crawlers, and API keys. The
 > control plane follows in later PRs.
 
 ```sh
@@ -770,6 +770,52 @@ crawlers: {
 
 AI and LLM crawlers are not in the registry's default set: add them as
 `custom` entries if you choose to let them in.
+
+## API keys
+
+bun-security watches the API keys your service issues; it never issues or
+stores them (layers.md L12). Tell it the key's **id** (never the key) in
+`identify()`: `{ apiKey: "key_123", apiKeyPlan: "pro", apiKeyMaxAddresses: 50 }`.
+
+- **Keyed by HMAC.** Everything the engine keeps about a key (limits, bans,
+  counts, the shared store, a decision's `subject.apiKey`) is keyed by
+  `HMAC(secret, id)`, as usernames are. With a shared store, give every
+  process the same `secret` (a store without one refuses to start). List
+  entries and `ban({ apiKey })` still name the id.
+- **Per-key limits**: `key: "apiKey"` (or `["apiKey", "route"]`), and
+  `apiKeyPlan` for a plan's limit, which counts only keys `identify()` puts
+  on that plan:
+
+  ```ts
+  limits: [
+    { id: "free", limit: 60, window: "1m", key: "apiKey", apiKeyPlan: "free" },
+    { id: "pro", limit: 1200, window: "1m", key: "apiKey", apiKeyPlan: "pro" },
+  ],
+  ```
+- **Anomalies** (`apiKeys`, off unless named): `newAsn`, a key used from an
+  autonomous system it never used (its first is learned; needs `intel` with
+  an ASN database; ASNs remembered for `remember`, 30 days), and
+  `manyAddresses`, a key used from more than `limit` distinct addresses in
+  `window` (20 an hour; `apiKeyMaxAddresses` per key, `false` for none).
+  Each counts an event (`apiKey.newAsn`, `apiKey.manyAddresses`, once per
+  key and anomaly or window) and does its `action`: `log`, `tag` (the
+  default: the decision's `tags` carry `api-key:new-asn` or
+  `api-key:many-addresses`), `challenge`, or `ban` (the key suspended for
+  `duration`, 1 h). With a shared store the fleet watches each key once.
+  `mode: "dryRun"` only records.
+- **Revoking is your job; the engine covers the gap.** An anomaly that bans,
+  and `security.revokeApiKey(id, { reason, by, duration })` (a ban until
+  lifted by default), call your `onKeyCompromised({ apiKey, reason, detail,
+  ban, at })`, so your service revokes the key and tells its owner.
+
+```ts
+const security = createSecurity({
+  policy: { apiKeys: { newAsn: { action: "challenge" }, manyAddresses: { limit: 50, action: "ban" } } },
+  secret: process.env.SECURITY_SECRET,
+  intel,
+  onKeyCompromised: ({ apiKey, reason }) => keys.revoke(apiKey, reason),
+});
+```
 
 ## Presets
 

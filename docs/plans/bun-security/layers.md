@@ -1127,7 +1127,11 @@ watches them).
   the gap).
 
 **v1:** per-key limits, canary keys, the new-ASN and many-IPs anomalies.
-**Later:** baselines (they need the rollups, README §8), scope anomalies.
+**Later:** baselines (they need the rollups, README §8), scope anomalies. **As built (PR-S11):** keys keyed by HMAC under `secret`;
+per-key limits with `key: "apiKey"` and a plan's with a limit's
+`apiKeyPlan`; `apiKeys.newAsn` and `apiKeys.manyAddresses` with `log`,
+`tag`, `challenge` or `ban`; `onKeyCompromised` for a ban and for
+`revokeApiKey()` (plan §17.17).
 
 ---
 

@@ -6,7 +6,9 @@
  * Its configuration is one JSON argument: `{ backend: "redis" | "sqlite",
  * url, path, prefix, policy, store }`. It answers each request
  * `{ id, op, ... }` with `{ id, ... }`: `evaluate` (the decision's action),
- * `ban`, `unban`, `bans` (the ids), `status`, `flush`, `close`.
+ * `ban`, `unban`, `bans` (the ids), `status`, `flush`, `close`; `apiKey`
+ * (a request with an API key: the action and tags) and `compromised` (what
+ * `onKeyCompromised` was told here).
  */
 import process from "node:process";
 import {
@@ -44,7 +46,8 @@ type Request =
       client: string;
       outcome: "failure" | "success" | "none";
     }
-  | { id: number; op: "bans" | "status" | "flush" | "close" };
+  | { id: number; op: "apiKey"; client: string; apiKey: string }
+  | { id: number; op: "bans" | "status" | "flush" | "close" | "compromised" };
 
 const config = JSON.parse(process.argv[2] ?? "{}") as Config;
 const driver =
@@ -61,11 +64,15 @@ const store = cacheStore(createCache({ driver, logger: quiet }), {
     : {}),
   logger: quiet,
 });
+/** The API keys `onKeyCompromised` was told of, in this process. */
+const compromised: string[] = [];
 const security = createSecurity({
   secret: config.secret ?? "the-multi-process-secret-of-32-bytes!",
   policy: config.policy,
   store,
   logger: quiet,
+  onKeyCompromised: (event) =>
+    compromised.push(`${event.apiKey}:${event.reason}`),
 });
 await security.ready();
 
@@ -103,6 +110,20 @@ process.on("message", (message: Request) => {
           hits: hits.map((hit) => `${hit.rule}:${hit.action}`),
         };
       }
+      case "apiKey": {
+        const path = "/api/orders";
+        const request = facts({
+          client: message.client,
+          path,
+          rawPath: path,
+          routeKey: "GET /api/orders",
+          identity: { apiKey: message.apiKey },
+        });
+        const decision = await security.evaluate(request);
+        return { action: decision.action, tags: decision.tags };
+      }
+      case "compromised":
+        return { compromised };
       case "ban":
         security.ban({ ip: message.ip, reason: "multiprocess" });
         await security.flush();
