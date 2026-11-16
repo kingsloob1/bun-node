@@ -4089,8 +4089,50 @@ The middleware is a handle:
 |---|---|
 | `update({ limit, window } \| { limits })` | Replaces its limits without re-registering it; a bad update throws and changes nothing. A limit whose name and window are unchanged keeps its counts. |
 | `peek(req)` | Each limit's result as if the request were counted, consuming nothing. |
+| `count(keys, { cost?, scope? })` | Counts one hit without a request; see below. |
+| `peekCount(keys, { cost?, scope? })` | What `count()` would answer, consuming nothing. |
 | `reset(key, { limits?, scope? })` | Forgets one key's counts (an unban); needs a store with `delete`. |
 | `policies`, `store` | Its limits as documented, and its store. |
+
+#### Counting without a request
+
+`count(keys)` is the middleware's counting for a caller that has no
+`BunRequest` and has already decided the key: a policy engine in front of a
+plain `Bun.serve` handler, a WebSocket message, a queue consumer. `keys` is
+one key for every limit, or a key per limit name, which counts only the
+limits named. It answers each limit's `ThrottleResult`, synchronously on the
+memory store and as a promise otherwise; `limited` on any of them means the
+hit is over (it was counted anyway, as a refused request is).
+
+```ts
+import { throttle } from "@kingsleyweb/bun-common";
+
+const logins = throttle({ limits: { login: { limit: 5, window: "15m" } } });
+
+ws.on("message", async (data) => {
+  const [result] = await logins.count({ login: `${ip}|${account}` });
+  if (result?.limited) return refuse(result.retryAfter);
+  // ...
+});
+```
+
+- **Same entries as the middleware.** The key is what the throttle's `key`
+  function would answer (for the default key, `throttleAddressKey(address)`),
+  and the scope `"global"` unless `scope` names a route (`"POST /login"`). So
+  a router throttle and a direct caller sharing a store and a prefix count
+  together.
+- **Cost.** `cost` (a non-negative number) applies to every limit counted;
+  without it each limit's own numeric `cost`. A limit whose `limit` or
+  `cost` is a function of the request cannot be counted without one: give
+  `cost`, or count it through the middleware.
+- **Store failures follow `failMode`.** `"open"` answers `[]` with the usual
+  warning, `"closed"` throws (or rejects with) `ThrottleStoreError`, a
+  fallback store counts there. `peekCount()` rejects whatever `failMode`
+  says, as `peek()` does.
+- **Nothing else.** No headers, no `onLimited`, no `skip`, no refund, no
+  `logLimited` line, nothing for `getThrottleResults()`.
+- A bad argument (a limit name the throttle lacks, a key that is not a
+  string) throws a `TypeError` at once.
 
 Generated documents mark every throttled operation: a `429` and
 `x-bun-throttle` (see [the `x-bun-*` extensions](#the-documents-as-a-typed-clients-model-x-bun--and-typeshash)).

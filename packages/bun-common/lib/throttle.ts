@@ -361,6 +361,34 @@ export interface ThrottleResetOptions {
   readonly scope?: string;
 }
 
+/**
+ * Who {@link ThrottleHandler.count} counts against: one key for every limit
+ * of the throttle, or a key per limit name (`{ login: "203.0.113.9|alice" }`),
+ * which counts only the limits named. A key is what the throttle's `key`
+ * function would have answered for a request (for the default key,
+ * {@link throttleAddressKey} of the address), so a direct caller and the
+ * middleware count in the same store entries.
+ */
+export type ThrottleCountKeys = string | Readonly<Record<string, string>>;
+
+/** What {@link ThrottleHandler.count} and {@link ThrottleHandler.peekCount} take beside the keys. */
+export interface ThrottleCountOptions {
+  /**
+   * What this hit costs under every limit counted: a non-negative finite
+   * number. Default each limit's own `cost` when that is a number; a limit
+   * whose `cost` is a function of the request needs it given here, since
+   * there is no request to call it with (a `TypeError` otherwise).
+   */
+  readonly cost?: number;
+  /**
+   * What the counts are per, as {@link ThrottleResult.scope} names it:
+   * `"global"` (the default, the scope of a throttle ahead of the routes)
+   * or a route as the middleware labels it (`"POST /login"`), to share the
+   * count a route-scoped throttle keeps for that route.
+   */
+  readonly scope?: string;
+}
+
 /** The middleware {@link throttle} returns, with a handle on its limits and counts. */
 export interface ThrottleHandler extends RouterHandler {
   /** Its limits as they stand, as documented (scope as it applies ahead of the routes). */
@@ -385,6 +413,47 @@ export interface ThrottleHandler extends RouterHandler {
    * Rejects (or throws) when the store fails, whatever `failMode` says.
    */
   peek: (req: BunRequest) => MaybePromise<ThrottleResult[]>;
+  /**
+   * Counts one hit against `keys`, without a request: what the middleware
+   * does for a request, for a caller that has decided the key from plain
+   * data (a policy engine in front of a plain `Bun.serve` handler, a
+   * WebSocket message, a queue consumer). Each limit counted gives its
+   * {@link ThrottleResult} (in the throttle's limit order); `limited` on any
+   * of them means the hit is over that limit. It was counted all the same,
+   * as the middleware counts a refused request (under `"gcra"` a refused
+   * hit takes nothing).
+   *
+   * The same store entries as the middleware's, so a router throttle and a
+   * direct caller sharing a store, a prefix and a scope count together.
+   * Nothing else the middleware does happens: no headers, no `onLimited`,
+   * no `skip`, no refund, no `logLimited` line, nothing recorded for
+   * `getThrottleResults()`.
+   *
+   * When the store fails, `failMode` decides, as for a request: `"open"`
+   * answers `[]` (and logs the throttled warning at most once every 10 s),
+   * `"closed"` throws (or rejects with) a {@link ThrottleStoreError}, a
+   * fallback store counts there instead, and answers `[]` should that fail
+   * too. A bad argument — a limit name the throttle does not have, a key
+   * that is not a string, a cost that is not a non-negative finite number,
+   * a limit whose `limit` or `cost` is a function of the request with no
+   * {@link ThrottleCountOptions.cost} — throws a `TypeError` at once.
+   * Synchronous on a synchronous store (the memory store), a promise
+   * otherwise.
+   */
+  count: (
+    keys: ThrottleCountKeys,
+    options?: ThrottleCountOptions,
+  ) => MaybePromise<ThrottleResult[]>;
+  /**
+   * What {@link count} would answer for `keys`, consuming nothing: each
+   * limit's result as if the hit were counted, its cost included. Rejects
+   * (or throws) when the store fails, whatever `failMode` says, as
+   * {@link peek} does.
+   */
+  peekCount: (
+    keys: ThrottleCountKeys,
+    options?: ThrottleCountOptions,
+  ) => MaybePromise<ThrottleResult[]>;
   /**
    * Forgets one key's counts (an operator's unban, an allow-list entry), in
    * the current and previous windows of each limit. Needs a store with
@@ -1709,6 +1778,137 @@ export function throttle(options: ThrottleOptions): ThrottleHandler {
     });
   };
 
+  /**
+   * The plan and the inputs of a request-free count: the limits `keys`
+   * names (every limit for a single key), each with its key, its cost and
+   * its quota. Throws a `TypeError` for a bad argument.
+   */
+  const planOfKeys = (
+    method: string,
+    keys: ThrottleCountKeys,
+    countOptions: ThrottleCountOptions | undefined,
+  ): { plan: Plan; inputs: Input[]; scopeKey: string } => {
+    const where = `throttle(): ${method}()`;
+    const scopeKey = countOptions?.scope ?? "global";
+    if (typeof scopeKey !== "string" || scopeKey === "") {
+      throw new TypeError(`${where}: scope must be a non-empty string`);
+    }
+    const cost = countOptions?.cost;
+    if (
+      cost !== undefined &&
+      (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0)
+    ) {
+      throw new TypeError(
+        `${where}: cost must be a non-negative finite number; got ${String(cost)}`,
+      );
+    }
+    let limits: readonly CompiledLimit[];
+    let keyOf: (limit: CompiledLimit) => unknown;
+    if (typeof keys === "string") {
+      limits = state.limits;
+      keyOf = () => keys;
+    } else if (keys !== null && typeof keys === "object") {
+      const known = new Set(state.limits.map((limit) => limit.name));
+      for (const name of Object.keys(keys)) {
+        if (!known.has(name)) {
+          throw new TypeError(
+            `${where}: the throttle has no limit "${name}"; its limits are ${[...known].map((n) => `"${n}"`).join(", ")}`,
+          );
+        }
+      }
+      limits = state.limits.filter((limit) => Object.hasOwn(keys, limit.name));
+      keyOf = (limit) => keys[limit.name];
+    } else {
+      throw new TypeError(
+        `${where}: keys must be a string or an object of keys by limit name`,
+      );
+    }
+    const inputs = limits.map((limit): Input => {
+      const key = keyOf(limit);
+      if (typeof key !== "string") {
+        throw new TypeError(
+          `${where}: the key for limit "${limit.name}" must be a string; got ${typeof key}`,
+        );
+      }
+      if (typeof limit.limit !== "number") {
+        throw new TypeError(
+          `${where}: limit "${limit.name}" answers its quota per request, and there is no request to ask`,
+        );
+      }
+      const limitCost =
+        cost ?? (typeof limit.cost === "number" ? limit.cost : undefined);
+      if (limitCost === undefined) {
+        throw new TypeError(
+          `${where}: limit "${limit.name}" answers its cost per request; pass options.cost`,
+        );
+      }
+      return { key, cost: limitCost, limit: limit.limit };
+    });
+    return { plan: { limits, scope: "global" }, inputs, scopeKey };
+  };
+
+  const countKeys = (
+    keys: ThrottleCountKeys,
+    countOptions?: ThrottleCountOptions,
+  ): MaybePromise<ThrottleResult[]> => {
+    const { plan, inputs, scopeKey } = planOfKeys("count", keys, countOptions);
+    if (plan.limits.length === 0) return [];
+    const at = now();
+    const onStoreError = (error: unknown): MaybePromise<ThrottleResult[]> => {
+      if (!(error instanceof StoreFailure)) throw error;
+      if (failMode === "closed") {
+        throw new ThrottleStoreError(store.name, error.cause);
+      }
+      if (fallback === undefined) {
+        warnStoreFailure(
+          error.cause,
+          'requests pass unthrottled (failMode "open")',
+        );
+        return [];
+      }
+      warnStoreFailure(
+        error.cause,
+        `counting in the fallback store "${fallback.name}"`,
+      );
+      let degraded: MaybePromise<ThrottleResult[]>;
+      try {
+        degraded = countAll(fallback, plan, inputs, scopeKey, at, false);
+      } catch {
+        return [];
+      }
+      return isThenable(degraded) ? degraded.catch(() => []) : degraded;
+    };
+    let results: MaybePromise<ThrottleResult[]>;
+    try {
+      results = countAll(store, plan, inputs, scopeKey, at, false);
+    } catch (error) {
+      return onStoreError(error);
+    }
+    return isThenable(results) ? results.catch(onStoreError) : results;
+  };
+
+  const peekCount = (
+    keys: ThrottleCountKeys,
+    countOptions?: ThrottleCountOptions,
+  ): MaybePromise<ThrottleResult[]> => {
+    const { plan, inputs, scopeKey } = planOfKeys(
+      "peekCount",
+      keys,
+      countOptions,
+    );
+    if (plan.limits.length === 0) return [];
+    const unwrap = (error: unknown): never => {
+      throw error instanceof StoreFailure ? error.cause : error;
+    };
+    let results: MaybePromise<ThrottleResult[]>;
+    try {
+      results = countAll(store, plan, inputs, scopeKey, now(), true);
+    } catch (error) {
+      return unwrap(error);
+    }
+    return isThenable(results) ? results.catch(unwrap) : results;
+  };
+
   const reset = (
     key: string,
     resetOptions: ThrottleResetOptions = {},
@@ -1763,6 +1963,8 @@ export function throttle(options: ThrottleOptions): ThrottleHandler {
     store: { value: store, enumerable: true },
     update: { value: update },
     peek: { value: peek },
+    count: { value: countKeys },
+    peekCount: { value: peekCount },
     reset: { value: reset },
   });
   return handler;
