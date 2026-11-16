@@ -335,20 +335,23 @@ export class BunThrottlerGuard implements CanActivate {
 
   /**
    * Who a request counts against when no tracker is configured: the
-   * client's address (`req.ip`), an IPv6 one reduced to the module's
-   * `ipv6SubnetPrefix`, `"unknown"` when the request has none.
-   * `req.ip` is the client's only when the adapter trusts the proxies in
-   * front of it. Override it (`ThrottlerGuard.getTracker`).
+   * client's address as `req.clientAddress` gives it (the client `req.ip`
+   * names, normalised, and never a malformed forwarded entry), an IPv6 one
+   * reduced to the module's `ipv6SubnetPrefix`, `"unknown"` when the
+   * request has none. For a request whose `req.ip` is an address, the same
+   * tracker `req.ip` gave before 3.3. It is the client's only when the
+   * adapter trusts the proxies in front of it. Override it
+   * (`ThrottlerGuard.getTracker`).
    */
   protected getTracker(
     req: BunRequest,
     _context: ExecutionContext,
   ): Promise<string> {
-    const ip = req.ip;
+    const address = req.clientAddress;
     return Promise.resolve(
-      ip === "" || ip === undefined || ip === null
+      address === "" || address === undefined || address === null
         ? "unknown"
-        : throttleAddressKey(ip, this.throttler.options.ipv6SubnetPrefix),
+        : throttleAddressKey(address, this.throttler.options.ipv6SubnetPrefix),
     );
   }
 

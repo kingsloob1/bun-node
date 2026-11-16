@@ -515,6 +515,32 @@ describe("getTracker, ignoreUserAgents, skipIf", () => {
     expect((await adapter.fetch("/a", as("q"))).status).toBe(429);
   });
 
+  it("the default tracker is req.clientAddress: junk in X-Forwarded-For opens no fresh count (bun-node#792)", async () => {
+    const { adapter } = await boot({ throttlers: [{ limit: 1, ttl: "1m" }] }, [
+      PlainController,
+    ]);
+    adapter.set("trust proxy", true);
+    const from = (
+      forwardedFor: string,
+    ): RequestInit & {
+      remoteAddress: string;
+    } => ({
+      headers: { "x-forwarded-for": forwardedFor },
+      remoteAddress: "10.0.0.4",
+    });
+    // Each junk value is req.ip as written; the tracker is the nearest
+    // trusted hop, the peer, so they share one count.
+    expect((await adapter.fetch("/a", from("not-an-ip-1"))).status).toBe(200);
+    expect((await adapter.fetch("/a", from("not-an-ip-2"))).status).toBe(429);
+    // A real client is its own count, its mapped and plain forms one.
+    expect((await adapter.fetch("/a", from("::ffff:203.0.113.5"))).status).toBe(
+      200,
+    );
+    expect((await adapter.fetch("/a", from("203.0.113.5"))).status).toBe(429);
+    // The control: another client still has its own count.
+    expect((await adapter.fetch("/a", from("203.0.113.6"))).status).toBe(200);
+  });
+
   it("ignoreUserAgents lets matching agents through uncounted", async () => {
     const { adapter } = await boot(
       { throttlers: [{ limit: 1, ttl: "1m" }], ignoreUserAgents: [/^probe\//] },

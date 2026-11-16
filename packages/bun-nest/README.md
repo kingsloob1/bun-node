@@ -4382,7 +4382,7 @@ import { APP_GUARD, NestFactory } from "@nestjs/core";
 class AuthController {
   // Two limits on one route, each keyed its own way.
   @Throttle({
-    account: { limit: 10, ttl: "1m", getTracker: (req) => `${req.ip}|${req.body?.email}` },
+    account: { limit: 10, ttl: "1m", getTracker: (req) => `${req.clientAddress}|${req.body?.email}` },
     address: { limit: 30, ttl: minutes(1) },
   })
   @Post("sign-in")
@@ -4421,7 +4421,7 @@ checked at boot: a bad one fails it with a `ConfigError`.
 | `ttl` (per throttler) | (required) | A duration: `"1m"`, `"30s"`, `{ minutes: 1 }`, `seconds(60)`. **Never a bare number** (a type error and a boot error), and under a second only with `allowSubSecond: true`. |
 | `skipIf` | none | `(context) => boolean \| Promise<boolean>`: requests it answers `true` for are not counted. On a throttler it applies to that throttler only; on the module, to every throttler without its own. |
 | `ignoreUserAgents` | none | `RegExp[]`: matching `User-Agent`s are not counted (a throttler's list wins over the module's). |
-| `getTracker` | the address | `(req, context) => string`: who a request counts against. Default `req.ip`, an IPv6 address reduced to `ipv6SubnetPrefix`, `"unknown"` without one. Per throttler, per module, per `@Throttle()`, or by overriding the guard's `getTracker()`. |
+| `getTracker` | the address | `(req, context) => string`: who a request counts against. Default `req.clientAddress` (the client `req.ip` names, normalised, never a malformed forwarded entry; the same tracker `req.ip` gave before 3.3 wherever that is an address), an IPv6 address reduced to `ipv6SubnetPrefix`, `"unknown"` without one. Per throttler, per module, per `@Throttle()`, or by overriding the guard's `getTracker()`. |
 | `generateKey` | per route, hashed | `(context, tracker, name) => string`: the counter key. Default SHA-256 of controller, handler, throttler and tracker, as `@nestjs/throttler`: one count per route per client, and no address or account in the store's keys. |
 | `ipv6SubnetPrefix` | `56` | The IPv6 prefix the default tracker keeps; `false` keeps the whole address. |
 | `store` | one memory store | Any bun-common `ThrottleStore`. Every guard of the module shares it. `cacheThrottleStore(cache)` from `@kingsleyweb/bun-nest/cache` holds a limit across processes and instances. |

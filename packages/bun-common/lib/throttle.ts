@@ -20,8 +20,10 @@
  * there (`@SkipThrottle()`). Limits with other names add to the outer ones.
  *
  * The defaults: a sliding-window counter (any store with an atomic
- * increment can run it, across processes), keyed on `req.ip` with an IPv6
- * address reduced to its `/56` (express-rate-limit 8's `ipv6Subnet`), a
+ * increment can run it, across processes), keyed on `req.clientAddress`
+ * (the client `req.ip` names, normalised and never a malformed forwarded
+ * entry) with an IPv6 address reduced to its `/56` (express-rate-limit 8's
+ * `ipv6Subnet`), a
  * `429` `application/problem+json` body with `Retry-After`, no rate-limit
  * headers otherwise (opt in to the IETF `RateLimit-Policy`/`RateLimit` of
  * draft-ietf-httpapi-ratelimit-headers-11 or the legacy `X-RateLimit-*`),
@@ -167,9 +169,14 @@ export interface ThrottleLimits {
 export interface ThrottleOptions extends ThrottleLimits {
   /**
    * Who a request counts against. Default {@link defaultThrottleKey}:
-   * `req.ip` (an IPv6 address reduced to its {@link ipv6Subnet} prefix),
-   * an IPv4-mapped address unmapped, `"unknown"` when there is none (a
-   * socket-free `fetch()`). Behind a proxy, `req.ip` is the client's address
+   * `req.clientAddress` (an IPv6 address reduced to its {@link ipv6Subnet}
+   * prefix), `"unknown"` when there is none (a socket-free `fetch()`).
+   * That is the client `req.ip` names, normalised (an IPv4-mapped address
+   * unmapped), and never a malformed `X-Forwarded-For` entry: where the
+   * walk ends on one, the nearest trusted hop before it, so a client cannot
+   * open a fresh count per junk value it sends. For every request whose
+   * `req.ip` is an address the key is the one `req.ip` gave before 3.3, so
+   * existing counts carry over. Behind a proxy, it is the client's address
    * only when the adapter's `trustProxy` trusts that proxy; otherwise every
    * client behind it shares the proxy's count.
    * A key may be any string; a store namespaces it.
@@ -665,7 +672,7 @@ export function throttlePoliciesFor(
  * dotted form, an IPv6 address to its first `prefix` bits
  * (`"2001:db8:aa:bb00::/56"`, any zone dropped), anything else unchanged.
  *
- * @param address The address (`req.ip`).
+ * @param address The address (`req.clientAddress`, or any address string).
  * @param prefix  The IPv6 prefix length kept, 1–128; `false` keeps it all.
  */
 export function throttleAddressKey(
@@ -712,13 +719,16 @@ export function throttleAddressKey(
 }
 
 /**
- * The default {@link ThrottleOptions.key}: `req.ip` through
+ * The default {@link ThrottleOptions.key}: `req.clientAddress` through
  * {@link throttleAddressKey} with a `/56` IPv6 prefix, `"unknown"` when the
- * request has no address.
+ * request has no address. Before 3.3 it read `req.ip`; for an address the
+ * two give the same key (`throttleAddressKey` normalises as
+ * `req.clientAddress` does), and they differ only where `req.ip` is a
+ * malformed forwarded entry, which used to be a key of its own.
  */
 export function defaultThrottleKey(req: BunRequest): string {
-  const ip = req.ip;
-  return ip === "" ? "unknown" : throttleAddressKey(ip);
+  const address = req.clientAddress;
+  return address === "" ? "unknown" : throttleAddressKey(address);
 }
 
 /* ------------------------------------------------------------------ *
@@ -1068,7 +1078,7 @@ function isStore(value: unknown): value is ThrottleStore {
  *   "/login",
  *   throttle({
  *     limits: {
- *       account: { limit: 10, window: "1m", key: (req) => `${req.ip}|${req.body?.email}` },
+ *       account: { limit: 10, window: "1m", key: (req) => `${req.clientAddress}|${req.body?.email}` },
  *       address: { limit: 30, window: "1m" },
  *     },
  *   }),
@@ -1154,8 +1164,10 @@ export function throttle(options: ThrottleOptions): ThrottleHandler {
     (subnet === 56
       ? defaultThrottleKey
       : (req) => {
-          const ip = req.ip;
-          return ip === "" ? "unknown" : throttleAddressKey(ip, subnet);
+          const address = req.clientAddress;
+          return address === ""
+            ? "unknown"
+            : throttleAddressKey(address, subnet);
         });
   const baseCost = checkCost(options.cost ?? 1, "cost");
   const now = options.now ?? Date.now;

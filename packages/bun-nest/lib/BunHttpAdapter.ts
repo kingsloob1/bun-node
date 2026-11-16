@@ -1342,7 +1342,7 @@ export class BunHttpAdapter<
        * options (or the `throttle()` middleware given) runs first, ahead of
        * every route, every Nest middleware, every guard and the not-found
        * handler, so a request no route handles (a burst of 404s) counts too.
-       * Keyed on `req.ip` by default. A refusal is bun-common's `429`
+       * Keyed on `req.clientAddress` by default. A refusal is bun-common's `429`
        * problem document, answered before Nest sees the request, so Nest's
        * exception filters do not shape it. Nest's `@Throttle()` and
        * `@SkipThrottle()` do **not** affect it: they configure
