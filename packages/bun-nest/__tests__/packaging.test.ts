@@ -257,6 +257,30 @@ describe("this package's optional peers", () => {
     expect(optional.has("@nestjs/terminus")).toBe(true);
   });
 
+  it("scopes @kingsleyweb/bun-security to the security subpath, never the root or the constants", () => {
+    const peersOf = (spelling: string) =>
+      checkConfig.entries?.find((e) => e.spelling === spelling)?.peers ?? [];
+    expect(optional.has("@kingsleyweb/bun-security")).toBe(true);
+    for (const spelling of [
+      "@kingsleyweb/bun-nest/security",
+      "@kingsleyweb/bun-nest/lib/security",
+    ]) {
+      expect(peersOf(spelling)).toEqual(["@kingsleyweb/bun-security"]);
+    }
+    expect(peersOf("@kingsleyweb/bun-nest")).toEqual([]);
+    // The constants import nothing, so they are checked without it.
+    expect(
+      checkConfig.entries?.find(
+        (e) =>
+          e.spelling ===
+          "@kingsleyweb/bun-nest/lib/security/security.constants",
+      ),
+    ).toBeDefined();
+    expect(
+      peersOf("@kingsleyweb/bun-nest/lib/security/security.constants"),
+    ).toEqual([]);
+  });
+
   it("scopes @kingsleyweb/bun-cache to the cache subpath, never the root or the tokens", () => {
     const peersOf = (spelling: string) =>
       checkConfig.entries?.find((e) => e.spelling === spelling)?.peers ?? [];

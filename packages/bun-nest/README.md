@@ -142,6 +142,7 @@ Underneath, routing is
   - [The cache interceptor](#the-cache-interceptor)
   - [Installing bun-cache is what makes the subpath compile](#installing-bun-cache-is-what-makes-the-subpath-compile)
 - [Throttling](#throttling)
+- [Request defence: `SecurityModule`](#request-defence-securitymodule)
   - [Module options](#module-options)
   - [`@Throttle()` and `@SkipThrottle()`](#throttle-and-skipthrottle)
   - [The guard](#the-guard)
@@ -1179,6 +1180,7 @@ none is set.
 | `setOnRequestHook((req, res, done) => …)` | First for every request, before middleware, body parsing and routes (as platform-express) | Yes: it can answer the request itself, or `done(error)` |
 | `setOnResponseHook((req, res) => …)` | After the response is sent (for a `write()` stream, after it ends), as platform-express's `res.on("finish")` | No |
 | `addBeforeWriteHook((context) => …)` | After the response is produced, before anything of it is written | Yes: it can refuse it |
+| `addBeforeReadHook((request, server) => …)` | First for every request, before the adapter reads anything of it: no body, cookie or query parsed, no middleware, guard or route run | Yes: it can answer it (a `Response`), close the connection (a body that errors), or hold it (a promise) |
 
 `setOnRequestHook` and `setOnResponseHook` are platform-express's, with the
 same rules: the request continues on `done()`, not when a returned promise
@@ -4536,6 +4538,92 @@ itself is in the package root and never reaches bun-cache.
 | a forgotten guard throttles nothing, silently | the boot check logs an error (`guardCheck`) |
 | `InjectThrottlerOptions()`, `InjectThrottlerStorage()` | `@Inject(BUN_THROTTLER_OPTIONS)`, and `BunThrottlerService` (its `store`, `throttlers`, `update()`) |
 
+## Request defence: `SecurityModule`
+
+`@kingsleyweb/bun-nest/security` puts
+[`@kingsleyweb/bun-security`](../bun-security/README.md) on a Nest
+application served by `BunHttpAdapter` (bun-security plan §3.5).
+bun-security is an optional peer: install it to use this subpath.
+
+```ts
+import { SecurityModule, SecurityProfile, SkipSecurity, InjectSecurity } from "@kingsleyweb/bun-nest/security";
+
+@Module({
+  imports: [
+    SecurityModule.forRoot({
+      policy,                                            // bun-security's policy
+      identify: (req: BunRequest) => ({ user: sessionUser(req.cookies.sid) }),
+    }),
+  ],
+})
+export class AppModule {}
+
+@Controller()
+export class AuthController {
+  @Post("login") @SecurityProfile("login") login() {}
+  @Post("hooks/stripe") @SecurityProfile("webhook", { crossSite: true }) hook() {}
+  @Get("health") @SkipSecurity() health() {}
+}
+```
+
+The engine runs in the same three stages as bun-common's `installSecurity`:
+
+- **The early stage**, on the adapter's `addBeforeReadHook`, before the
+  request is read: in-flight limits, client identity, the lists' address
+  entries, address bans, the request's shape, honeypots, and the limits keyed
+  on the address alone. A refused request is answered (problem+json, with
+  the security headers) before its body is parsed, and before any Nest
+  middleware, guard or pipe runs.
+- **The route stage**, `SecurityGuard`, a global guard (`APP_GUARD`) unless
+  `globalGuard: false`: the route's `@SecurityProfile()` and
+  `@SkipSecurity()`, the caller from `identify(req)`, the limits and counted
+  rules keyed on the caller or the matched route (`"GET /users/:id"`), user
+  and API-key entries and bans, canary credentials, then the CSRF check. A
+  refusal is a `SecurityRefusalException`, an `HttpException` whose response
+  is the same problem body (`{ type, title, status, code }`), with
+  `Retry-After` and `Cache-Control: no-store` set first; an exception filter
+  of the app's own can render it from its `decision`.
+- **The response stage**: a middleware the module registers while Nest builds
+  the application, ahead of Nest's body parsers, middleware and routes, marks
+  route-not-found (no route matched and the answer is a `404`, so Nest's own
+  not-found answer counts and a route's `NotFoundException` never does) and
+  puts a response transform on each response for the security headers and
+  stack-trace scrubbing; an observing before-write hook reports each outcome
+  to the engine once the answer is final (a stream when it ends).
+
+`forRoot(options)` takes `createSecurity`'s options (the module creates the
+engine and closes it on shutdown) or `{ security }`, an engine made
+elsewhere, beside the settings: `headers` (`securityHeaders()`' options or
+`false`), `csrf` (`csrf()`'s options, a guard, or `false`; on by default, for
+requests carrying cookies), `scrub` (`"production"`, `"always"` or `false`),
+`selfTest`, `renderBlock` (the early stage's refusal page),
+`failClosedOnEngineError`, `logger`, `globalGuard` and `isGlobal` (both
+`true` by default). `forRootAsync({ imports, inject, useFactory })` builds
+them with injection. `@InjectSecurity()` injects the engine, for `signal()`
+and `explain()` in services.
+
+`@SkipSecurity()` skips the whole route stage on a handler or controller;
+`@SkipSecurity("limit:per-user", "csrf")` lets through only refusals by
+those rules, which still count. The early stage runs before routing, so a
+route cannot skip it: an allow list entry exempts a client there.
+
+**The boot self-test.** When the application bootstraps, the module sends one
+marked request through the adapter (the early stage explains it, never
+counts it, and the module's middleware answers it), and checks that a
+`SecurityGuard` is installed, globally or with `@UseGuards()`. Either
+failing throws a `ConfigError`, so an application whose defence is not in
+the pipeline fails at start-up: ConcaveHR's pay-api ran unthrottled because
+a pipe had been registered as its `APP_GUARD`. `SecurityGuard` declares its
+dependencies with `@Inject`, so a subclass of it injects on a cold boot
+without emitted metadata. `selfTest: false` turns the self-test off.
+
+The security headers and scrubbing ride on bun-common's response transforms,
+because `addBeforeWriteHook` may only refuse a response: they reach every
+answer written on the request's response (a route's, Nest's not-found and
+exception answers, an early refusal), not one the adapter's own error
+handling writes on a fresh response (an error in middleware or body
+parsing, outside Nest's exception zone).
+
 ## Exported API
 
 Everything below is exported from the package root; see
@@ -4557,13 +4645,14 @@ Any `lib/` module is importable by path too (`@kingsleyweb/bun-nest/lib/<module>
 | Jobs health (`./jobs/terminus` only) | `BunJobsHealthIndicator`, `BunJobsHealthModule`; type `BunJobsHealthOptions` |
 | Jobs testing (`./jobs/testing` only) | `BunJobsTestingModule`, `runJob`, `drainJobs`; types `BunJobsTestingModuleOptions`, `RunJobOptions`, `RunJobOutcome`, `DrainJobsOptions` |
 | Jobs API module (subpath only) | `BunJobsApiModule`, `InjectJobsApi`, `BUN_JOBS_API`, `BUN_JOBS_API_OPTIONS`, `guardsAuthorize`, `jobsApiContextOf`; types `GuardsAuthorize`, `GuardsAuthorizeGuard`, `GuardsAuthorizeOptions`, `GuardsAuthorizePolicy`, `BunJobsApiModuleOptions`, `BunJobsApiModuleAsyncOptions`, and bun-jobs's `JobsApi`, `JobsApiAction`, `JobsApiAuthorize`, `JobsApiConfig` re-exported so they can be named without importing bun-jobs directly |
-| HTTP adapter | `BunHttpAdapter`, `BunNestHttpAdapter`, `channelObservable` (type `ChannelObservableOptions`, see [Server-sent events](#server-sent-events-sse)); types `ListenCallback`, `MiddlewareFactoryRespType`, `RenderOptions`, `VersionedRoute`, `WebsocketOptions`, `BunRequestHook`, `BunResponseHook`, `BunBeforeWriteHook`, `BunBeforeWriteContext`, `BunBeforeWriteResponseContext`, `BunBeforeWriteErrorContext`, `BunBeforeWriteBody` |
+| HTTP adapter | `BunHttpAdapter`, `BunNestHttpAdapter`, `channelObservable` (type `ChannelObservableOptions`, see [Server-sent events](#server-sent-events-sse)); types `ListenCallback`, `MiddlewareFactoryRespType`, `RenderOptions`, `VersionedRoute`, `WebsocketOptions`, `BunRequestHook`, `BunResponseHook`, `BunBeforeWriteHook`, `BunBeforeWriteContext`, `BunBeforeWriteResponseContext`, `BunBeforeWriteErrorContext`, `BunBeforeWriteBody`, `BunBeforeReadHook` |
 | WebSocket adapter | `BunWebSocketAdapter`, `BunNestWebsocketAdapter`, `MessageEventTypes`; types `BunWebSocketAdapterOptions`, `BunWebSocketAdapterOptionsFromHttpAdapter`, `BunWebSocketAdapterNormalOptions`, `BunWebSocketGatewayOptions`, `BunWebsocketHttpAdapter`, `BunNestWebSocketClient`, `WsResponse`, `WsResponseTransform`, `WsAckFunction`, `WsEmitFunction`, `WsEventMap`, `WsEncodedArg`, `WsEncodedArgs` |
 | Packets | types `MessageFormat`, `MessagePacket`, `MessagePacketMap`, `MessageConnectType`, `MessageDisConnectType`, `MessageEventType`, `MessageAckType`, `MessageErrorType`, `MessageBinaryEventType`, `MessageBinaryAckType` |
 | Re-exported from bun-common | `requestParsing` (type `RequestParsingOptions`); types `BunWebSocketOptions`, `BunWebSocketServerType`, `BunWebsocketHandlerFor`, `WebSocketClient`, `WebSocketClientData` |
 | Uploads | `FileInterceptor`, `FilesInterceptor`, `FileFieldsInterceptor`, `AnyFilesInterceptor`, `NoFilesInterceptor`, `getMultipartRequest`, `transformUploadException`, `mergeUploadOptions`, `MulterModule`, `MULTER_MODULE_OPTIONS`; types `UploadExceptionBody`, `MulterModuleOptions`, `MulterModuleAsyncOptions`, `MulterOptionsFactory` |
 | Decorators | `UploadedFile`, `UploadedFiles` (Nest's own) |
 | [Typed clients](#typed-clients-documents-from-controllers) | `Describe`, `DevTypesModule`, `Invalidates`, `gatewayAsyncApi`; types `DevTypesModuleOptions`, `GatewayAsyncApiOptions` |
+| [Request defence](#request-defence-securitymodule) (subpath only) | `SecurityModule`, `SecurityGuard`, `SecurityService`, `SecurityProfile`, `SkipSecurity`, `InjectSecurity`, `SecurityRefusalException`, `BUN_SECURITY`, `BUN_SECURITY_OPTIONS`, `SECURITY_PROFILE_METADATA`, `SKIP_SECURITY_METADATA`, `SECURITY_SELF_TEST_PATH`; types `SecurityModuleOptions`, `SecurityModuleAsyncOptions`, `SecurityModuleSettings`, `SecuritySource`, `SecurityProfileMetadata` |
 | [Throttling](#throttling) | `BunThrottlerModule`, `BunThrottlerGuard`, `BunThrottlerService`, `BUN_THROTTLER_OPTIONS`, `Throttle`, `SkipThrottle`, `ThrottlerException`, `throttlerMessage`, `seconds`, `minutes`, `hours`, `days`, `weeks`; types `BunThrottlerModuleOptions`, `BunThrottlerModuleConfig`, `BunThrottlerModuleAsyncOptions`, `BunThrottlerOptions`, `BunThrottlerOptionsFactory`, `BunThrottlerLimitDetail`, `BunThrottlerGetTracker`, `BunThrottlerGenerateKey`, `ThrottleDecoratorOptions`, `Resolvable` |
 | [Validation](#validation) | `StandardSchemaPipe`, `SchemaDto`, `StandardValidationPipe`, `ValidationExceptionFilter`, `StandardValidationModule`, `StandardValidationException`, `Validate`, `Validated`, `ValidBody`, `ValidQuery`, `ValidParams`, `ValidHeaders`, `ValidCookies`, `ValidSignedCookies`, `reply`, `ResponseValidationInterceptor`; types `StandardValidationPipeOptions`, `ValidateSchemas` |
 | [Validated gateways](#validated-gateways-validatemessage-emits-typedsocket) | `ValidateMessage`, `Emits`; types `TypedSocket`, `EmitsEventMap`, `EmitsSchemas` |

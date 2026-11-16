@@ -798,6 +798,21 @@ export type BunBeforeWriteHook = (
   context: BunBeforeWriteContext,
 ) => void | PromiseLike<void>;
 
+/**
+ * A hook registered with {@link BunHttpAdapter.addBeforeReadHook}, as
+ * bun-common's `BeforeReadHook`: it sees each HTTP request first, before the
+ * adapter reads anything of it (no body, cookie or query parsed, no
+ * middleware, guard or route run). Return nothing to let the request
+ * through, a `Response` to answer it (its body never read; one whose body
+ * errors before its first byte closes the connection with no answer), or a
+ * promise of either to hold it. A throw or rejection goes to the error
+ * handling without a request.
+ */
+export type BunBeforeReadHook<customWebsocketDataType = unknown> = (
+  request: Request,
+  server: BunWebSocketServerType<customWebsocketDataType>,
+) => Response | void | PromiseLike<Response | void>;
+
 /** The before-write state, created with the first hook (see `addBeforeWriteHook`). */
 interface BeforeWriteState {
   /** The `StreamableFile` each response was given by `reply()`. */
@@ -908,6 +923,13 @@ class BeforeWriteContext {
     }
     return bodyOfSent(sent, native);
   }
+}
+
+/** The error a before-read hook's result that is neither a `Response` nor nothing becomes. */
+function beforeReadResultError(value: unknown): TypeError {
+  return new TypeError(
+    `A before-read hook must return a Response or nothing, or a promise of either; got ${typeof value}`,
+  );
 }
 
 /** Whether `value` is a promise or another thenable. */
@@ -1466,6 +1488,136 @@ export class BunHttpAdapter<
    * {@link handleNativeRequest}, in which case the override is called.
    */
   protected serveNativeRequest(
+    nativeRequest: Request,
+    server: BunWebSocketServerType<customWebsocketDataType>,
+  ): Response | undefined | Promise<Response | undefined> {
+    const hooks = this.#beforeReadHooks;
+    return hooks === undefined
+      ? this.#readRequest(nativeRequest, server)
+      : this.#beforeRead(hooks, 0, nativeRequest, server);
+  }
+
+  /** The hooks {@link addBeforeReadHook} registered, in order; `undefined` while there are none. */
+  #beforeReadHooks: BunBeforeReadHook<customWebsocketDataType>[] | undefined =
+    undefined;
+
+  /**
+   * Registers a hook run first for every HTTP request, **before the adapter
+   * reads anything of it**: before its body is read, its cookies and query
+   * parsed, its `BunRequest` built, and any middleware, guard or route runs,
+   * so a refused request costs no parsing. bun-common's adapter's
+   * `addBeforeReadHook`, with the same contract (see
+   * {@link BunBeforeReadHook}); the early stage of
+   * `@kingsleyweb/bun-nest/security`. WebSocket upgrade requests and
+   * socket-free {@link fetch} calls pass it too.
+   *
+   * Hooks run in registration order; the first to answer ends the request.
+   * An answer is sent as it is: the before-write hooks, which see what the
+   * request's handlers and the error handling produce, do not see it. While
+   * the adapter's `requestTimeout` is set, a hook holding the request past
+   * it fails it with `Request Timedout`. With none registered the request
+   * path is unchanged: one field read. Returns a function that removes the
+   * hook.
+   */
+  public addBeforeReadHook(
+    hook: BunBeforeReadHook<customWebsocketDataType>,
+  ): () => void {
+    // Copied on write: a request in flight keeps the list it started with.
+    this.#beforeReadHooks = [...(this.#beforeReadHooks ?? []), hook];
+    let removed = false;
+    return () => {
+      if (removed) {
+        return;
+      }
+      removed = true;
+      // This registration only: the same function added twice stays once.
+      const hooks = this.#beforeReadHooks ?? [];
+      const index = hooks.indexOf(hook);
+      if (index !== -1) {
+        const rest = hooks.filter((_, i) => i !== index);
+        this.#beforeReadHooks = rest.length ? rest : undefined;
+      }
+    };
+  }
+
+  /**
+   * Runs the before-read hooks from `index`: the first answer, or the
+   * request read and routed once every hook let it through. Synchronous
+   * while every hook is; a throw is a rejection.
+   */
+  #beforeRead(
+    hooks: BunBeforeReadHook<customWebsocketDataType>[],
+    index: number,
+    nativeRequest: Request,
+    server: BunWebSocketServerType<customWebsocketDataType>,
+  ): Response | undefined | Promise<Response | undefined> {
+    for (let i = index; i < hooks.length; i++) {
+      let verdict: Response | void | PromiseLike<Response | void>;
+      try {
+        verdict = hooks[i](nativeRequest, server);
+      } catch (error) {
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- passes on whatever the hook threw, unchanged, as a route's throw is
+        return Promise.reject(error);
+      }
+      if (verdict === undefined) {
+        continue;
+      }
+      if (verdict instanceof Response) {
+        return verdict;
+      }
+      if (isThenable(verdict)) {
+        return this.#readWithinTimeout(
+          this.#holdBeforeRead(hooks, i, verdict, nativeRequest, server),
+        );
+      }
+      return Promise.reject(beforeReadResultError(verdict));
+    }
+    return this.#readRequest(nativeRequest, server);
+  }
+
+  /** The rest of {@link #beforeRead} once hook `index` returned `verdict`, a promise. */
+  async #holdBeforeRead(
+    hooks: BunBeforeReadHook<customWebsocketDataType>[],
+    index: number,
+    verdict: PromiseLike<Response | void>,
+    nativeRequest: Request,
+    server: BunWebSocketServerType<customWebsocketDataType>,
+  ): Promise<Response | undefined> {
+    for (let i = index; ;) {
+      const settled = await verdict;
+      if (settled instanceof Response) {
+        return settled;
+      }
+      if (settled !== undefined) {
+        throw beforeReadResultError(settled);
+      }
+      i++;
+      if (i === hooks.length) {
+        return this.#readRequest(nativeRequest, server);
+      }
+      verdict = Promise.resolve(hooks[i](nativeRequest, server));
+    }
+  }
+
+  /** `promise`, failing with `Request Timedout` once `requestTimeout` passes (unbounded at `0`). */
+  #readWithinTimeout<T>(promise: Promise<T>): Promise<T> {
+    const timeout = this.requestTimeout;
+    if (!(timeout > 0)) {
+      return promise;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(createRequestTimeoutError()), timeout);
+    });
+    return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
+  }
+
+  /**
+   * Builds the request and runs it through the payload guard and the
+   * router: the pipeline after the before-read hooks. Never throws; an
+   * error is a rejection.
+   */
+  #readRequest(
     nativeRequest: Request,
     server: BunWebSocketServerType<customWebsocketDataType>,
   ): Response | undefined | Promise<Response | undefined> {

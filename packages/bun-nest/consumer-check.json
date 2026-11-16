@@ -4,7 +4,8 @@
     "packages/bun-contract",
     "packages/bun-common",
     "packages/bun-jobs",
-    "packages/bun-cache"
+    "packages/bun-cache",
+    "packages/bun-security"
   ],
   "consumerDependencies": ["@nestjs/terminus@^12.1.0"],
   "entries": [
@@ -109,7 +110,8 @@
         "BunThrottlerGetTracker",
         "BunThrottlerGenerateKey",
         "ThrottleDecoratorOptions",
-        "ChannelObservableOptions"
+        "ChannelObservableOptions",
+        "BunBeforeReadHook"
       ],
       "snippet": "const adapter = new m.BunHttpAdapter(0);\nadapter.get(\"/users/:id\", (req, res) => {\n  type Params = typeof req.params;\n  const _paramsNotAny: Expect<IsAny<Params>> = false;\n  const _paramsExact: Equal<Params[\"id\"], string> = true;\n  res.json({ id: req.params.id });\n});\nexport type _instance = Expect<IsAny<ReturnType<typeof adapter.getInstance>>>;\nexport type _gwDocNotAny = Expect<IsAny<ReturnType<typeof m.gatewayAsyncApi>[\"document\"]>>;\nconst _gwOpts: t.GatewayAsyncApiOptions = { title: \"g\", strict: \"lenient\" };\nexport type _throttlerModule = Expect<IsAny<ReturnType<typeof m.BunThrottlerModule.forRoot>>>;\nconst _throttlers: t.BunThrottlerModuleOptions = { throttlers: [{ limit: 600, ttl: m.minutes(1) }, { name: \"strict\", limit: 5, ttl: \"1m\" }], headers: \"legacy\" };\n// @ts-expect-error ttl is a duration, never a bare number\nconst _bareTtl: t.BunThrottlerOptions = { limit: 1, ttl: 60 };\nm.Throttle({ default: { limit: 5 } });\nm.SkipThrottle({ default: false });"
     },
@@ -335,6 +337,47 @@
     {
       "spelling": "@kingsleyweb/bun-nest/lib/cache/errors",
       "values": ["CacheNotReadyError"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-nest/security",
+      "peers": ["@kingsleyweb/bun-security"],
+      "values": [
+        "SecurityModule",
+        "SecurityGuard",
+        "SecurityService",
+        "SecurityProfile",
+        "SkipSecurity",
+        "InjectSecurity",
+        "SecurityRefusalException",
+        "BUN_SECURITY",
+        "BUN_SECURITY_OPTIONS",
+        "SECURITY_PROFILE_METADATA",
+        "SKIP_SECURITY_METADATA",
+        "SECURITY_SELF_TEST_PATH"
+      ],
+      "types": [
+        "SecurityModuleOptions",
+        "SecurityModuleAsyncOptions",
+        "SecurityModuleSettings",
+        "SecuritySource",
+        "SecurityProfileMetadata"
+      ],
+      "snippet": "export type _forRoot = Expect<IsAny<ReturnType<typeof m.SecurityModule.forRoot>>>;\nexport type _guardNotAny = Expect<IsAny<t.SecurityModuleOptions>>;\nexport const _module = m.SecurityModule.forRoot({ policy: { lists: [{ ip: \"203.0.113.0/24\", action: \"block\" }] }, headers: { frameOptions: false }, csrf: { origins: [\"https://app.example\"] }, scrub: \"always\" });\nexport const _profile: ClassDecorator & MethodDecorator = m.SecurityProfile(\"login\", { crossSite: false });\nexport const _skip: ClassDecorator & MethodDecorator = m.SkipSecurity(\"csrf\");\nexport const _status: number = new m.SecurityRefusalException({ action: \"block\", status: 403, hits: [], tags: [], risk: 1, subject: {} }).getStatus();\n// @ts-expect-error scrub is \"production\", \"always\" or false\nm.SecurityModule.forRoot({ policy: {}, scrub: \"never\" });"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-nest/lib/security",
+      "peers": ["@kingsleyweb/bun-security"],
+      "values": ["SecurityModule", "SecurityGuard"],
+      "types": ["SecurityModuleOptions"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-nest/lib/security/security.constants",
+      "values": [
+        "BUN_SECURITY",
+        "BUN_SECURITY_OPTIONS",
+        "SECURITY_PROFILE_METADATA",
+        "SKIP_SECURITY_METADATA"
+      ]
     },
     {
       "spelling": "@kingsleyweb/bun-nest/lib/BunHttpAdapter",

@@ -1,4 +1,5 @@
 export {
+  type BunBeforeReadHook,
   type BunBeforeWriteBody,
   type BunBeforeWriteContext,
   type BunBeforeWriteErrorContext,
