@@ -13,8 +13,10 @@ import { describe, expect, it } from "bun:test";
  * runs the bundle with WebCrypto alone.
  *
  * `sse.ts` re-exports bun-common's browser-safe `@kingsleyweb/bun-common/sse`
- * (PR-sse5), the one bare specifier a protocol file may name. Inside that
- * graph Bun resolves as usual, but nothing may reach `node:*` or `bun`.
+ * (PR-sse5), and `mac.ts`, `signing.ts` and `constants.ts` its browser-safe
+ * envelope (`@kingsleyweb/bun-common/envelope`, PR-P4): the bare specifiers
+ * a protocol file may reach. Inside those graphs Bun resolves as usual, but
+ * nothing may reach `node:*` or `bun`.
  */
 
 const LIB = new URL("../../lib/", import.meta.url).pathname;
@@ -35,6 +37,12 @@ const ALLOWED = new Set(
 
 /** The one package a protocol file may import: bun-common's browser-safe SSE entry. */
 const SSE_ENTRY = "@kingsleyweb/bun-common/sse";
+
+/** bun-common's browser-safe envelope entries, which the MAC and signing modules re-export (PR-P4). */
+const ENVELOPE_ENTRIES = [
+  "@kingsleyweb/bun-common/envelope",
+  "@kingsleyweb/bun-common/lib/envelope/mac",
+];
 
 /** bun-common's package directory, and bun-contract's, which its contract modules re-export. */
 const COMMON = join(dirname(Bun.resolveSync(SSE_ENTRY, LIB)), "../../");
@@ -68,10 +76,10 @@ function confineTo(entry: string): BunPlugin {
           }
           return undefined;
         }
-        if (args.path === entry) {
+        if (args.path === entry || ENVELOPE_ENTRIES.includes(args.path)) {
           // Resolved from bun-jobs, wherever the importer is (the control's
           // entry sits in a temporary directory).
-          return { path: Bun.resolveSync(entry, LIB) };
+          return { path: Bun.resolveSync(args.path, LIB) };
         }
         const target = join(args.resolveDir, `${args.path}.ts`);
         if (!args.path.startsWith(".") || !ALLOWED.has(target)) {

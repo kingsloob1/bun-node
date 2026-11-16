@@ -2,13 +2,14 @@ import type * as Remote from "@kingsleyweb/bun-jobs/remote";
 import type { BunPlugin } from "bun";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { describe, expect, it } from "bun:test";
 
 /**
  * `@kingsleyweb/bun-jobs/remote` is browser-safe: an executor in a V8
- * isolate (Cloudflare Workers, Deno Deploy) bundles it with no driver, no
- * bun-common and no `node:*` or `bun:*` module. That includes the reference
+ * isolate (Cloudflare Workers, Deno Deploy) bundles it with no driver, none
+ * of bun-common but its browser-safe envelope entry (the signing it moved
+ * there, PR-P4), and no `node:*` or `bun:*` module. That includes the reference
  * executor (`executor/`), which the entry exports, and the schemas it
  * validates with. `host/` is the one place `node:crypto` is allowed, and nothing
  * the entry reaches imports it.
@@ -61,7 +62,23 @@ function specifiersOf(source: string): string[] {
   return [...found];
 }
 
-/** A plugin that resolves only relative imports landing on {@link ALLOWED}, recording each. */
+/** bun-common's browser-safe envelope entries, the one package the graph may reach (PR-P4). */
+const ENVELOPE_ENTRIES = [
+  "@kingsleyweb/bun-common/envelope",
+  "@kingsleyweb/bun-common/lib/envelope/mac",
+];
+
+/** bun-common's package directory. */
+const COMMON = join(
+  dirname(Bun.resolveSync("@kingsleyweb/bun-common/package.json", LIB)),
+  "/",
+);
+
+/**
+ * A plugin that resolves only relative imports landing on {@link ALLOWED},
+ * and bun-common's envelope entries, recording each; inside bun-common it
+ * defers to Bun but refuses `node:*` and `bun`.
+ */
 function confine(resolved: string[]): BunPlugin {
   return {
     name: "confine-to-remote",
@@ -69,6 +86,16 @@ function confine(resolved: string[]): BunPlugin {
       build.onResolve({ filter: /.*/ }, (args) => {
         if (args.kind === "entry-point-build") {
           return undefined;
+        }
+        if (args.importer.startsWith(COMMON)) {
+          if (/^(?:node:|bun(?::|$))/.test(args.path)) {
+            throw new Error(`the envelope's graph reaches ${args.path}`);
+          }
+          return undefined;
+        }
+        if (ENVELOPE_ENTRIES.includes(args.path)) {
+          resolved.push(args.path);
+          return { path: Bun.resolveSync(args.path, LIB) };
         }
         const target = join(args.resolveDir, `${args.path}.ts`);
         if (!args.path.startsWith(".") || !ALLOWED.has(target)) {
@@ -110,6 +137,7 @@ describe("the remote entry's import graph", () => {
       "../api/contract/constants",
       "../api/contract/types",
       "../shared/errors",
+      ...ENVELOPE_ENTRIES,
     ]);
     for (const file of files) {
       const source = await Bun.file(join(REMOTE, file)).text();

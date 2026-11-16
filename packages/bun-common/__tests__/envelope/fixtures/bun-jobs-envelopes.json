@@ -1,0 +1,63 @@
+{
+  "$comment": "Envelopes signed by bun-jobs' lib/remote/signing.ts at develop 4460651d, before PR-P4 moved it into bun-common (captured with capture.ts in the PR's scratch). PR-P4's wire-compatibility test verifies each with the moved code and checks the moved code signs the same bytes.",
+  "cases": [
+    {
+      "name": "request with a JSON body",
+      "direction": "request",
+      "body": "{\"v\":1,\"op\":\"invoke\",\"id\":\"j1\",\"payload\":{\"a\":1}}",
+      "secret": "wire-secret-one",
+      "now": 1790000000000,
+      "header": "t=1790000000,v1=42293c70cca14add7ad26bc2a220f6611c3a4c479a0cc496ab071033d42efa52"
+    },
+    {
+      "name": "response with a JSON body",
+      "direction": "response",
+      "body": "{\"v\":1,\"op\":\"invoke-result\",\"id\":\"j1\",\"ok\":true}",
+      "secret": "wire-secret-one",
+      "now": 1790000001234,
+      "header": "t=1790000001,v1=1a5acc45feea09f2ae178b753ab8026efb500421dacabe97e7685573613bbc3f"
+    },
+    {
+      "name": "request with an empty body",
+      "direction": "request",
+      "body": "",
+      "secret": "wire-secret-one",
+      "now": 1790000000000,
+      "header": "t=1790000000,v1=30fb896331a99740814ec05c961c1584576a7dec612292693fcd938794b63898"
+    },
+    {
+      "name": "bodyless handshake GET",
+      "direction": "request",
+      "body": null,
+      "id": "hs:01J0Z~a.b-c",
+      "secret": "wire-secret-one",
+      "now": 1790000000999,
+      "header": "t=1790000000,v1=7308ce36d812332ca139d203ac579d4e864c5fd97c4aa927a8d05274e958d494"
+    },
+    {
+      "name": "unicode body",
+      "direction": "request",
+      "body": "{\"v\":1,\"note\":\"Ọ̀kàfọ̀ — ✓ 日本\"}",
+      "secret": "wire-secret-one",
+      "now": 1790000059000,
+      "header": "t=1790000059,v1=8b1da7cc47e6b8792042d35f15c679823c8a10e1f2645f218eeb246bbbc6cdb9"
+    },
+    {
+      "name": "rotation list signs with its first key",
+      "direction": "response",
+      "body": "{\"v\":1,\"op\":\"pong\",\"id\":\"p9\"}",
+      "secret": ["wire-new-key", "wire-old-key"],
+      "now": 1790000300000,
+      "header": "t=1790000300,v1=97dcc90449064753e6eede68a00a10a70535e530fd2873fc2e48ef1776326abb"
+    },
+    {
+      "name": "binary body",
+      "direction": "request",
+      "body": null,
+      "bodyHex": "00ff7b2210fe",
+      "secret": "wire-secret-two",
+      "now": 1790000000001,
+      "header": "t=1790000000,v1=c82ddb5b010a817763698456f7d1536362bb462b0e8705c42b2b971c3d097e7f"
+    }
+  ]
+}

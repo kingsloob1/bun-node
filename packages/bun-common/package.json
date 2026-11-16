@@ -58,6 +58,16 @@
       "types": "./dts/sse/index.d.ts",
       "default": "./lib/sse/index.ts"
     },
+    "./envelope": {
+      "@kingsleyweb/source": "./lib/envelope/index.ts",
+      "types": "./dts/envelope/index.d.ts",
+      "default": "./lib/envelope/index.ts"
+    },
+    "./lib/envelope": {
+      "@kingsleyweb/source": "./lib/envelope/index.ts",
+      "types": "./dts/envelope/index.d.ts",
+      "default": "./lib/envelope/index.ts"
+    },
     "./live": {
       "@kingsleyweb/source": "./lib/live/index.ts",
       "types": "./dts/live/index.d.ts",

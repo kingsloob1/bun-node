@@ -153,6 +153,7 @@ export type RemoteProblemCode = (typeof REMOTE_PROBLEM_CODES)[number];
 /**
  * The replay window, and its ceiling: a signature whose timestamp is further
  * than this from the verifier's clock, **in either direction**, is refused.
- * A verifier may narrow it, never widen it.
+ * A verifier may narrow it, never widen it. The envelope's, from bun-common
+ * (PR-P4).
  */
-export const REMOTE_SIGNATURE_WINDOW_MS = 300_000;
+export { REMOTE_SIGNATURE_WINDOW_MS } from "@kingsleyweb/bun-common/envelope";
