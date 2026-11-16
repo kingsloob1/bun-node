@@ -36,7 +36,7 @@ rule: no benchmarks or speed comparisons without the user's yes).
 | Part | State |
 |---|---|
 | This plan and its sub-plans | **approved** by the user on 2026-11-07 (above) |
-| M1, the engine | **started 2026-11-15** at the user's go-ahead. **PR-S1 built** on `feat/bun-security-s1` (2026-11-16), not yet merged: `packages/bun-security` with the packaging recipe, the policy format (`compilePolicy`, `securityPolicySchema`, explicit units), the engine (`createSecurity`: `evaluate`, `explain`, `load`, `status`, `close`), L2 on the trust-proxy foundation with service identity and the L2.5 trust check, L3 lists (CIDR trie, the `internal` list, allow guards), memory state, and `./serve` (`withSecurity`, `hardenServe`). Every other PR of M1 not started |
+| M1, the engine | **started 2026-11-15** at the user's go-ahead. **PR-S1 built** on `feat/bun-security-s1` (2026-11-16), not yet merged: `packages/bun-security` with the packaging recipe, the policy format (`compilePolicy`, `securityPolicySchema`, explicit units), the engine (`createSecurity`: `evaluate`, `explain`, `load`, `status`, `close`), L2 on the trust-proxy foundation with service identity and the L2.5 trust check, L3 lists (CIDR trie, the `internal` list, allow guards), memory state, and `./serve` (`withSecurity`, `hardenServe`). **PR-S2 built** on `feat/bun-security-s2` (2026-11-16), not yet merged: the policy format's `version`, L9 limits on the throttle foundation (policy-driven, composite keys, several per route, `throttled` events, dry run), counted rules, L1 per-IP concurrency and the in-flight cap, L14 outcome signals (`complete`, `signal`). Every other PR of M1 not started |
 | ConcaveHR's write-up of its defence | **folded in** (§12, received 2026-11-07): every layer mapped, its lessons carried into the design and §14 |
 | Foundations built beside this plan (§2.6) | the **trust-proxy client IP**, merged 2026-11-07, #653, and the **throttle plugin**, merged 2026-11-08 as T1 #654, T2 #655 and T3 #656 (follow-ups #669, #670, #672, #673, #675, #703), both requested by the user. bun-security builds on them (§20 lists what it needs from them) |
 | Storage drivers for durable state ([`storage.md`](storage.md)) | added 2026-11-07 at the user's request |
@@ -1198,6 +1198,18 @@ default is `false`, so internal-only services do not warn about their
 internal share); and the `internal` list protects addresses only, so a
 refusing `user` or `apiKey` entry still applies to a client on an internal
 address, while no `ip` entry refuses one.
+
+### 17.2 Added with PR-S2 (approved by the user, 2026-11-16)
+
+| Names | Where |
+|---|---|
+| values `SECURITY_POLICY_VERSION`, `DEFAULT_CONCURRENCY_PER_IP`, `DEFAULT_MAX_KEYS` | `.` |
+| types `LimitRule`, `LimitAlgorithm`, `CountedRule`, `CountedRuleAction`, `ConcurrencyPolicy`, `SubjectKeyPart`, `EvaluateOptions`, `RequestOutcome`, `StateStatus`, `SecurityWarningKind` | `.` |
+| `Security.complete`; `evaluate`'s `{ track }`; `createSecurity`'s `throttleStore`, `maxKeys`; `SecurityStatus.state` (`inFlight`, `inFlightClients`, `trips`, `evictions`, `warning`); `CompiledPolicy.version`; `RequestOutcome`'s `status`, `routeNotFound` | members, options |
+| policy fields `version`; `limits` (`id`, `limit`, `window`, `subSecond`, `key`, `routes`, `algorithm`, `cost`, `mode`, `appliesToServices`, `evenWhenAllowed`, `code`); `countedRules` (`id`, `event`, `threshold`, `window`, `subSecond`, `key`, `routes`, `action`, `duration`, `mode`, `appliesToServices`, `code`); `concurrency` (`perIp`, `total`, `releaseAfter`, `mode`, or `false`) | policy format |
+| key parts `ip`, `user`, `session`, `tenant`, `apiKey`, `route`; counted actions `ban`, `challenge`; event `server.error`; rule ids `limit:<id>`, `counted:<id>`, `concurrency:per-ip`, `concurrency:total`; problem code `rate_limited`; warning kind `state.evictions` | values |
+
+Decided with them (2026-11-16): the policy format's `version` (a missing one reads as 1; a newer one is refused, naming the upgrade); whether L9.3's default limits and the `not_found_per_minute` rule are built in and on by default is decided alongside PR-S5 and PR-S7; and PR-S3 adds a machine-readable "newer version" issue code to `SecurityPolicyError`, for the control plane (CP2, CP4).
 
 The trust-proxy and throttle names (`trustProxy`, `throttle()`,
 `ThrottleStore`, `cacheThrottleStore`, `@Throttle`, `@SkipThrottle`) are

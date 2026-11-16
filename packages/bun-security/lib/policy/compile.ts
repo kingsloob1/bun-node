@@ -2,28 +2,112 @@
  * `compilePolicy`: a validated policy turned into the structures the engine
  * reads per request (control-plane.md §2.3) — the address ranges in a CIDR
  * trie, users and API keys in maps, the internal list as locked allow
- * entries, service verifiers as bytes. Pure: the same policy compiles to the
- * same thing, and nothing about a request is decided here.
+ * entries, service verifiers as bytes, limits and counted rules with their
+ * windows in milliseconds and their routes parsed. Pure: the same policy
+ * compiles to the same thing, and nothing about a request is decided here.
  */
 import { toDurationMs } from "@kingsleyweb/bun-common";
+import type { Duration } from "@kingsleyweb/bun-common";
 import { parseCidr } from "../ip/address";
 import { CidrTrie } from "../ip/trie";
 import { SecurityPolicyError } from "./errors";
 import { INTERNAL_RANGES } from "./internal";
+import { parseRoutePattern } from "./routes";
+import type { RoutePattern } from "./routes";
 import {
   DEFAULT_CLIENT_IP_HEADER,
+  DEFAULT_CONCURRENCY_PER_IP,
   DEFAULT_SERVICE_HEADER,
   defaultEntryId,
+  SECURITY_POLICY_VERSION,
   validatePolicy,
 } from "./schema";
 import type { PolicyBounds } from "./schema";
 import type {
+  CountedRuleAction,
+  LimitAlgorithm,
   ListAction,
   ListEntry,
   SecurityMode,
   SecurityPolicy,
   ServiceExemption,
+  SubjectKeyPart,
 } from "./types";
+
+/** A key as the engine reads it. */
+export interface CompiledKey {
+  /** Its parts, in order. */
+  readonly parts: readonly SubjectKeyPart[];
+  /**
+   * Whether it names only the address (and route): such a key never counts
+   * or refuses an internal client (the `internal` list protects addresses).
+   */
+  readonly addressOnly: boolean;
+}
+
+/** A limit as the engine reads it. */
+export interface CompiledLimit {
+  /** Its id: the throttle foundation's limit name. */
+  readonly id: string;
+  /** Requests per window. */
+  readonly limit: number;
+  /** The window, in milliseconds. */
+  readonly window: number;
+  /** The key. */
+  readonly key: CompiledKey;
+  /** The routes it applies to; every route when undefined. */
+  readonly routes: readonly RoutePattern[] | undefined;
+  /** How it counts. */
+  readonly algorithm: LimitAlgorithm;
+  /** What a request costs. */
+  readonly cost: number;
+  /** `enforce` or `dryRun` (limits that are `off` are not compiled). */
+  readonly mode: "enforce" | "dryRun";
+  /** Applies to a verified service exempt from global limits. */
+  readonly appliesToServices: boolean;
+  /** Counts a request an allow entry let through. */
+  readonly evenWhenAllowed: boolean;
+  /** The `429`'s problem code. */
+  readonly code: string;
+}
+
+/** A counted rule as the engine reads it. */
+export interface CompiledCountedRule {
+  /** Its id. */
+  readonly id: string;
+  /** The event it counts. */
+  readonly event: string;
+  /** Occurrences that trip it. */
+  readonly threshold: number;
+  /** The window, in milliseconds. */
+  readonly window: number;
+  /** The key. */
+  readonly key: CompiledKey;
+  /** The routes whose occurrences count; every route when undefined. */
+  readonly routes: readonly RoutePattern[] | undefined;
+  /** What a trip does. */
+  readonly action: CountedRuleAction;
+  /** How long, in milliseconds; `Infinity` until the rule goes. */
+  readonly duration: number;
+  /** `enforce` or `dryRun` (rules that are `off` are not compiled). */
+  readonly mode: "enforce" | "dryRun";
+  /** Counts and refuses a verified service's forwarded end user despite its exemptions. */
+  readonly appliesToServices: boolean;
+  /** The refusal's problem code. */
+  readonly code: string;
+}
+
+/** The connection limits, compiled. */
+export interface CompiledConcurrency {
+  /** In-flight requests per client address; `undefined` for no limit. */
+  readonly perIp: number | undefined;
+  /** In-flight requests in all; `undefined` for no limit. */
+  readonly total: number | undefined;
+  /** A slot older than this (ms) is no longer counted. */
+  readonly releaseAfter: number;
+  /** `enforce` or `dryRun`. */
+  readonly mode: "enforce" | "dryRun";
+}
 
 /** A list entry as the engine reads it. */
 export interface CompiledEntry {
@@ -93,6 +177,14 @@ export interface PolicyInternals {
   readonly services: readonly CompiledService[];
   /** The trust check, or undefined when off. */
   readonly trustCheck: CompiledTrustCheck | undefined;
+  /** The connection limits, or undefined when off. */
+  readonly concurrency: CompiledConcurrency | undefined;
+  /** The limits, in policy order (`off` ones skipped). */
+  readonly limits: readonly CompiledLimit[];
+  /** The counted rules, in policy order (`off` ones skipped). */
+  readonly countedRules: readonly CompiledCountedRule[];
+  /** The counted rules by the event they count. */
+  readonly countedByEvent: ReadonlyMap<string, readonly CompiledCountedRule[]>;
 }
 
 /**
@@ -103,6 +195,8 @@ export interface PolicyInternals {
 export interface CompiledPolicy {
   /** The policy as given, frozen. */
   readonly source: SecurityPolicy;
+  /** The policy's format version (`1`; a policy without one reads as 1). */
+  readonly version: number;
   /** The service's id, if the policy names one. */
   readonly service: string | undefined;
   /** The environment, if the policy names one. */
@@ -179,6 +273,36 @@ function hexBytes(hex: string): Uint8Array {
     bytes[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   }
   return bytes;
+}
+
+/** A validated key, compiled (`"ip"` when absent). */
+function compileKey(
+  key: SubjectKeyPart | readonly SubjectKeyPart[] | undefined,
+): CompiledKey {
+  const parts: readonly SubjectKeyPart[] =
+    key === undefined ? ["ip"] : typeof key === "string" ? [key] : key;
+  return Object.freeze({
+    parts: Object.freeze([...parts]),
+    addressOnly: parts.every((part) => part === "ip" || part === "route"),
+  });
+}
+
+/** Validated route patterns, compiled; `undefined` for every route. */
+function compileRoutes(
+  routes: readonly string[] | undefined,
+): readonly RoutePattern[] | undefined {
+  if (routes === undefined) return undefined;
+  const parsed: RoutePattern[] = [];
+  for (const route of routes) {
+    const pattern = parseRoutePattern(route);
+    if (pattern) parsed.push(Object.freeze(pattern));
+  }
+  return Object.freeze(parsed);
+}
+
+/** A validated duration in milliseconds. */
+function ms(value: Duration, where: string): number {
+  return toDurationMs(value, where);
 }
 
 /** Adds `entry` under `key` in `map`. */
@@ -312,8 +436,82 @@ export function compilePolicy(
           minRequests: check?.minRequests ?? 20,
         };
 
+  const limits: CompiledLimit[] = [];
+  for (const limit of source.limits ?? []) {
+    const limitMode = limit.mode ?? "enforce";
+    if (limitMode === "off") continue;
+    limits.push(
+      Object.freeze({
+        id: limit.id,
+        limit: limit.limit,
+        window: ms(limit.window, `limits.${limit.id}.window`),
+        key: compileKey(limit.key),
+        routes: compileRoutes(limit.routes),
+        algorithm: limit.algorithm ?? "sliding-window",
+        cost: limit.cost ?? 1,
+        mode: limitMode,
+        appliesToServices: limit.appliesToServices === true,
+        evenWhenAllowed: limit.evenWhenAllowed === true,
+        code: limit.code ?? "rate_limited",
+      } satisfies CompiledLimit),
+    );
+  }
+
+  const countedRules: CompiledCountedRule[] = [];
+  const countedByEvent = new Map<string, CompiledCountedRule[]>();
+  for (const rule of source.countedRules ?? []) {
+    const ruleMode = rule.mode ?? "enforce";
+    if (ruleMode === "off") continue;
+    const compiledRule: CompiledCountedRule = Object.freeze({
+      id: rule.id,
+      event: rule.event,
+      threshold: rule.threshold,
+      window: ms(rule.window, `countedRules.${rule.id}.window`),
+      key: compileKey(rule.key),
+      routes: compileRoutes(rule.routes),
+      action: rule.action ?? "ban",
+      duration:
+        rule.duration === null
+          ? Number.POSITIVE_INFINITY
+          : ms(rule.duration, `countedRules.${rule.id}.duration`),
+      mode: ruleMode,
+      appliesToServices: rule.appliesToServices === true,
+      code: rule.code ?? "blocked",
+    });
+    countedRules.push(compiledRule);
+    const byEvent = countedByEvent.get(rule.event);
+    if (byEvent) byEvent.push(compiledRule);
+    else countedByEvent.set(rule.event, [compiledRule]);
+  }
+
+  const concurrencySource = source.concurrency;
+  const concurrencyMode =
+    concurrencySource === false
+      ? "off"
+      : (concurrencySource?.mode ?? "enforce");
+  const perIp =
+    concurrencySource === false
+      ? false
+      : (concurrencySource?.perIp ?? DEFAULT_CONCURRENCY_PER_IP);
+  const total =
+    concurrencySource === false ? false : (concurrencySource?.total ?? false);
+  const concurrency: CompiledConcurrency | undefined =
+    concurrencyMode === "off" || (perIp === false && total === false)
+      ? undefined
+      : Object.freeze({
+          perIp: perIp === false ? undefined : perIp,
+          total: total === false ? undefined : total,
+          releaseAfter:
+            concurrencySource === false ||
+            concurrencySource?.releaseAfter === undefined
+              ? 5 * 60_000
+              : ms(concurrencySource.releaseAfter, "concurrency.releaseAfter"),
+          mode: concurrencyMode,
+        });
+
   const compiled: CompiledPolicy = Object.freeze({
     source,
+    version: source.version ?? SECURITY_POLICY_VERSION,
     service: source.service,
     environment: source.environment,
     mode,
@@ -334,6 +532,10 @@ export function compilePolicy(
         source.serviceIdentity?.clientIpHeader ?? DEFAULT_CLIENT_IP_HEADER,
       services: Object.freeze(services),
       trustCheck,
+      concurrency,
+      limits: Object.freeze(limits),
+      countedRules: Object.freeze(countedRules),
+      countedByEvent,
     }),
   );
   return compiled;

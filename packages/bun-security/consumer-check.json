@@ -15,7 +15,10 @@
         "DEFAULT_SERVICE_HEADER",
         "DEFAULT_CLIENT_IP_HEADER",
         "MAX_FACT_HEADERS",
-        "MAX_FACT_HEADER_LENGTH"
+        "MAX_FACT_HEADER_LENGTH",
+        "SECURITY_POLICY_VERSION",
+        "DEFAULT_CONCURRENCY_PER_IP",
+        "DEFAULT_MAX_KEYS"
       ],
       "types": [
         "Security",
@@ -51,9 +54,19 @@
         "ServiceIdentity",
         "ServiceIdentityPolicy",
         "ServiceExemption",
-        "TrustCheckPolicy"
+        "TrustCheckPolicy",
+        "EvaluateOptions",
+        "RequestOutcome",
+        "StateStatus",
+        "SecurityWarningKind",
+        "LimitRule",
+        "LimitAlgorithm",
+        "CountedRule",
+        "CountedRuleAction",
+        "ConcurrencyPolicy",
+        "SubjectKeyPart"
       ],
-      "snippet": "const security = m.createSecurity({ policy: { service: \"checkout\", public: true, lists: [{ ip: \"203.0.113.0/24\", action: \"block\" }] } });\nexport type _securityNotAny = Expect<IsAny<typeof security>>;\nconst decision = security.evaluate(m.requestFacts(new Request(\"http://app.test/\"), { peer: \"203.0.113.9\", trustProxy: [\"10.0.0.0/8\"] }));\nexport type _decisionNotAny = Expect<IsAny<typeof decision>>;\nexport type _evaluate = Equal<ReturnType<typeof security.evaluate>, t.Decision | Promise<t.Decision>>;\nexport type _action = Equal<t.Decision[\"action\"], \"allow\" | \"log\" | \"tag\" | \"delay\" | \"challenge\" | \"block\" | \"ban\" | \"drop\">;\nconst compiled: t.CompiledPolicy = m.compilePolicy({ lists: [{ user: \"u_1\", action: \"drop\", expiresAt: \"2026-12-01T00:00:00Z\" }] }, { maxListEntries: 10 });\nexport const _loaded: t.CompiledPolicy = security.load(compiled);\nexport const _mode: t.SecurityMode = compiled.mode;\nexport const _issues: readonly t.PolicyIssue[] = new m.SecurityPolicyError([{ message: \"x\", path: [\"lists\", 0] }]).issues;\nexport const _schemaVendor: string = m.securityPolicySchema[\"~standard\"].vendor;\nconst typed = m.createSecurity<{ headers: Record<string, string> }>({ policy: {}, identify: (req) => ({ user: req.headers[\"x-user\"] }) });\nexport type _identify = Equal<Parameters<typeof typed.identify>[0], { headers: Record<string, string> }>;\nexport const _warning: t.TrustWarningKind = \"trust.internal\";\nexport const _ranges: readonly string[] = m.INTERNAL_RANGES;\nexport const _service: t.ServiceIdentity = { id: \"pay-api\", verifier: \"sha256:00\", forwardsClientIp: true, exempt: [\"lists\"] };\nexport type _statusNotAny = Expect<IsAny<ReturnType<typeof security.status>>>;"
+      "snippet": "const security = m.createSecurity({ policy: { service: \"checkout\", public: true, lists: [{ ip: \"203.0.113.0/24\", action: \"block\" }] } });\nexport type _securityNotAny = Expect<IsAny<typeof security>>;\nconst decision = security.evaluate(m.requestFacts(new Request(\"http://app.test/\"), { peer: \"203.0.113.9\", trustProxy: [\"10.0.0.0/8\"] }));\nexport type _decisionNotAny = Expect<IsAny<typeof decision>>;\nexport type _evaluate = Equal<ReturnType<typeof security.evaluate>, t.Decision | Promise<t.Decision>>;\nexport type _action = Equal<t.Decision[\"action\"], \"allow\" | \"log\" | \"tag\" | \"delay\" | \"challenge\" | \"block\" | \"ban\" | \"drop\">;\nconst compiled: t.CompiledPolicy = m.compilePolicy({ lists: [{ user: \"u_1\", action: \"drop\", expiresAt: \"2026-12-01T00:00:00Z\" }] }, { maxListEntries: 10 });\nexport const _loaded: t.CompiledPolicy = security.load(compiled);\nexport const _mode: t.SecurityMode = compiled.mode;\nexport const _issues: readonly t.PolicyIssue[] = new m.SecurityPolicyError([{ message: \"x\", path: [\"lists\", 0] }]).issues;\nexport const _schemaVendor: string = m.securityPolicySchema[\"~standard\"].vendor;\nconst typed = m.createSecurity<{ headers: Record<string, string> }>({ policy: {}, identify: (req) => ({ user: req.headers[\"x-user\"] }) });\nexport type _identify = Equal<Parameters<typeof typed.identify>[0], { headers: Record<string, string> }>;\nexport const _warning: t.TrustWarningKind = \"trust.internal\";\nexport const _ranges: readonly string[] = m.INTERNAL_RANGES;\nexport const _service: t.ServiceIdentity = { id: \"pay-api\", verifier: \"sha256:00\", forwardsClientIp: true, exempt: [\"lists\"] };\nexport type _statusNotAny = Expect<IsAny<ReturnType<typeof security.status>>>;\nconst limited = m.createSecurity({ policy: { version: 1, concurrency: { perIp: 64, total: false }, limits: [{ id: \"signin\", limit: 10, window: \"1m\", key: [\"ip\", \"user\"], routes: [\"POST /login\"] }], countedRules: [{ id: \"failed-password\", event: \"auth.failure\", threshold: 10, window: \"15m\", duration: \"1h\" }] }, maxKeys: 1000 });\nconst tracked = limited.evaluate(m.requestFacts(new Request(\"http://app.test/login\", { method: \"POST\" }), { peer: \"203.0.113.9\" }), { track: true });\nexport type _trackedNotAny = Expect<IsAny<typeof tracked>>;\nexport type _complete = Equal<ReturnType<typeof limited.complete>, readonly t.RuleHit[] | Promise<readonly t.RuleHit[]>>;\nexport type _signal = Equal<ReturnType<typeof limited.signal>, ReturnType<typeof limited.complete>>;\nexport const _outcome: t.RequestOutcome = { status: 404, routeNotFound: true };\nexport const _version: 1 = m.SECURITY_POLICY_VERSION;\nexport const _counts: number = m.DEFAULT_CONCURRENCY_PER_IP + m.DEFAULT_MAX_KEYS;\nexport const _part: t.SubjectKeyPart = \"apiKey\";\nexport const _algorithm: t.LimitAlgorithm = \"gcra\";\nexport const _counted: t.CountedRuleAction = \"challenge\";\nexport const _stateKind: t.SecurityWarningKind = \"state.evictions\";\nexport type _stateNotAny = Expect<IsAny<t.StateStatus>>;\nexport type _options = Equal<t.EvaluateOptions, { readonly track?: boolean }>;\nexport const _limit: t.LimitRule = { id: \"l\", limit: 1, window: { seconds: 30 }, algorithm: \"fixed-window\" };\nexport const _rule: t.CountedRule = { id: \"r\", event: \"request\", threshold: 100, window: \"1s\", duration: null };\nexport const _concurrency: t.ConcurrencyPolicy = { perIp: false, total: 500, releaseAfter: \"5m\" };"
     },
     {
       "spelling": "@kingsleyweb/bun-security/lib",

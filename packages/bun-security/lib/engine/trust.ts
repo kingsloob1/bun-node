@@ -48,17 +48,32 @@ export interface TrustMinute {
 /** The two ways a trust configuration goes wrong. */
 export type TrustWarningKind = "trust.internal" | "trust.unread-forwarding";
 
-/** A warning that the trust configuration looks wrong (layers.md L2.5). */
+/**
+ * Every warning the engine raises: the trust check's two (layers.md L2.5),
+ * and `state.evictions`, local state full and evicting keys (layers.md L9.6).
+ */
+export type SecurityWarningKind = TrustWarningKind | "state.evictions";
+
+/**
+ * A warning (layers.md L2.5, L9.6): the trust configuration looks wrong, or
+ * local state is evicting keys.
+ */
 export interface SecurityWarning {
-  /** Which: clients resolve into the internal list, or forwarding headers are never read. */
-  readonly kind: TrustWarningKind;
+  /**
+   * Which: clients resolve into the internal list, forwarding headers are
+   * never read, or local state is evicting keys.
+   */
+  readonly kind: SecurityWarningKind;
   /** What it means and what to check. */
   readonly message: string;
   /** The service's id, if the policy names one. */
   readonly service: string | undefined;
   /** The suspicious minutes in a row so far. */
   readonly minutes: number;
-  /** The last minute's share, 0 to 1. */
+  /**
+   * The last minute's share, 0 to 1: of requests (the trust check), or of
+   * new keys that evicted another (`state.evictions`).
+   */
   readonly share: number;
   /** The first suspicious minute's start, epoch milliseconds. */
   readonly since: number;

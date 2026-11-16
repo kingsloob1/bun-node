@@ -27,7 +27,7 @@ import type {
 import { refuses } from "../engine/actions";
 import type { Decision } from "../engine/decision";
 import { requestFacts } from "../engine/facts";
-import type { SecurityIdentity } from "../engine/facts";
+import type { RequestFacts, SecurityIdentity } from "../engine/facts";
 import type { Security } from "../engine/security";
 import { dropResponse, refusalResponse } from "./respond";
 
@@ -170,8 +170,57 @@ export function withSecurity<
     }
   };
 
+  /**
+   * Runs the handler for an admitted request, then reports how it ended
+   * (layer L14): the answer's status, `500` when the handler threw, `0`
+   * when it answered nothing (an upgrade). `complete()` gives back the
+   * request's in-flight slot and counts outcome events; its errors are
+   * logged, never thrown.
+   */
+  const serve = (
+    facts: RequestFacts,
+    decision: Decision,
+    request: Request,
+    server: TServer,
+  ): TResult | Promise<TResult> => {
+    const done = (status: number): void => {
+      try {
+        const hits = security.complete(facts, decision, { status });
+        if (isThenable(hits)) {
+          Promise.resolve(hits).catch((error: unknown) => {
+            logger.error("bun-security: complete() failed", { error });
+          });
+        }
+      } catch (error) {
+        logger.error("bun-security: complete() failed", { error });
+      }
+    };
+    let result: TResult | Promise<TResult>;
+    try {
+      result = fetch(request, server);
+    } catch (error) {
+      done(500);
+      throw error;
+    }
+    if (isThenable(result)) {
+      return Promise.resolve(result).then(
+        (answer) => {
+          done(statusOf(answer));
+          return answer;
+        },
+        (error: unknown) => {
+          done(500);
+          throw error;
+        },
+      );
+    }
+    done(statusOf(result));
+    return result;
+  };
+
   /** Acts on a decision. */
   const act = (
+    facts: RequestFacts,
     decision: Decision,
     request: Request,
     server: TServer,
@@ -191,32 +240,51 @@ export function withSecurity<
       decision.delayMs > 0
     ) {
       return Bun.sleep(Math.min(decision.delayMs, MAX_DELAY_MS)).then(() =>
-        fetch(request, server),
+        serve(facts, decision, request, server),
       );
     }
-    return fetch(request, server);
+    return serve(facts, decision, request, server);
+  };
+
+  /** Evaluates `facts` as a tracked request: the facts with their decision. */
+  const decide = (
+    facts: RequestFacts,
+  ):
+    | readonly [RequestFacts, Decision]
+    | Promise<readonly [RequestFacts, Decision]> => {
+    const decision = security.evaluate(facts, { track: true });
+    return isThenable(decision)
+      ? Promise.resolve(decision).then((d) => [facts, d] as const)
+      : ([facts, decision] as const);
   };
 
   return (request, server) => {
-    let outcome: Decision | Promise<Decision>;
+    let outcome:
+      | readonly [RequestFacts, Decision]
+      | Promise<readonly [RequestFacts, Decision]>;
     try {
       const identity = security.identify(request);
       outcome = isThenable(identity)
         ? Promise.resolve(identity).then((resolved) =>
-            security.evaluate(factsOf(request, server, resolved)),
+            decide(factsOf(request, server, resolved)),
           )
-        : security.evaluate(factsOf(request, server, identity));
+        : decide(factsOf(request, server, identity));
     } catch (error) {
       return engineFailed(error, request, server);
     }
     if (isThenable(outcome)) {
       return Promise.resolve(outcome).then(
-        (decision) => act(decision, request, server),
+        ([facts, decision]) => act(facts, decision, request, server),
         (error: unknown) => engineFailed(error, request, server),
       );
     }
-    return act(outcome, request, server);
+    return act(outcome[0], outcome[1], request, server);
   };
+}
+
+/** The status of a handler's answer; `0` for none (an upgrade). */
+function statusOf(answer: unknown): number {
+  return answer instanceof Response ? answer.status : 0;
 }
 
 /** Options for {@link hardenServe}. */

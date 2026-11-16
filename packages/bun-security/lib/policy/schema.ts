@@ -3,9 +3,13 @@
  * (control-plane.md §2.3), so the control plane, a policy file and the
  * engine all refuse the same things: an unknown key, a bare number where a
  * unit belongs, an address that does not parse, an allow entry wide enough
- * to allow the internet, two entries with one id, a list past its bound.
+ * to allow the internet, two entries with one id, a list past its bound, a
+ * window under a second, a format version newer than this package.
  *
- * Every problem is reported, not only the first.
+ * Every problem is reported, not only the first — except for a policy of a
+ * newer format version, which is refused for that alone: its other keys
+ * belong to a format this package does not know, so they are not reported
+ * as typos.
  */
 import { toDurationMs } from "@kingsleyweb/bun-common";
 import type { Duration, StandardSchemaV1 } from "@kingsleyweb/bun-common";
@@ -14,10 +18,28 @@ import type { ParsedCidr } from "../ip/address";
 import { CidrTrie } from "../ip/trie";
 import type { PolicyIssue } from "./errors";
 import { INTERNAL_RANGES } from "./internal";
-import type { ListEntry, SecurityPolicy, ServiceExemption } from "./types";
+import { parseRoutePattern } from "./routes";
+import type {
+  ListEntry,
+  SecurityPolicy,
+  ServiceExemption,
+  SubjectKeyPart,
+} from "./types";
+
+/**
+ * The policy format version this package reads (`version` in a policy). A
+ * policy without one is read as this version.
+ */
+export const SECURITY_POLICY_VERSION = 1;
 
 /** The most list entries a policy may hold by default (control-plane.md §9). */
 export const DEFAULT_MAX_LIST_ENTRIES = 1_000_000;
+
+/** The most limits, and the most counted rules, a policy may hold (control-plane.md §9's rule bound, halved for each). */
+export const MAX_RULES = 1_000;
+
+/** The default in-flight requests per client address (layers.md L1). */
+export const DEFAULT_CONCURRENCY_PER_IP = 64;
 
 /** The default header carrying a service's token. */
 export const DEFAULT_SERVICE_HEADER = "x-service-token";
@@ -48,8 +70,26 @@ const EXEMPTIONS: ReadonlySet<ServiceExemption> = new Set([
   "globalLimits",
 ]);
 
+/** The key parts of a limit or counted rule. */
+const KEY_PARTS: ReadonlySet<SubjectKeyPart> = new Set([
+  "ip",
+  "user",
+  "session",
+  "tenant",
+  "apiKey",
+  "route",
+]);
+/** The limit algorithms. */
+const ALGORITHMS = new Set(["sliding-window", "fixed-window", "gcra"]);
+/** The counted-rule actions. */
+const COUNTED_ACTIONS = new Set(["ban", "challenge"]);
+
 /** An id: what an operator would type, bounded. */
 const ID_RE = /^[\w.:/@+-]{1,256}$/;
+/** A limit's or counted rule's id: the throttle foundation's limit-name grammar, bounded. */
+const RULE_ID_RE = /^[a-z0-9][\w.-]{0,63}$/i;
+/** A counted-rule event name (`request`, `route.notFound`, an app's own). */
+const EVENT_RE = /^[a-z][\w.-]{0,63}$/i;
 /** A problem code: short, lower case. */
 const CODE_RE = /^[a-z][a-z0-9_.-]{0,63}$/;
 /** A header name (RFC 9110 token), lower case. */
@@ -423,6 +463,272 @@ function checkEntry(
   }
 }
 
+/** Checks an optional key: one part, or a list of 1 to 6 distinct parts. */
+function checkKey(
+  issues: Issues,
+  path: readonly (string | number)[],
+  value: unknown,
+): void {
+  if (value === undefined) return;
+  const parts = Array.isArray(value) ? value : [value];
+  if (parts.length === 0 || parts.length > KEY_PARTS.size) {
+    issues.add(path, `must be a key part, or a list of 1 to ${KEY_PARTS.size}`);
+    return;
+  }
+  const seen = new Set<unknown>();
+  parts.forEach((part: unknown, i: number) => {
+    const at = Array.isArray(value) ? [...path, i] : [...path];
+    if (!(typeof part === "string" && KEY_PARTS.has(part as SubjectKeyPart))) {
+      issues.add(
+        at,
+        `must be one of ${[...KEY_PARTS].join(", ")}; got ${describe(part)}`,
+      );
+    } else if (seen.has(part)) {
+      issues.add(at, `repeats ${JSON.stringify(part)}`);
+    }
+    seen.add(part);
+  });
+}
+
+/** Checks optional route patterns: 1 to 64 of them. */
+function checkRoutes(
+  issues: Issues,
+  path: readonly (string | number)[],
+  value: unknown,
+): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value) || value.length === 0 || value.length > 64) {
+    issues.add(path, "must be a list of 1 to 64 route patterns");
+    return;
+  }
+  value.forEach((pattern: unknown, i: number) => {
+    if (parseRoutePattern(pattern) === null) {
+      issues.add(
+        [...path, i],
+        `must be a route pattern such as "POST /login", "/login" or "/auth/*" (an upper-case method or "*", a space, then a path); got ${describe(pattern)}`,
+      );
+    }
+  });
+}
+
+/** Checks a rule's id and records it in `ids` (`what` names the list, for duplicates). */
+function checkRuleId(
+  issues: Issues,
+  path: readonly (string | number)[],
+  value: unknown,
+  ids: Map<string, number>,
+  index: number,
+  what: string,
+): void {
+  if (typeof value !== "string" || !RULE_ID_RE.test(value)) {
+    issues.add(
+      [...path, "id"],
+      `must be an id of 1 to 64 letters, digits, "_", "." and "-", starting with a letter or digit; got ${describe(value)}`,
+    );
+    return;
+  }
+  const first = ids.get(value);
+  if (first !== undefined) {
+    issues.add(
+      [...path, "id"],
+      `duplicates the id of ${what}[${first}]: ${JSON.stringify(value)}`,
+    );
+  } else {
+    ids.set(value, index);
+  }
+}
+
+/** Checks a positive whole number. */
+function positiveInteger(
+  issues: Issues,
+  path: readonly (string | number)[],
+  value: unknown,
+): void {
+  if (!(
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 1
+  )) {
+    issues.add(path, `must be a positive whole number; got ${describe(value)}`);
+  }
+}
+
+/**
+ * Checks a rule's window: required, unit written, at least a second unless
+ * `subSecond` is `true` (T-L9-3: ConcaveHR's `THROTTLE_TTL=60` meant 60 ms).
+ */
+function checkWindow(
+  issues: Issues,
+  path: readonly (string | number)[],
+  rule: Record<string, unknown>,
+): void {
+  optionalBoolean(issues, [...path, "subSecond"], rule.subSecond);
+  if (rule.window === undefined) {
+    issues.add([...path, "window"], 'is required: a duration such as "1m"');
+    return;
+  }
+  const ms = policyDuration(issues, [...path, "window"], rule.window, 1);
+  if (ms === undefined) return;
+  if (ms < 1000 && rule.subSecond !== true) {
+    issues.add(
+      [...path, "window"],
+      `is ${ms} ms, under a second; that is usually a unit mistake. Set subSecond: true if it is meant`,
+    );
+  } else if (ms > 366 * 24 * 60 * 60_000) {
+    issues.add([...path, "window"], "must be at most 366 days");
+  }
+}
+
+/** The keys a limit may have. */
+const LIMIT_KEYS = [
+  "id",
+  "limit",
+  "window",
+  "subSecond",
+  "key",
+  "routes",
+  "algorithm",
+  "cost",
+  "mode",
+  "appliesToServices",
+  "evenWhenAllowed",
+  "code",
+];
+
+/** Checks one limit. */
+function checkLimit(
+  issues: Issues,
+  path: readonly (string | number)[],
+  value: unknown,
+  ids: Map<string, number>,
+  index: number,
+): void {
+  if (!checkObject(issues, path, value, LIMIT_KEYS)) return;
+  checkRuleId(issues, path, value.id, ids, index, "limits");
+  positiveInteger(issues, [...path, "limit"], value.limit);
+  checkWindow(issues, path, value);
+  checkKey(issues, [...path, "key"], value.key);
+  checkRoutes(issues, [...path, "routes"], value.routes);
+  optionalOneOf(issues, [...path, "algorithm"], value.algorithm, ALGORITHMS);
+  if (
+    value.cost !== undefined &&
+    !(
+      typeof value.cost === "number" &&
+      Number.isFinite(value.cost) &&
+      value.cost >= 0
+    )
+  ) {
+    issues.add(
+      [...path, "cost"],
+      `must be a non-negative number; got ${describe(value.cost)}`,
+    );
+  }
+  optionalOneOf(issues, [...path, "mode"], value.mode, MODES);
+  optionalBoolean(
+    issues,
+    [...path, "appliesToServices"],
+    value.appliesToServices,
+  );
+  optionalBoolean(issues, [...path, "evenWhenAllowed"], value.evenWhenAllowed);
+  optionalString(
+    issues,
+    [...path, "code"],
+    value.code,
+    CODE_RE,
+    "a code (lower case, at most 64 characters)",
+  );
+}
+
+/** The keys a counted rule may have. */
+const COUNTED_KEYS = [
+  "id",
+  "event",
+  "threshold",
+  "window",
+  "subSecond",
+  "key",
+  "routes",
+  "action",
+  "duration",
+  "mode",
+  "appliesToServices",
+  "code",
+];
+
+/** Checks one counted rule. */
+function checkCountedRule(
+  issues: Issues,
+  path: readonly (string | number)[],
+  value: unknown,
+  ids: Map<string, number>,
+  index: number,
+): void {
+  if (!checkObject(issues, path, value, COUNTED_KEYS)) return;
+  checkRuleId(issues, path, value.id, ids, index, "countedRules");
+  if (typeof value.event !== "string" || !EVENT_RE.test(value.event)) {
+    issues.add(
+      [...path, "event"],
+      `must be an event name such as "request", "throttled", "route.notFound" or "auth.failure"; got ${describe(value.event)}`,
+    );
+  }
+  positiveInteger(issues, [...path, "threshold"], value.threshold);
+  checkWindow(issues, path, value);
+  checkKey(issues, [...path, "key"], value.key);
+  checkRoutes(issues, [...path, "routes"], value.routes);
+  optionalOneOf(issues, [...path, "action"], value.action, COUNTED_ACTIONS);
+  if (value.duration === undefined) {
+    issues.add(
+      [...path, "duration"],
+      'is required: a duration such as "1h", or null for until the rule is removed',
+    );
+  } else if (value.duration !== null) {
+    policyDuration(issues, [...path, "duration"], value.duration, 1000);
+  }
+  optionalOneOf(issues, [...path, "mode"], value.mode, MODES);
+  optionalBoolean(
+    issues,
+    [...path, "appliesToServices"],
+    value.appliesToServices,
+  );
+  optionalString(
+    issues,
+    [...path, "code"],
+    value.code,
+    CODE_RE,
+    "a code (lower case, at most 64 characters)",
+  );
+}
+
+/** Checks `perIp` or `total`: a positive whole number or `false`. */
+function optionalCap(
+  issues: Issues,
+  path: readonly (string | number)[],
+  value: unknown,
+): void {
+  if (value === undefined || value === false) return;
+  positiveInteger(issues, path, value);
+}
+
+/** Checks a list of rules with `check`, within {@link MAX_RULES}. */
+function checkRules(
+  issues: Issues,
+  name: "limits" | "countedRules",
+  value: unknown,
+  check: typeof checkLimit,
+): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) {
+    issues.add([name], "must be a list");
+  } else if (value.length > MAX_RULES) {
+    issues.add([name], `holds ${value.length}; the bound is ${MAX_RULES}`);
+  } else {
+    const ids = new Map<string, number>();
+    value.forEach((rule: unknown, i: number) => {
+      check(issues, [name, i], rule, ids, i);
+    });
+  }
+}
+
 /** Checks one service identity. */
 function checkService(
   issues: Issues,
@@ -498,6 +804,7 @@ function checkService(
 
 /** The keys a policy may have. */
 const POLICY_KEYS = [
+  "version",
   "service",
   "environment",
   "public",
@@ -507,7 +814,31 @@ const POLICY_KEYS = [
   "lists",
   "serviceIdentity",
   "trustCheck",
+  "concurrency",
+  "limits",
+  "countedRules",
 ];
+
+/**
+ * The issue for a policy of a newer format version than this package
+ * reads, or `undefined`: refused for that alone, before its other keys are
+ * read as typos.
+ */
+function newerVersion(input: unknown): PolicyIssue | undefined {
+  if (!isRecord(input)) return undefined;
+  const version = input.version;
+  if (
+    typeof version === "number" &&
+    Number.isSafeInteger(version) &&
+    version > SECURITY_POLICY_VERSION
+  ) {
+    return {
+      path: ["version"],
+      message: `the policy is format version ${version}, newer than this package reads (version ${SECURITY_POLICY_VERSION}); upgrade @kingsleyweb/bun-security to load it`,
+    };
+  }
+  return undefined;
+}
 
 /**
  * Validates `input` as a {@link SecurityPolicy}: every problem, or none.
@@ -517,9 +848,22 @@ export function validatePolicy(
   input: unknown,
   bounds: PolicyBounds = {},
 ): readonly PolicyIssue[] {
+  const newer = newerVersion(input);
+  if (newer) {
+    return [newer];
+  }
   const issues = new Issues();
   if (!checkObject(issues, [], input, POLICY_KEYS)) {
     return issues.list;
+  }
+  if (
+    input.version !== undefined &&
+    input.version !== SECURITY_POLICY_VERSION
+  ) {
+    issues.add(
+      ["version"],
+      `must be ${SECURITY_POLICY_VERSION} (or absent, which reads as ${SECURITY_POLICY_VERSION}); got ${describe(input.version)}`,
+    );
   }
   optionalString(issues, ["service"], input.service, ID_RE, "a service id");
   optionalString(
@@ -696,6 +1040,33 @@ export function validatePolicy(
       );
     }
   }
+
+  if (
+    input.concurrency !== undefined &&
+    input.concurrency !== false &&
+    checkObject(issues, ["concurrency"], input.concurrency, [
+      "perIp",
+      "total",
+      "releaseAfter",
+      "mode",
+    ])
+  ) {
+    const concurrency = input.concurrency;
+    optionalCap(issues, ["concurrency", "perIp"], concurrency.perIp);
+    optionalCap(issues, ["concurrency", "total"], concurrency.total);
+    if (concurrency.releaseAfter !== undefined) {
+      policyDuration(
+        issues,
+        ["concurrency", "releaseAfter"],
+        concurrency.releaseAfter,
+        1000,
+      );
+    }
+    optionalOneOf(issues, ["concurrency", "mode"], concurrency.mode, MODES);
+  }
+
+  checkRules(issues, "limits", input.limits, checkLimit);
+  checkRules(issues, "countedRules", input.countedRules, checkCountedRule);
   return issues.list;
 }
 
