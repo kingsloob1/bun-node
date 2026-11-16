@@ -55,6 +55,8 @@ import {
 } from "../ip/address";
 import type { ParsedAddress } from "../ip/address";
 import { compilePolicy, policyInternals } from "../policy/compile";
+import { matchRequestRules, requestRulesOf } from "../rules/compile";
+import type { CompiledRequestRule } from "../rules/compile";
 import type {
   CompiledCountedRule,
   CompiledEntry,
@@ -570,6 +572,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       );
     }
     this.#policy = compilePolicy(options.policy);
+    // Compiled now, so the first request pays nothing for them.
+    requestRulesOf(this.#policy);
     this.#internals = policyInternals(this.#policy);
     this.#logger = resolveLogger(
       options.logger,
@@ -768,6 +772,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   load(policy: SecurityPolicy | CompiledPolicy): CompiledPolicy {
     this.#assertOpen();
     const compiled = compilePolicy(policy);
+    requestRulesOf(compiled);
     const internals = policyInternals(compiled);
     const prefix = prefixOf(compiled);
     // Built first: a refused throttle leaves the old policy in force.
@@ -1355,6 +1360,138 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   }
 
   /**
+   * Whether the request comes from a verified crawler on the paths its
+   * allowance covers (layers.md L3.2): such a client is exempt from the
+   * rules that skip crawlers (the managed probe set, and a policy's rules
+   * marked `crawlers: "skip"`), whose hits are logged as `crawler.probe`
+   * instead. PR-S12 answers it; until then no crawler is verified.
+   */
+  #verifiedCrawler(_facts: RequestFacts, _pass: Pass): boolean {
+    return false;
+  }
+
+  /**
+   * Layer L7: the request rules that hold for the request in this stage
+   * (layers.md L7), in policy order, then the managed probe set's. Each
+   * enforced hit applies its action (a refusal, a ban of the client
+   * address, a drop, or a log), counts its event (`pattern.hit`, or
+   * `probe.hit` for the managed set) for the counted rules and the ladder's
+   * weights, and adds the rule's own weight to the address's score. A hit
+   * in dry run is recorded as what it would have done, and counts nothing.
+   * Answers whether the request was refused.
+   */
+  #ruled(
+    facts: RequestFacts,
+    pass: Pass,
+    policy: CompiledPolicy,
+  ): MaybePromise<boolean> {
+    const compiled = requestRulesOf(policy);
+    if (compiled.rules.length === 0 || pass.flags.allowAll) return false;
+    const matched = matchRequestRules(compiled, facts, pass.stage);
+    if (matched.length === 0) return false;
+    const { run, trace, now, writes, flags } = pass;
+    const crawler = this.#verifiedCrawler(facts, pass);
+    const counted: CompiledRequestRule[] = [];
+    for (const rule of matched) {
+      const what = `${rule.managed ? "managed probe" : "request rule"} "${rule.id}"`;
+      if (crawler && rule.crawlers === "skip") {
+        run.add({
+          layer: "L7",
+          rule: rule.hitRule,
+          action: "log",
+          reason: `crawler.probe: ${what} matched a verified crawler, which it does not hold`,
+        });
+        trace?.push({
+          layer: "L7",
+          check: "rule",
+          rule: rule.hitRule,
+          outcome: `${what} matched a verified crawler: logged as crawler.probe`,
+        });
+        continue;
+      }
+      const dry = pass.dryPolicy || rule.mode === "dryRun";
+      const action: SecurityAction =
+        rule.action === "challenge" ? "block" : rule.action;
+      const reason = `${what} matched${rule.action === "challenge" ? "; challenge: no challenge provider configured, fell back to block" : ""}`;
+      if (dry) {
+        run.add({
+          layer: "L7",
+          rule: rule.hitRule,
+          action: "log",
+          ...(action === "log" ? {} : { wouldHaveBeen: action }),
+          reason: `dry run: ${reason}`,
+        });
+        trace?.push({
+          layer: "L7",
+          check: "rule",
+          rule: rule.hitRule,
+          outcome: `${reason}: ${action === "log" ? "logged" : `would have refused (dry run): ${action}`}`,
+        });
+        continue;
+      }
+      let answer:
+        { status: number; code: string; retryAfter?: number } | undefined;
+      if (action === "ban") {
+        const ip = pass.subject.ip;
+        const ladder = this.#internals.ladder;
+        const subject: BanSubject | undefined =
+          ip === undefined || flags.internal
+            ? undefined
+            : { type: "ip", value: ip };
+        const bansDry = this.#internals.bans.mode === "dryRun";
+        const length =
+          rule.duration !== undefined
+            ? rule.duration
+            : ladder && subject
+              ? this.#scores.escalate(
+                  banId(subject),
+                  now,
+                  ladder,
+                  writes && !bansDry,
+                )
+              : 3_600_000;
+        const until = length === null ? null : now + length;
+        if (subject && writes && !bansDry) {
+          this.#writeBan(
+            {
+              subject,
+              action: "ban",
+              reason,
+              rule: rule.hitRule,
+              source: "auto",
+              expiresAt: until,
+              code: rule.code,
+            },
+            now,
+          );
+        }
+        answer = this.#banAnswer(rule.code, until, now);
+      } else if (refuses(action)) {
+        answer = { status: rule.status, code: rule.code };
+      }
+      run.add({ layer: "L7", rule: rule.hitRule, action, reason }, answer);
+      trace?.push({
+        layer: "L7",
+        check: "rule",
+        rule: rule.hitRule,
+        outcome: `${reason}: ${action === "log" ? "logged" : `refused: ${action}`}`,
+      });
+      counted.push(rule);
+    }
+    // Each enforced hit's event, then its weight, one after another.
+    const from = (index: number): MaybePromise<void> => {
+      const rule = counted[index];
+      if (rule === undefined) return undefined;
+      return then(this.#occur(rule.event, pass, false), () => {
+        if (rule.weight > 0)
+          this.#offend(rule.hitRule, rule.weight, pass, false);
+        return from(index + 1);
+      });
+    };
+    return then(from(0), () => run.refused);
+  }
+
+  /**
    * Layer L8: canary credentials (any use refuses the request and scores the
    * address 100 through `canary.used`) and honeypot routes (`honeypot.hit`,
    * scored 10, applied from the next request, the request itself answered
@@ -1663,28 +1800,47 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     if (this.#banned(pass)) return finish();
     return then(this.#shaped(facts, pass), (shapeRefused) => {
       if (shapeRefused) return finish();
-      return then(this.#deceived(facts, pass), (deceived) => {
-        if (deceived || run.refused) return finish();
-        // Without limits, counted rules or a weight on `request`, nothing
-        // below applies (plan §4.3).
-        if (
-          internals.limits.length === 0 &&
-          internals.countedRules.length === 0 &&
-          (internals.ladder?.weights.get("request") ?? 0) === 0
-        ) {
-          return finish();
-        }
-        // ── The `request` occurrence, then L9 rate limits ─────────────────
-        return then(this.#occur("request", pass, false), () => {
-          if (run.refused) return finish();
-          return then(
-            this.#limit(internals.limits, limitSet, pass),
-            (throttled) =>
-              throttled
-                ? then(this.#occur("throttled", pass, false), finish)
-                : finish(),
-          );
-        });
+      return then(this.#ruled(facts, pass, policy), (ruled) => {
+        if (ruled) return finish();
+        return this.#afterRules(facts, pass, finish, internals, limitSet);
+      });
+    });
+  }
+
+  /**
+   * The layers after L7, split out of {@link #decide} (L8 deception, the
+   * `request` occurrence, L9 rate limits): run once the request rules let
+   * the request through, on the policy snapshot `#decide` took.
+   */
+  #afterRules(
+    facts: RequestFacts,
+    pass: Pass,
+    finish: () => { decision: Decision; resolved: ResolvedClient },
+    internals: PolicyInternals,
+    limitSet: LimitSet,
+  ): MaybePromise<{ decision: Decision; resolved: ResolvedClient }> {
+    const run = pass.run;
+    return then(this.#deceived(facts, pass), (deceived) => {
+      if (deceived || run.refused) return finish();
+      // Without limits, counted rules or a weight on `request`, nothing
+      // below applies (plan §4.3).
+      if (
+        internals.limits.length === 0 &&
+        internals.countedRules.length === 0 &&
+        (internals.ladder?.weights.get("request") ?? 0) === 0
+      ) {
+        return finish();
+      }
+      // ── The `request` occurrence, then L9 rate limits ─────────────────
+      return then(this.#occur("request", pass, false), () => {
+        if (run.refused) return finish();
+        return then(
+          this.#limit(internals.limits, limitSet, pass),
+          (throttled) =>
+            throttled
+              ? then(this.#occur("throttled", pass, false), finish)
+              : finish(),
+        );
       });
     });
   }

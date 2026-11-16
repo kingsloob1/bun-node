@@ -4,7 +4,7 @@
  * user code: the service's identity settings (layers.md L2), its allow and
  * deny lists (L3), the trust check (L2.5), connection limits (L1), rate
  * limits (L9), counted rules and the ladder (§0.2), bans (L4), request
- * shape (L6) and deception (L8); the later layers add their sections beside
+ * shape (L6), request rules (L7) and deception (L8); the later layers add their sections beside
  * these, within format version 1.
  *
  * Every duration has its unit written (`"5m"`, `{ minutes: 5 }`), every
@@ -12,6 +12,7 @@
  * refused wherever a unit could be guessed wrong.
  */
 import type { Duration } from "@kingsleyweb/bun-common";
+import type { RequestRulesPolicy } from "../rules/types";
 
 /**
  * How a rule, a list entry or a whole policy runs (layers.md §0.4):
@@ -558,4 +559,6 @@ export interface SecurityPolicy {
   readonly shape?: ShapePolicy | false;
   /** Honeypots and canaries (layers.md L8). */
   readonly deception?: DeceptionPolicy;
+  /** Request rules and the managed probe set (layers.md L7). */
+  readonly requestRules?: RequestRulesPolicy;
 }

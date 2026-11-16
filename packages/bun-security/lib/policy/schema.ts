@@ -16,6 +16,7 @@ import type { Duration, StandardSchemaV1 } from "@kingsleyweb/bun-common";
 import { parseCidr } from "../ip/address";
 import type { ParsedCidr } from "../ip/address";
 import { CidrTrie } from "../ip/trie";
+import { validateRequestRules } from "../rules/schema";
 import { POLICY_NEWER } from "./errors";
 import type { PolicyIssue } from "./errors";
 import { INTERNAL_RANGES } from "./internal";
@@ -1192,6 +1193,7 @@ const POLICY_KEYS = [
   "ladder",
   "shape",
   "deception",
+  "requestRules",
 ];
 
 /**
@@ -1457,6 +1459,9 @@ export function validatePolicy(
   checkLadder(issues, input.ladder);
   checkShape(issues, input.shape);
   checkDeception(issues, input.deception);
+  for (const issue of validateRequestRules(input.requestRules)) {
+    issues.add(issue.path, issue.message);
+  }
   return issues.list;
 }
 

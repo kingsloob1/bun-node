@@ -55,6 +55,21 @@ export {
 } from "./engine/security";
 export type { EvaluationStage } from "./engine/stages";
 export { DEFAULT_MAX_KEYS } from "./engine/state";
+export { DEFAULT_MAX_REGEX_INPUT } from "./rules/compile";
+export { MANAGED_RULE_IDS } from "./rules/managed";
+export { regexRefusal } from "./rules/regex";
+export type {
+  AddressMatcher,
+  ManagedRuleId,
+  ManagedRulesPolicy,
+  NumberMatcher,
+  RequestRule,
+  RequestRuleAction,
+  RequestRulesPolicy,
+  RuleCondition,
+  RuleMatch,
+  StringMatcher,
+} from "./rules/types";
 export type {
   SecurityWarning,
   SecurityWarningKind,
