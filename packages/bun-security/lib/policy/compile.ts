@@ -87,15 +87,132 @@ export interface CompiledCountedRule {
   readonly routes: readonly RoutePattern[] | undefined;
   /** What a trip does. */
   readonly action: CountedRuleAction;
-  /** How long, in milliseconds; `Infinity` until the rule goes. */
+  /** How long its ban lasts, in milliseconds; `Infinity` until lifted; `0` with `action: "ladder"` (the ladder decides). */
   readonly duration: number;
   /** `enforce` or `dryRun` (rules that are `off` are not compiled). */
   readonly mode: "enforce" | "dryRun";
   /** Counts and refuses a verified service's forwarded end user despite its exemptions. */
   readonly appliesToServices: boolean;
-  /** The refusal's problem code. */
-  readonly code: string;
+  /** The offence weight of a trip. */
+  readonly weight: number;
+  /** Its bans' problem code; the policy's `bans.code` when undefined. */
+  readonly code: string | undefined;
 }
+
+/** The bans' settings, compiled. */
+export interface CompiledBans {
+  /** A ban's problem code. */
+  readonly code: string;
+  /** Whether a ban's answer carries `Retry-After`. */
+  readonly retryAfter: boolean;
+  /** The most bans held. */
+  readonly maxActive: number;
+  /** The bans' mode. */
+  readonly mode: SecurityMode;
+}
+
+/** One ladder step, compiled. */
+export interface CompiledStep {
+  /** The score that reaches it. */
+  readonly score: number;
+  /** What it does. */
+  readonly action: "challenge" | "ban";
+  /** Its length in ms; `undefined` for the escalating ban length. */
+  readonly duration: number | undefined;
+}
+
+/** The ladder, compiled. */
+export interface CompiledLadder {
+  /** The score's half-life, ms. */
+  readonly halfLife: number;
+  /** The steps, highest score first. */
+  readonly steps: readonly CompiledStep[];
+  /** The first escalating ban's length, ms. */
+  readonly base: number;
+  /** The escalation factor. */
+  readonly factor: number;
+  /** The longest escalating ban, ms. */
+  readonly maxBan: number;
+  /** How long a ban counts toward the next, ms. */
+  readonly memory: number;
+  /** Each event's offence weight. */
+  readonly weights: ReadonlyMap<string, number>;
+  /** `enforce` or `dryRun`. */
+  readonly mode: "enforce" | "dryRun";
+}
+
+/** One per-route shape entry, compiled. */
+export interface CompiledShapeRoute {
+  /** The routes it applies to. */
+  readonly routes: readonly RoutePattern[];
+  /** The largest body, bytes. */
+  readonly maxBodySize: number | undefined;
+  /** The accepted media types (`type/subtype` or `type/*`). */
+  readonly contentTypes: readonly string[] | undefined;
+  /** Whether an encoded slash or backslash is accepted. */
+  readonly allowEncodedSlash: boolean;
+}
+
+/** Request shape, compiled. */
+export interface CompiledShape {
+  /** Whether paths match case-sensitively. */
+  readonly caseSensitive: boolean;
+  /** The longest path, bytes. */
+  readonly maxPathBytes: number;
+  /** The longest query, bytes. */
+  readonly maxQueryBytes: number;
+  /** The most query parameters. */
+  readonly maxQueryParams: number;
+  /** The deepest query nesting. */
+  readonly maxQueryDepth: number;
+  /** The accepted methods; any (but TRACE and CONNECT) when undefined. */
+  readonly methods: ReadonlySet<string> | undefined;
+  /** The accepted Host values; any when undefined. */
+  readonly hosts: ReadonlySet<string> | undefined;
+  /** The most header lines. */
+  readonly maxHeaders: number;
+  /** The longest header value, bytes. */
+  readonly maxHeaderBytes: number;
+  /** Per-header limits. */
+  readonly headerLimits: ReadonlyMap<string, number>;
+  /** The largest body on any route, bytes. */
+  readonly maxBodySize: number | undefined;
+  /** Per-route entries, first match wins. */
+  readonly routes: readonly CompiledShapeRoute[];
+  /** `enforce` or `dryRun`. */
+  readonly mode: "enforce" | "dryRun";
+}
+
+/** Deception, compiled. */
+export interface CompiledDeception {
+  /** Honeypot paths, or undefined when off. */
+  readonly honeypots:
+    | {
+        readonly patterns: readonly RoutePattern[];
+        readonly answer: "pass" | "not-found";
+        readonly mode: "enforce" | "dryRun";
+      }
+    | undefined;
+  /** Canary user ids, to the canary's id. */
+  readonly canaryUsers: ReadonlyMap<string, string>;
+  /** Canary API key ids, to the canary's id. */
+  readonly canaryKeys: ReadonlyMap<string, string>;
+}
+
+/** The default honeypot paths (layers.md L8). */
+export const DEFAULT_HONEYPOTS: readonly string[] = Object.freeze([
+  "/wp-login.php",
+  "/.env",
+  "/admin.php",
+]);
+
+/** The default event weights (layers.md §0.2, L8, L6). */
+export const DEFAULT_WEIGHTS: Readonly<Record<string, number>> = Object.freeze({
+  "honeypot.hit": 10,
+  "canary.used": 100,
+  "trap.filled": 10,
+  "shape.refused": 1,
+});
 
 /** The connection limits, compiled. */
 export interface CompiledConcurrency {
@@ -185,6 +302,16 @@ export interface PolicyInternals {
   readonly countedRules: readonly CompiledCountedRule[];
   /** The counted rules by the event they count. */
   readonly countedByEvent: ReadonlyMap<string, readonly CompiledCountedRule[]>;
+  /** The bans' settings. */
+  readonly bans: CompiledBans;
+  /** The ladder, or undefined when off. */
+  readonly ladder: CompiledLadder | undefined;
+  /** Request shape, or undefined when off. */
+  readonly shape: CompiledShape | undefined;
+  /** Whether list `paths` match case-sensitively (`shape.caseSensitive`; folded otherwise). */
+  readonly caseSensitive: boolean;
+  /** Deception. */
+  readonly deception: CompiledDeception;
 }
 
 /**
@@ -316,6 +443,111 @@ function addTo(
   else map.set(key, [entry]);
 }
 
+/** The ladder of a validated policy; `undefined` when off. */
+function compileLadder(source: SecurityPolicy): CompiledLadder | undefined {
+  const given = source.ladder;
+  if (given === false || given?.mode === "off") return undefined;
+  const steps = (
+    given?.steps ?? [
+      { score: 3, action: "challenge" as const },
+      { score: 10, action: "ban" as const },
+    ]
+  )
+    .map((step): CompiledStep =>
+      Object.freeze({
+        score: step.score,
+        action: step.action,
+        duration:
+          step.duration === undefined
+            ? step.action === "challenge"
+              ? 15 * 60_000
+              : undefined
+            : ms(step.duration, "ladder.steps.duration"),
+      }),
+    )
+    .sort((a, b) => b.score - a.score);
+  return Object.freeze({
+    halfLife: ms(given?.halfLife ?? "1h", "ladder.halfLife"),
+    steps: Object.freeze(steps),
+    base: ms(given?.base ?? "1h", "ladder.base"),
+    factor: given?.factor ?? 6,
+    maxBan: ms(given?.maxBan ?? "30d", "ladder.maxBan"),
+    memory: ms(given?.memory ?? "7d", "ladder.memory"),
+    weights: new Map(Object.entries({ ...DEFAULT_WEIGHTS, ...given?.weights })),
+    mode: given?.mode ?? "enforce",
+  });
+}
+
+/** Request shape of a validated policy; `undefined` when off. */
+function compileShape(
+  source: SecurityPolicy,
+  caseSensitive: boolean,
+): CompiledShape | undefined {
+  const given = source.shape;
+  if (given === false || given?.mode === "off") return undefined;
+  return Object.freeze({
+    caseSensitive,
+    maxPathBytes: given?.maxPathBytes ?? 2048,
+    maxQueryBytes: given?.maxQueryBytes ?? 8192,
+    maxQueryParams: given?.maxQueryParams ?? 256,
+    maxQueryDepth: given?.maxQueryDepth ?? 5,
+    methods: given?.methods ? new Set(given.methods) : undefined,
+    hosts: given?.hosts ? new Set(given.hosts) : undefined,
+    maxHeaders: given?.maxHeaders ?? 100,
+    maxHeaderBytes: given?.maxHeaderBytes ?? 8192,
+    headerLimits: new Map(
+      Object.entries({ cookie: 16_384, ...given?.headerLimits }),
+    ),
+    maxBodySize:
+      given?.maxBodySize === undefined || given.maxBodySize === false
+        ? undefined
+        : given.maxBodySize,
+    routes: Object.freeze(
+      (given?.routes ?? []).map((route): CompiledShapeRoute =>
+        Object.freeze({
+          routes: compileRoutes(route.routes) ?? [],
+          maxBodySize: route.maxBodySize,
+          contentTypes: route.contentTypes
+            ? Object.freeze([...route.contentTypes])
+            : undefined,
+          allowEncodedSlash: route.allowEncodedSlash === true,
+        }),
+      ),
+    ),
+    mode: given?.mode ?? "enforce",
+  });
+}
+
+/** Deception of a validated policy. */
+function compileDeception(source: SecurityPolicy): CompiledDeception {
+  const given = source.deception;
+  const honeypots =
+    given?.honeypots === undefined || given.honeypots === false
+      ? undefined
+      : given.honeypots === true
+        ? {}
+        : given.honeypots;
+  const canaryUsers = new Map<string, string>();
+  const canaryKeys = new Map<string, string>();
+  for (const canary of given?.canaries ?? []) {
+    if (canary.user !== undefined) canaryUsers.set(canary.user, canary.id);
+    if (canary.apiKey !== undefined) canaryKeys.set(canary.apiKey, canary.id);
+  }
+  return Object.freeze({
+    honeypots:
+      honeypots === undefined || honeypots.mode === "off"
+        ? undefined
+        : Object.freeze({
+            // Route patterns fold case: a honeypot hit in any case is a probe.
+            patterns: compileRoutes(honeypots.paths ?? DEFAULT_HONEYPOTS) ?? [],
+            answer: honeypots.answer ?? "pass",
+            mode: honeypots.mode ?? "enforce",
+          }),
+    canaryUsers,
+    canaryKeys,
+  });
+}
+
 /**
  * Validates and compiles a policy. Throws a {@link SecurityPolicyError}
  * listing every problem when it is refused (see `securityPolicySchema` for
@@ -343,6 +575,10 @@ export function compilePolicy(
   }
   const source = deepFreeze(input);
   const mode = source.mode ?? "enforce";
+  const caseSensitive =
+    source.shape !== undefined &&
+    source.shape !== false &&
+    source.shape.caseSensitive === true;
 
   const ips = new CidrTrie<CompiledEntry>();
   const users = new Map<string, CompiledEntry[]>();
@@ -396,7 +632,13 @@ export function compilePolicy(
       locked: entry.locked === true,
       level: entry.paths ? 3 : LEVEL[entry.scope ?? "service"],
       paths: entry.paths
-        ? Object.freeze(entry.paths.map(trimPrefix))
+        ? Object.freeze(
+            entry.paths.map((prefix) =>
+              caseSensitive
+                ? trimPrefix(prefix)
+                : trimPrefix(prefix).toLowerCase(),
+            ),
+          )
         : undefined,
       expiresAt:
         entry.expiresAt === undefined ? undefined : Date.parse(entry.expiresAt),
@@ -471,12 +713,15 @@ export function compilePolicy(
       routes: compileRoutes(rule.routes),
       action: rule.action ?? "ban",
       duration:
-        rule.duration === null
-          ? Number.POSITIVE_INFINITY
-          : ms(rule.duration, `countedRules.${rule.id}.duration`),
+        rule.duration === undefined
+          ? 0
+          : rule.duration === null
+            ? Number.POSITIVE_INFINITY
+            : ms(rule.duration, `countedRules.${rule.id}.duration`),
       mode: ruleMode,
       appliesToServices: rule.appliesToServices === true,
-      code: rule.code ?? "blocked",
+      weight: rule.weight ?? 1,
+      code: rule.code,
     });
     countedRules.push(compiledRule);
     const byEvent = countedByEvent.get(rule.event);
@@ -509,6 +754,16 @@ export function compilePolicy(
           mode: concurrencyMode,
         });
 
+  const bans: CompiledBans = Object.freeze({
+    code: source.bans?.code ?? "banned",
+    retryAfter: source.bans?.retryAfter === true,
+    maxActive: source.bans?.maxActive ?? 100_000,
+    mode: source.bans?.mode ?? "enforce",
+  });
+  const ladder = compileLadder(source);
+  const shape = compileShape(source, caseSensitive);
+  const deception = compileDeception(source);
+
   const compiled: CompiledPolicy = Object.freeze({
     source,
     version: source.version ?? SECURITY_POLICY_VERSION,
@@ -536,6 +791,11 @@ export function compilePolicy(
       limits: Object.freeze(limits),
       countedRules: Object.freeze(countedRules),
       countedByEvent,
+      bans,
+      ladder,
+      shape,
+      caseSensitive,
+      deception,
     }),
   );
   return compiled;

@@ -7,9 +7,16 @@ import type { Decision } from "../engine/decision";
 
 /** The reason phrase of each status a refusal can carry. */
 const TITLES: Readonly<Record<number, string>> = {
+  400: "Bad Request",
   401: "Unauthorized",
   403: "Forbidden",
+  404: "Not Found",
+  405: "Method Not Allowed",
+  413: "Content Too Large",
+  414: "URI Too Long",
+  415: "Unsupported Media Type",
   429: "Too Many Requests",
+  431: "Request Header Fields Too Large",
   503: "Service Unavailable",
 };
 
@@ -39,7 +46,8 @@ function refusalHeaders(decision: Decision, type: string): Headers {
 
 /**
  * The default refusal for a decision that answers (`challenge` without a
- * provider, `block`, `ban`): its status, problem+json
+ * provider, `block`, `ban`, an L6 shape refusal, a honeypot's `404`): its
+ * status, problem+json
  * (`{ type: "about:blank", title, status, code }`) or, when the client asks
  * for HTML first, a minimal page.
  */

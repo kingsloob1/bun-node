@@ -3,13 +3,15 @@
 A request-defence engine for Bun services. It decides every request locally,
 from a policy compiled once, before your handler sees it.
 
-> **Being built.** This is milestone M1's first two parts (PR-S1, PR-S2) of
-> the [bun-security plan](../../docs/plans/bun-security/README.md): the
+> **Being built.** This is milestone M1's first three parts (PR-S1 to PR-S3)
+> of the [bun-security plan](../../docs/plans/bun-security/README.md): the
 > engine, client identity, service identity, the trust check, allow and deny
 > lists, rate limits on bun-common's throttle foundation, counted rules,
-> connection limits, outcome signals, and the plain `Bun.serve` integration.
-> Bans with escalation, request rules, challenges, the bun-common and bun-nest
-> integrations, shared state and the control plane follow in later PRs.
+> bans with an offence score and an escalation ladder, request shape and a
+> canonical path, honeypots, canary credentials and trap fields, connection
+> limits, outcome signals, and the plain `Bun.serve` integration. Request
+> rules, challenges, the bun-common and bun-nest integrations, shared state
+> and the control plane follow in later PRs.
 
 ```sh
 bun add @kingsleyweb/bun-security
@@ -49,7 +51,8 @@ Bun.serve(
 `withSecurity(security, fetch, options)` turns each request into facts,
 asks the engine, and answers a refusal itself: problem+json
 (`{ type, title, status, code }`, never the rule's name) with the refusal's
-status (`403`, `429` for a limit, `503` past the in-flight cap) and
+status (`403`, `429` for a limit, `503` past the in-flight cap, `400` to
+`431` for a request-shape refusal, `404` for a honeypot that asks for it) and
 `Retry-After` when it ends, a minimal HTML page for a browser, `renderBlock`'s
 answer if you pass one, or for `drop` no answer at all (the connection
 closes). Every request it lets through is tracked, and reported back with
@@ -110,6 +113,9 @@ providers land) or `drop`. Entries take an `id`, `reason`, `createdBy`,
   Narrow it with `internal: { ranges: [...] }` or turn it off with
   `internal: false`.
 - An `allow` entry wider than `/8` (IPv4) or `/32` (IPv6) is refused.
+- `paths` match the canonical path (see [Request shape](#request-shape)),
+  folded to lower case unless `shape.caseSensitive` is `true`, as
+  bun-common's router matches, so `//Admin` cannot step around `/admin`.
 - Every entry, and the whole policy, has a `mode`: `enforce`, `dryRun` (the
   decision is `log`, with the entry's would-be action as `wouldHaveBeen`) or
   `off`.
@@ -178,13 +184,14 @@ countedRules: [
   refused it), `route.notFound` and `server.error` (from `complete()`), and the
   app's own: `security.signal(facts, "auth.failure")`.
 - At the threshold the counter is cleared (one burst, one trip) and the key is
-  refused: `action: "ban"` (the default, `403`) or `"challenge"` (a block until
-  challenge providers land), for `duration` (`Retry-After` says how long), or
-  with `duration: null` until the rule is removed or turned off. The tripping
-  request is refused too.
+  banned (see [Bans](#bans)): `action: "ban"` (the default) or `"challenge"`
+  (a block until challenge providers land) for `duration`, or with
+  `duration: null` until lifted (`security.unban()`, or the rule removed or
+  turned off); `action: "ladder"` bans for the ladder's escalating length and
+  takes no `duration`. The tripping request is refused too, and the trip adds
+  the rule's `weight` (default 1) to the address's score.
 - `key`, `routes` and `mode` work as for limits. Counters live in the same
-  `throttleStore` (a fixed window from the first occurrence); trips are kept
-  in a bounded local table.
+  `throttleStore` (a fixed window from the first occurrence).
 - A verified sibling service is exempt by default; `appliesToServices: true`
   counts and refuses the end user it forwards instead (ConcaveHR's sign-in
   proxy), never the service itself.
@@ -205,10 +212,112 @@ lost stops counting after `releaseAfter` (5 minutes). `complete()` also counts
 `route.notFound` (no route matched; never an app's own `404`) and
 `server.error` (a `5xx`) for counted rules.
 
-Every table of local state (trips, in-flight requests, the default store's
-counters) is bounded by `maxKeys`; past it the oldest entry is dropped, counted
+Every table of local state (scores, ban history, in-flight requests, the
+default store's counters) is bounded by `maxKeys`; past it the oldest entry is dropped, counted
 in `security.status().state.evictions`, and a `state.evictions` warning goes to
 `onWarning` and the logger.
+
+## Bans
+
+A ban refuses every request of its subject until it ends: an address (IPv6 by
+its `/64`), a range, a user, an API key, or a counted rule's composite key.
+Bans are written by counted rules, by the ladder, and by hand; they are looked
+up locally on every request, never waiting on a store.
+
+```ts
+security.ban({ ip: "203.0.113.0/24", duration: "1h", reason: "scanner", by: "ops" });
+security.ban({ user: "u_mallory", duration: null }); // until lifted
+security.unban("cidr:203.0.113.0/24", { by: "ops" });
+security.bans(); // the bans in force
+```
+
+- A ban answers `403` with `code: "banned"` and, by default, no `Retry-After`
+  (an attacker learns nothing); `bans: { code, retryAfter: true }` changes
+  both. Its id is its subject, `ip:203.0.113.5`.
+- **Merging**: a new ban on a subject already banned extends it (the later end
+  wins, "until lifted" beats any date), `ban` beats `challenge`, and a manual
+  ban replaces an automatic one's reason.
+- An address ban never refuses an internal client (a user or API-key ban
+  does); an allow entry is never refused; a verified service exempt from bans
+  is refused only by bans of counted rules with `appliesToServices`.
+- At most `bans.maxActive` (100,000) are held: past it, a new automatic ban of
+  an address is widened to its `/24` or `/48` and a `bans.aggregated` warning
+  raised. Manual bans are never dropped. Sharing bans across processes comes
+  with PR-S4.
+
+### The offence score and the ladder
+
+Each client address has a score that offences raise and that halves every
+`halfLife` (1 hour). The ladder turns it into challenges and bans:
+
+```ts
+ladder: {
+  steps: [{ score: 3, action: "challenge" }, { score: 10, action: "ban" }], // the defaults
+  weights: { "honeypot.hit": 10, "canary.used": 100, "trap.filled": 10, "shape.refused": 1 },
+},
+```
+
+- **Weights** are per event (an engine event, an L8 event or your own
+  `signal()`), merged over the defaults above; any other event weighs 0, so a
+  `429` alone never bans. A counted rule's trip adds its `weight` (1).
+- A `challenge` step lasts 15 minutes unless it says otherwise; a `ban` step
+  lasts `base × factor^(n-1)` (1 h, 6 h, 36 h, …, `maxBan` 30 days), n being
+  the address's bans within `memory` (7 days), and starts the score again.
+- Allow-listed and internal addresses are never scored. `ladder: false` turns
+  it off; `mode: "dryRun"` scores and logs only.
+
+## Request shape
+
+Every request's path is read in one **canonical** form (`canonicalPath()`):
+the WHATWG normalisation Bun applies, then unreserved escapes decoded (`%61`
+is `a`) and repeated slashes collapsed, so `//admin`, `/a/%2e%2e/admin` and
+`/a\..\admin` all read `/admin` for every rule. Before routing, `shape`
+refuses (`400` unless noted, problem code `rejected`):
+
+- `TRACE` and `CONNECT`, and methods outside `methods` (`405`);
+- an encoded slash or backslash (`%2F`, `%5C`, unless a route opts out with
+  `allowEncodedSlash`), a NUL, escapes that are not UTF-8 (overlong forms
+  included), a path over 2,048 bytes (`414`);
+- a query over 8,192 bytes (`414`), with more than 256 parameters, or nested
+  deeper than 5;
+- **a duplicate `Host`** (Bun accepts two lines,
+  [oven-sh/bun#44232](https://github.com/oven-sh/bun/issues/44232)), or a
+  `Host` outside `hosts`;
+- more than 100 headers, or a value over 8 KiB (`cookie`: 16 KiB) (`431`);
+- a `Content-Length` over the route's `maxBodySize` (or the policy's) (`413`),
+  and a body of a media type the route does not accept (`415`):
+
+```ts
+shape: {
+  hosts: ["api.example.com"],
+  routes: [{ routes: ["POST /avatar"], maxBodySize: 100_000, contentTypes: ["image/*"] }],
+},
+```
+
+A refusal is the `shape.refused` event (weight 1). `shape: false` turns the
+checks off, `mode: "dryRun"` logs them.
+
+## Deception
+
+```ts
+deception: {
+  honeypots: true, // "/wp-login.php", "/.env", "/admin.php"; or { paths, answer }
+  canaries: [{ id: "backup-2026-q3", apiKey: "key_planted_in_backup" }],
+},
+```
+
+- **Honeypot routes** (off by default) are paths your service never serves.
+  A hit is answered as a real route would be (`answer: "pass"`, the default,
+  lets your app answer it; `"not-found"` answers `404`), never with a block
+  page, and weighs 10, so the client is banned from its next request.
+- **Canary credentials** are user or API key ids no one uses legitimately
+  (planted in a backup, a config file, a seed). Any use is refused at once,
+  weighs 100, logs an error and raises a `canary.used` warning naming the
+  canary, which tells you where the leak came from.
+- **Trap form fields**: `trapField()` renders a field people never see
+  (`html`, to put in your form); `isTrapFilled(submission)` says whether a
+  bot filled it; then call `security.signal(facts, "trap.filled")` (weight
+  10) and refuse the submission.
 
 ## The policy
 
@@ -220,7 +329,8 @@ starting with `$` are ignored), a duration needs its unit (`"5m"`,
 format; a policy without one reads as version 1, and a higher version is
 refused with an error saying the policy is newer than this package (rather
 than a list of unknown keys), so an older service tells a newer policy from a
-broken one. `securityPolicySchema` is
+broken one; that issue carries `code: "policy.newer"`, for a program to
+tell "upgrade needed" from "malformed". `securityPolicySchema` is
 the same validation as a [Standard Schema](https://standardschema.dev).
 `security.load(policy)` swaps a new policy in at once, keeping the old one if
 the new one is refused.

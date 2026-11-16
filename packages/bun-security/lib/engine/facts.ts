@@ -13,6 +13,7 @@ import type {
   ProxyChainEntry,
   TrustProxyOption,
 } from "@kingsleyweb/bun-common";
+import { canonicalPath } from "./path";
 
 /**
  * Who the app says is calling (plan §4.2, `identify`): ids only, never a
@@ -36,12 +37,15 @@ export interface RequestFacts {
   /** The method, as received (`GET`). */
   readonly method: string;
   /**
-   * The path the rules match: today the raw path; layers.md L6's canonical
-   * form (decoded, dot segments and repeated slashes resolved) once it lands.
+   * The path the rules match: layers.md L6's canonical form of
+   * {@link rawPath} (`canonicalPath`: unreserved escapes decoded, dot
+   * segments resolved, backslashes and repeated slashes folded), case kept.
    */
   readonly path: string;
   /** The path as received, before any decoding, without the query. */
   readonly rawPath: string;
+  /** The query string as received, without its `?`; absent or `""` for none. */
+  readonly query?: string;
   /** The matched route (`"POST /login"`), when routing has run. */
   readonly routeKey?: string;
   /**
@@ -49,6 +53,17 @@ export interface RequestFacts {
    * of them, each value cut at {@link MAX_FACT_HEADER_LENGTH} characters.
    */
   readonly headers: Readonly<Record<string, string>>;
+  /**
+   * How many header fields the request carried (repeated names joined, as
+   * `Headers` does), before the cut to {@link MAX_FACT_HEADERS} (layers.md
+   * L6's header count).
+   */
+  readonly headerCount?: number;
+  /**
+   * Each kept header value's length in characters, before the cut to
+   * {@link MAX_FACT_HEADER_LENGTH} (layers.md L6's header size).
+   */
+  readonly headerLengths?: Readonly<Record<string, number>>;
   /** The names of the cookies sent, at most 64. */
   readonly cookieNames: readonly string[];
   /** The socket peer's address, `""` when there is none (a Unix socket, a socket-free call). */
@@ -143,19 +158,33 @@ export function cookieNamesOf(header: string | undefined): readonly string[] {
   return names;
 }
 
-/** The request's headers, lower case and bounded. */
-function boundedHeaders(headers: Headers): Record<string, string> {
-  const out: Record<string, string> = {};
+/** The request's headers, lower case and bounded, with their count and the kept ones' full lengths. */
+function boundedHeaders(headers: Headers): {
+  values: Record<string, string>;
+  lengths: Record<string, number>;
+  count: number;
+} {
+  const values: Record<string, string> = {};
+  const lengths: Record<string, number> = {};
   let count = 0;
   for (const [name, value] of headers) {
-    if (count === MAX_FACT_HEADERS) break;
-    out[name] =
+    count++;
+    if (count > MAX_FACT_HEADERS) continue;
+    lengths[name] = value.length;
+    values[name] =
       value.length > MAX_FACT_HEADER_LENGTH
         ? value.slice(0, MAX_FACT_HEADER_LENGTH)
         : value;
-    count++;
   }
-  return out;
+  return { values, lengths, count };
+}
+
+/** The query of a request URL, without its `?` or fragment; `""` for none. */
+export function queryOf(url: string): string {
+  const start = url.indexOf("?");
+  if (start === -1) return "";
+  const hash = url.indexOf("#", start);
+  return url.slice(start + 1, hash === -1 ? url.length : hash);
 }
 
 /** A `Content-Length` value as a number, when it is a whole number. */
@@ -187,7 +216,8 @@ export function requestFacts(
   request: Request,
   init: RequestFactsInit = {},
 ): RequestFacts {
-  const headers = boundedHeaders(request.headers);
+  const bounded = boundedHeaders(request.headers);
+  const headers = bounded.values;
   const peer = init.peer ?? "";
   let client = peer;
   let chain: readonly ProxyChainEntry[];
@@ -208,9 +238,12 @@ export function requestFacts(
   const rawPath = rawPathOf(request.url);
   const facts: MutableFacts = {
     method: request.method,
-    path: rawPath,
+    path: canonicalPath(rawPath),
     rawPath,
+    query: queryOf(request.url),
     headers,
+    headerCount: bounded.count,
+    headerLengths: bounded.lengths,
     cookieNames: cookieNamesOf(headers.cookie),
     peer,
     client,

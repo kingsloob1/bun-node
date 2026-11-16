@@ -64,6 +64,8 @@ describe("the policy format version", () => {
       "newer than this package reads (version 1)",
     );
     expect(issues[0]?.message).toContain("upgrade @kingsleyweb/bun-security");
+    // Machine-readable, for the control plane (CP2, CP4): upgrade, not malformed.
+    expect(issues[0]?.code).toBe("policy.newer");
     expect(schemaIssues(policy)).toHaveLength(1);
     expect(() => createSecurity({ policy: policy as SecurityPolicy })).toThrow(
       /newer than this package/,
@@ -80,6 +82,8 @@ describe("the policy format version", () => {
       expect(
         issues.find((issue) => issue.path[0] === "version")?.message,
       ).toStartWith("must be 1");
+      // Negative control: a malformed version carries no code.
+      expect(issues.every((issue) => issue.code === undefined)).toBe(true);
     }
   });
 

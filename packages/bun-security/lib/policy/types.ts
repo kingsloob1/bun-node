@@ -3,8 +3,9 @@
  * {@link securityPolicySchema} and compiled once by `compilePolicy`, never
  * user code: the service's identity settings (layers.md L2), its allow and
  * deny lists (L3), the trust check (L2.5), connection limits (L1), rate
- * limits (L9) and counted rules (§0.2); the later layers add their sections
- * beside these, within format version 1.
+ * limits (L9), counted rules and the ladder (§0.2), bans (L4), request
+ * shape (L6) and deception (L8); the later layers add their sections beside
+ * these, within format version 1.
  *
  * Every duration has its unit written (`"5m"`, `{ minutes: 5 }`), every
  * timestamp its time zone (`"2026-12-01T00:00:00Z"`): a bare number is
@@ -241,7 +242,7 @@ export interface LimitRule {
 }
 
 /** What a tripped counted rule does to its key (layers.md §0.2). */
-export type CountedRuleAction = "ban" | "challenge";
+export type CountedRuleAction = "ban" | "challenge" | "ladder";
 
 /**
  * A counted rule (layers.md §0.2, plan D23): `threshold` occurrences of
@@ -270,16 +271,25 @@ export interface CountedRule {
   /** Only occurrences on these routes count (a limit's route grammar). Every route when absent. */
   readonly routes?: readonly string[];
   /**
-   * What the tripped key gets until `duration` ends: `ban` (`403` for every
-   * later request under the key) or `challenge` (a `block` until challenge
-   * providers exist). Default `"ban"`.
+   * What the tripped key gets: a ban (layers.md L4) with this action until
+   * `duration` ends. `ban` refuses every later request under the key;
+   * `challenge` is a `block` until challenge providers exist; `ladder` bans
+   * for the escalating duration of the policy's `ladder` (`base ×
+   * factor^(n-1)`, n the key's bans within the ladder's `memory`), and takes
+   * no `duration`. Default `"ban"`.
    */
   readonly action?: CountedRuleAction;
   /**
-   * How long the action lasts, its unit written (`"1h"`), or `null` until it
-   * is removed: until the rule is removed from the policy or turned off.
+   * How long the ban lasts, its unit written (`"1h"`), or `null` until it is
+   * lifted (`security.unban()`, or the rule removed from the policy or turned
+   * off). Required, except with `action: "ladder"`, which refuses it.
    */
-  readonly duration: Duration | null;
+  readonly duration?: Duration | null;
+  /**
+   * The offence weight a trip adds to the client address's score (layers.md
+   * §0.2), which the ladder turns into challenges and bans. Default `1`.
+   */
+  readonly weight?: number;
   /** The rule's mode: in `dryRun` it counts and records the would-be action. Default `"enforce"`. */
   readonly mode?: SecurityMode;
   /**
@@ -290,7 +300,7 @@ export interface CountedRule {
    * counts against nobody). Default `false`.
    */
   readonly appliesToServices?: boolean;
-  /** The `code` of the refusal's problem+json body. Default `"blocked"`. */
+  /** The `code` of its bans' problem+json body. Default the policy's `bans.code` (`"banned"`). */
   readonly code?: string;
 }
 
@@ -320,6 +330,167 @@ export interface ConcurrencyPolicy {
   readonly releaseAfter?: Duration;
   /** The limits' mode. Default `"enforce"`. */
   readonly mode?: SecurityMode;
+}
+
+/** How bans answer, and how many are held (layers.md L4). */
+export interface BanPolicy {
+  /** The `code` of a ban's problem+json body. Default `"banned"`. */
+  readonly code?: string;
+  /** Whether a ban's answer says when it ends (`Retry-After`). Default `false`: an attacker learns nothing. */
+  readonly retryAfter?: boolean;
+  /**
+   * The most bans held in this process. Past it, a new automatic ban of an
+   * address is widened to its `/24` (IPv4) or `/48` (IPv6) and a
+   * `bans.aggregated` warning raised; manual bans are never dropped. A
+   * positive whole number. Default `100_000`.
+   */
+  readonly maxActive?: number;
+  /** The bans' mode: in `dryRun` a banned request is only logged. Default `"enforce"`. */
+  readonly mode?: SecurityMode;
+}
+
+/** One step of the ladder (layers.md §0.2): at this score, this action. */
+export interface LadderStep {
+  /** The score that reaches it: a positive number. */
+  readonly score: number;
+  /** What the client address gets: `challenge` (a `block` until challenge providers exist) or `ban`. */
+  readonly action: "challenge" | "ban";
+  /**
+   * How long, its unit written. Default: for `ban`, the escalating duration
+   * (`base × factor^(n-1)`); for `challenge`, `"15m"`.
+   */
+  readonly duration?: Duration;
+}
+
+/**
+ * The offence score and the escalation ladder (layers.md §0.2, plan D10): a
+ * score per client address, raised by offences, decaying exponentially, and
+ * steps that turn it into challenges and bans of growing length.
+ */
+export interface LadderPolicy {
+  /** The score's half-life, its unit written. Default `"1h"`. */
+  readonly halfLife?: Duration;
+  /**
+   * The steps, by score. Default `[{ score: 3, action: "challenge" }, {
+   * score: 10, action: "ban" }]`. The highest step reached applies; a ban
+   * resets the score.
+   */
+  readonly steps?: readonly LadderStep[];
+  /** The first escalating ban's length. Default `"1h"`. */
+  readonly base?: Duration;
+  /** Each later ban within `memory` lasts this many times longer: at least 1. Default `6`. */
+  readonly factor?: number;
+  /** The longest escalating ban. Default `"30d"`. */
+  readonly maxBan?: Duration;
+  /** How long a ban counts toward the next one's length. Default `"7d"`. */
+  readonly memory?: Duration;
+  /**
+   * Each event's offence weight, by event name (an engine event, an L8
+   * event or an app's `signal()`). Merged over the defaults:
+   * `honeypot.hit` 10, `canary.used` 100, `trap.filled` 10,
+   * `shape.refused` 1; any other event 0 (a `429` alone never bans,
+   * layers.md L9.1).
+   */
+  readonly weights?: Readonly<Record<string, number>>;
+  /** The ladder's mode: in `dryRun` it scores and logs, banning nobody. Default `"enforce"`. */
+  readonly mode?: SecurityMode;
+}
+
+/** Per-route request shape (layers.md L6): body limits, media types, opt-outs. */
+export interface ShapeRoute {
+  /** The routes it applies to, a limit's route grammar. */
+  readonly routes: readonly string[];
+  /** The largest `Content-Length` accepted, in bytes; `413` past it. */
+  readonly maxBodySize?: number;
+  /** The media types accepted for a body (`"application/json"`, `"multipart/*"`); `415` for another. */
+  readonly contentTypes?: readonly string[];
+  /** Accept an encoded slash or backslash (`%2F`, `%5C`) in the path. Default `false`. */
+  readonly allowEncodedSlash?: boolean;
+}
+
+/**
+ * Request shape (layers.md L6): what a request must look like before it is
+ * routed. Sizes are bytes.
+ */
+export interface ShapePolicy {
+  /**
+   * Whether the app's routes are case-sensitive. Default `false`, as
+   * bun-common's router: list `paths` and honeypots then match `/Admin` as
+   * `/admin`, so a case change cannot step around them.
+   */
+  readonly caseSensitive?: boolean;
+  /** The longest path, in bytes; `414` past it. Default `2048`. */
+  readonly maxPathBytes?: number;
+  /** The longest query string, in bytes; `414` past it. Default `8192`. */
+  readonly maxQueryBytes?: number;
+  /** The most query parameters. Default `256`. */
+  readonly maxQueryParams?: number;
+  /** The deepest query nesting (`a[b][c]`, `a.b.c`). Default `5`. */
+  readonly maxQueryDepth?: number;
+  /**
+   * The methods accepted (upper case); `405` for another. Default: any but
+   * `TRACE` and `CONNECT`, which are always refused.
+   */
+  readonly methods?: readonly string[];
+  /**
+   * The `Host` values the service answers to (`"api.example.com"`, with a
+   * port when not the default); `400` for another. Any when absent. A
+   * duplicate `Host` is always refused.
+   */
+  readonly hosts?: readonly string[];
+  /** The most header lines. Default `100`. */
+  readonly maxHeaders?: number;
+  /** The longest single header value, in bytes; `431` past it. Default `8192`. */
+  readonly maxHeaderBytes?: number;
+  /** Per-header exceptions to `maxHeaderBytes`, by lower-case name. Default `{ cookie: 16384 }`. */
+  readonly headerLimits?: Readonly<Record<string, number>>;
+  /** The largest `Content-Length` on any route, in bytes, or `false`. Default `false` (`hardenServe` caps the listener). */
+  readonly maxBodySize?: number | false;
+  /** Per-route body limits, media types and opt-outs; the first matching entry applies. */
+  readonly routes?: readonly ShapeRoute[];
+  /** The checks' mode. Default `"enforce"`. */
+  readonly mode?: SecurityMode;
+}
+
+/** Honeypot routes (layers.md L8): paths the service never serves. */
+export interface HoneypotPolicy {
+  /**
+   * The paths, a limit's route grammar. Default `["/wp-login.php", "/.env",
+   * "/admin.php"]`. Matched on the canonical path, folded unless the shape
+   * is case-sensitive.
+   */
+  readonly paths?: readonly string[];
+  /**
+   * What a hit gets: `"pass"` (the request goes on to the app, which answers
+   * as it would any unknown path) or `"not-found"` (`404` problem+json).
+   * Either way, never a block page, and the client address is banned from
+   * the next request by its score. Default `"pass"`.
+   */
+  readonly answer?: "pass" | "not-found";
+  /** The honeypots' mode. Default `"enforce"`. */
+  readonly mode?: SecurityMode;
+}
+
+/** A canary credential (layers.md L8): an id no one uses legitimately. */
+export interface CanaryPolicy {
+  /** The canary's name, reported when it is used (where it was planted: `"backup-2026-q3"`). */
+  readonly id: string;
+  /** A user id, as `identify()` returns it. */
+  readonly user?: string;
+  /** An API key id, as `identify()` returns it. */
+  readonly apiKey?: string;
+}
+
+/** Deception (layers.md L8): honeypot routes and canary credentials. */
+export interface DeceptionPolicy {
+  /** Honeypot routes: `true` for the default set, or settings. Off by default. */
+  readonly honeypots?: boolean | HoneypotPolicy;
+  /**
+   * Canary credentials: any use refuses the request, bans the client
+   * address (weight 100 through the ladder), logs an error and raises a
+   * `canary.used` warning naming the canary.
+   */
+  readonly canaries?: readonly CanaryPolicy[];
 }
 
 /** How request subjects are keyed (layers.md L2.3). */
@@ -379,4 +550,12 @@ export interface SecurityPolicy {
   readonly limits?: readonly LimitRule[];
   /** Counted rules (layers.md §0.2). */
   readonly countedRules?: readonly CountedRule[];
+  /** How bans answer and how many are held (layers.md L4). */
+  readonly bans?: BanPolicy;
+  /** The offence score and its ladder (layers.md §0.2), or `false` for none. On by default. */
+  readonly ladder?: LadderPolicy | false;
+  /** Request shape (layers.md L6), or `false` for no checks. On by default. */
+  readonly shape?: ShapePolicy | false;
+  /** Honeypots and canaries (layers.md L8). */
+  readonly deception?: DeceptionPolicy;
 }

@@ -90,7 +90,10 @@ const FAILED_PASSWORD: CountedRule = {
 describe("a counted rule", () => {
   it("trips at the threshold, refuses the key until the duration ends, then lets it through", () => {
     const clock = fakeClock();
-    const security = engine({ countedRules: [FAILED_PASSWORD] }, clock);
+    const security = engine(
+      { countedRules: [FAILED_PASSWORD], bans: { retryAfter: true } },
+      clock,
+    );
     const client = facts({ client: "203.0.113.20" });
     expect(signal(security, client, "auth.failure")).toEqual([]);
     expect(signal(security, client, "auth.failure")).toEqual([]);
@@ -106,12 +109,27 @@ describe("a counted rule", () => {
     expect(refused).toMatchObject({
       action: "ban",
       status: 403,
-      code: "blocked",
+      code: "banned",
       retryAfter: 3600,
     });
-    expect(refused.hits[0]?.reason).toBe(
-      'tripped by counted rule "failed-password", 3600 s left',
-    );
+    expect(refused.hits).toEqual([
+      {
+        layer: "L4",
+        rule: "ban:ip:203.0.113.20",
+        action: "ban",
+        reason: 'banned: counted rule: 3 "auth.failure" in 15m, 3600 s left',
+      },
+    ]);
+    expect(security.bans()).toMatchObject([
+      {
+        id: "ip:203.0.113.20",
+        subject: { type: "ip", value: "203.0.113.20" },
+        action: "ban",
+        rule: "counted:failed-password",
+        source: "auto",
+        count: 1,
+      },
+    ]);
     // Another address is untouched.
     expect(decide(security, facts({ client: "203.0.113.21" })).action).toBe(
       "allow",
@@ -350,10 +368,12 @@ describe("the engine's events", () => {
       "limit:tight",
       "counted:repeat-429",
     ]);
-    expect(actions[3]).toMatchObject({ status: 403, retryAfter: 3600 });
+    // No Retry-After on a ban by default: an attacker learns nothing.
+    expect(actions[3]).toMatchObject({ status: 403, code: "banned" });
+    expect(actions[3]?.retryAfter).toBeUndefined();
     // The ban is enforced at L4, before the limit counts.
     expect(actions[4]?.hits.map((hit) => hit.rule)).toEqual([
-      "counted:repeat-429",
+      "ban:ip:203.0.113.10",
     ]);
     // Without a counted rule on `throttled`, 429s stay 429s.
     const plain = engine({
@@ -632,6 +652,8 @@ describe("property: counters and trips against a reference model", () => {
       const durationMs = 1000 * (1 + Math.floor(random() * 60));
       const security = engine(
         {
+          // The model has no ladder: scores are tested on their own.
+          ladder: false,
           countedRules: [
             {
               id: "r",
