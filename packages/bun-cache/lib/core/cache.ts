@@ -350,6 +350,12 @@ interface SharedState {
   l1: L1Store<DecodedValue> | undefined;
   /** The bus link, when the cache has a bus (§4.2). */
   bus: BusLink | undefined;
+  /**
+   * What {@link cacheBusOf} answers, once asked: the bus as a library may
+   * use it (closing is the cache's), `null` when there is none. Kept so
+   * every call answers the same object.
+   */
+  sharedBus: CacheBus | null | undefined;
   /** When the last bus-failure warning was logged (throttled like the driver's). */
   lastBusWarnAt: number;
   /** The entry encryption, when `encrypt` is set (the encryption plan). */
@@ -416,6 +422,18 @@ class CacheImpl<
     }
     const view = cache as CacheImpl<S, T>;
     return new CacheImpl<S, T>(view.#state, view.#ns, codec);
+  }
+
+  /** {@link cacheBusOf}'s answer for `cache`; `undefined` when `cache` was not made by `createCache`. */
+  static busOf(cache: unknown): CacheBus | undefined {
+    if (typeof cache !== "object" || cache === null || !(#state in cache)) {
+      return undefined;
+    }
+    const state = cache.#state;
+    if (state.sharedBus === undefined) {
+      state.sharedBus = sharedBusOf(state) ?? null;
+    }
+    return state.sharedBus ?? undefined;
   }
 
   /** The driver `cache` stores through; `undefined` when `cache` was not made by `createCache`. */
@@ -3401,6 +3419,7 @@ export function createCache(
     closed: false,
     l1: resolveL1(options.l1),
     bus: undefined,
+    sharedBus: undefined,
     lastBusWarnAt: 0,
     encryption: undefined,
     lastCryptoWarnAt: new Map(),
@@ -3481,6 +3500,74 @@ export function cacheDriverOf<
   Tag extends string = string,
 >(cache: Cache<Schema, Tag>): CacheDriver | undefined {
   return CacheImpl.driverOf(cache);
+}
+
+/**
+ * The bus `cache` uses (§4.2), for a library built on the cache that
+ * announces changes of its own to other processes on the same bus — a ban
+ * list telling the other instances to read its log at once — without asking
+ * the application for the bus a second time:
+ *
+ * - the bus the cache linked: the one its `bus` option gave, or, under
+ *   `bus: "auto"` (the default with an `l1`), the driver's own;
+ * - with no bus linked because the cache has no `l1` and no `bus` option,
+ *   the driver's own bus, when it has one (`capabilities.bus` not
+ *   `"none"`, with `publish` and `subscribe`);
+ * - `undefined` under an explicit `bus: false`, for a driver with no bus,
+ *   and for a `Cache` that `createCache` did not make (a hand-written
+ *   implementation, whose backend cannot be inspected).
+ *
+ * Every view of one cache (`cache.namespace(name)`) answers the same
+ * object, on every call. Its `close()` does nothing: the bus is the cache's,
+ * closed by the cache's `close()` (an explicit one) or the driver's, and is
+ * not usable after that.
+ *
+ * What a library publishes reaches every subscriber, every cache on the bus
+ * included. A cache treats a message as an invalidation of the keys or tags
+ * it names in its `namespace` (a `"clear"` drops that namespace), so give
+ * the library's messages a namespace of its own, which no cache's L1 holds:
+ * there they change nothing. Keep to the four {@link BusMessage} types: a
+ * cache reads any other `type` as "anything may have changed" and flushes
+ * its whole L1. A message carries no `origin` unless the
+ * library sets one, so every cache acts on it, this one too. A library that
+ * subscribes receives the caches' own messages beside its own; filter on
+ * `namespace`.
+ *
+ * ```ts
+ * const bus = cacheBusOf(cache);
+ * await bus?.publish({ type: "set", namespace: "bans", keys: ["log"], at: Date.now() });
+ * ```
+ */
+export function cacheBusOf<
+  Schema extends CacheSchema = Record<string, unknown>,
+  Tag extends string = string,
+>(cache: Cache<Schema, Tag>): CacheBus | undefined {
+  return CacheImpl.busOf(cache);
+}
+
+/**
+ * The bus {@link cacheBusOf} answers for `state`: the linked bus, else the
+ * driver's (no `bus` option and no L1), as a {@link CacheBus} whose
+ * `close()` does nothing; `undefined` when there is none.
+ */
+function sharedBusOf(state: SharedState): CacheBus | undefined {
+  const bus =
+    state.bus?.bus ??
+    (state.options.bus === undefined ? driverBus(state.driver) : undefined);
+  if (bus === undefined) {
+    return undefined;
+  }
+  return Object.freeze({
+    name: bus.name,
+    publish: async (message: BusMessage) => {
+      await bus.publish(message);
+    },
+    subscribe: async (
+      onMessage: (message: BusMessage) => void,
+      onGap: () => void,
+    ) => await bus.subscribe(onMessage, onGap),
+    close: async () => {},
+  });
 }
 
 /**
