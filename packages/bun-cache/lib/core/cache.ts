@@ -1834,6 +1834,25 @@ class CacheImpl<
               lockOwner = owner;
             }
           }
+          // The read that sent this process here and the lock it took are
+          // two round trips: a holder may have stored the value and let go
+          // in between. Read again before loading (#835).
+          if (lockOwner !== undefined) {
+            const again = await this.#readStored(key, stored);
+            if (again.kind === "fresh") {
+              const owner = lockOwner;
+              lockOwner = undefined;
+              void this.#op(
+                "releaseLock",
+                async () =>
+                  await driver.releaseLock!(this.#storedNs, stored, owner),
+                false,
+              );
+              deferred.resolve(again.entry.value);
+              state.flights.settle(flightKey, flight);
+              return;
+            }
+          }
         } else if (!state.warnedLock) {
           state.warnedLock = true;
           state.logger.warn(
