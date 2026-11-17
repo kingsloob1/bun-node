@@ -4,6 +4,9 @@
  * management API's documents.
  */
 import type {
+  AnalyticsDistinctDto,
+  AnalyticsScoresDto,
+  FalsePositiveDto,
   AnalyticsPointDto,
   BanTimelineDto,
   LiveBanMessageDto,
@@ -58,6 +61,8 @@ const dimFilters = {
   what: s.optional(DimValue),
   reason: s.optional(DimValue),
   cap: s.optional(DimValue),
+  outcome: s.optional(DimValue),
+  pattern: s.optional(DimValue),
 } as const;
 
 /** The names {@link dimFilters} takes. */
@@ -74,7 +79,64 @@ export const SeriesQuery = s.query({
   tier: s.optional(
     s.enum(["minute", "hour", "day"], "the tier read (default by the range)"),
   ),
+  groupBy: s.optional(
+    s.enum(
+      ["service"],
+      "one point per service as well (PR-AN; at most 1,000 services)",
+    ),
+  ),
   ...dimFilters,
+});
+
+/** `GET /analytics/distinct`'s query (PR-AN). */
+export const DistinctQuery = s.query({
+  scope: s.optional(Scope),
+  metric: Metric,
+  from: s.int({ min: 0, description: "the range's start (ms)" }),
+  to: s.int({ min: 1, description: "the range's end, exclusive (ms)" }),
+  tier: s.optional(
+    s.enum(["minute", "hour", "day"], "the tier read (default by the range)"),
+  ),
+  ...dimFilters,
+});
+
+/** `GET /analytics/distinct`'s answer. */
+export const Distinct: Schema<AnalyticsDistinctDto> = s.object({
+  count: s.int({ min: 0 }),
+  other: s.boolean(),
+});
+
+/** `GET /analytics/scores`' query (PR-AN). */
+export const ScoresQuery = s.query({
+  scope: s.optional(Scope),
+  from: s.int({ min: 0, description: "the range's start (ms)" }),
+  to: s.int({ min: 1, description: "the range's end, exclusive (ms)" }),
+  limit: s.optional(
+    s.int({
+      min: 1,
+      max: ANALYTICS_READ_LIMITS.topN,
+      description: "how many (default 10)",
+    }),
+  ),
+});
+
+/** `GET /analytics/scores`' answer. */
+export const Scores: Schema<AnalyticsScoresDto> = s.object({
+  rows: s.array(
+    s.object({
+      subject: s.string(),
+      score: s.number({ min: 0 }),
+      at: s.int({ min: 0 }),
+    }),
+    ANALYTICS_READ_LIMITS.topN,
+  ),
+  truncated: s.boolean(),
+});
+
+/** `POST /events/:id/false-positive`'s answer. */
+export const FalsePositive: Schema<FalsePositiveDto> = s.object({
+  already: s.boolean(),
+  rules: s.array(s.string(), 50),
 });
 
 /** `GET /analytics/top`'s query. */
@@ -155,6 +217,8 @@ export const EventView: Schema<SecurityEventViewDto> = s.object({
   asn: s.optional(s.int({ min: 0 })),
   latencyMs: s.optional(s.number({ min: 0 })),
   status: s.optional(s.int({ min: 100, max: 999 })),
+  score: s.optional(s.number({ min: 0 })),
+  falsePositive: s.optional(s.boolean()),
   sampleRate: s.optional(
     s.number({
       min: 0,
@@ -175,6 +239,7 @@ export const EventPage = s.object({
 /** A series' point. */
 const Point: Schema<AnalyticsPointDto> = s.object({
   at: s.int({ min: 0 }),
+  service: s.optional(s.string()),
   dims: s.record(s.string(), 8),
   value: s.int({ min: 0 }),
 });

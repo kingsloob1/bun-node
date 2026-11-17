@@ -170,6 +170,7 @@ export function policyFile(
     listEvents: _listEvents,
     series: _series,
     topK: _topK,
+    distinct: _distinct,
     rollup: _rollup,
     deleteBefore: _deleteBefore,
     ...configuration

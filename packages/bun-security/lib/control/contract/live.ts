@@ -105,6 +105,10 @@ export interface SecurityEventViewDto {
   readonly latencyMs?: number;
   /** On a sampled allow: the share of allows kept (`0.001` by default). */
   readonly sampleRate?: number;
+  /** The client address's offence score after the request, when it added to it (PR-AN). */
+  readonly score?: number;
+  /** Whether an analyst flagged it a false positive (PR-AN): shown with `events:read` only. */
+  readonly falsePositive?: boolean;
   /** The answer's status. */
   readonly status?: number;
   /** The redacted request (`events:read`, the REST reads only). */
@@ -223,10 +227,46 @@ export interface LiveSubscribedDto {
 export interface AnalyticsPointDto {
   /** The bucket's start, epoch milliseconds. */
   readonly at: number;
+  /** The point's service, with `groupBy=service` (PR-AN). */
+  readonly service?: string;
   /** The row's dimensions. */
   readonly dims: Readonly<Record<string, string>>;
   /** The sum. */
   readonly value: number;
+}
+
+/** `GET /analytics/distinct`'s answer (PR-AN). */
+export interface AnalyticsDistinctDto {
+  /** The distinct dimension sets (`refused` with `kind=ip`: refused addresses). */
+  readonly count: number;
+  /** Whether a bound folded some into `(other)`: the count is then a floor. */
+  readonly other: boolean;
+}
+
+/** One address and its highest offence score in a range (`GET /analytics/scores`, PR-AN). */
+export interface AnalyticsScoreDto {
+  /** The address key. */
+  readonly subject: string;
+  /** Its highest score in the range, as its events carried it. */
+  readonly score: number;
+  /** When it reached it, epoch ms. */
+  readonly at: number;
+}
+
+/** `GET /analytics/scores`' answer. */
+export interface AnalyticsScoresDto {
+  /** The addresses, the highest first. */
+  readonly rows: readonly AnalyticsScoreDto[];
+  /** Whether the events read stopped at the bound before the range's end. */
+  readonly truncated: boolean;
+}
+
+/** `POST /events/:id/false-positive`'s answer (PR-AN). */
+export interface FalsePositiveDto {
+  /** Whether the event had been flagged already (then nothing was counted again). */
+  readonly already: boolean;
+  /** The rules it was counted against. */
+  readonly rules: readonly string[];
 }
 
 /** A top-N row, as `GET /analytics/top` answers it. */

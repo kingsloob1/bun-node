@@ -93,6 +93,12 @@ export interface Decision {
    * until rules carry weights (layers.md §0.2).
    */
   readonly risk: number;
+  /**
+   * The client address's offence score after this request's offences
+   * (layers.md L4), when any added to it: what the event ring keeps and the
+   * analytics page ranks by (PR-AN). Absent when nothing was added.
+   */
+  readonly score?: number;
   /** The keys the request was decided under. */
   readonly subject: SubjectKeys;
   /**

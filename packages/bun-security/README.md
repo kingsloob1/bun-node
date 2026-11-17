@@ -1557,6 +1557,18 @@ analytics page charts:
   its own service (an analyst of one group sees that group's events whole
   on a global page or topic, and the rest as a viewer). A live event never
   carries the request sample.
+- **More to chart** (PR-AN): give `createSecurity` the recorder's
+  `onSignal: analyticsSignalHook({ recorder })` beside `onDecision`, and
+  the recorder counts challenge answers (`challenges`), sign-ins
+  (`login`, `login.success-after-failures`, `top.usernames-per-ip`) and
+  identifier-pattern hits (`patterns`, `top.pattern`). Exact refusals per
+  subject are kept per hour too (`refused.hourly`, for sparklines), and an
+  event carries its address's offence score. The reads add
+  `groupBy=service` on a series, `GET /analytics/distinct` (distinct
+  refused addresses) and `GET /analytics/scores` (the highest scores).
+- **False positives.** An analyst flags an event with
+  `POST /events/:id/false-positive`: once per event, counted against each
+  rule it hit (`rules.false-positive`), audited, never taken back.
 - **Per instance.** The resume ring and the connection limit belong to one
   control-plane instance: behind an HA pair, a reconnect to the other
   instance gets a `gap` and refetches, and the 5-connection limit is counted

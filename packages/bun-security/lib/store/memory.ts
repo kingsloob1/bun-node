@@ -43,6 +43,8 @@ import type {
   Tier,
   TopKQuery,
   TopKRow,
+  CounterQuery,
+  DistinctCount,
 } from "./types";
 import { ConfigError } from "@kingsleyweb/bun-common";
 import {
@@ -63,6 +65,8 @@ import {
   resolveEvents,
   retentionFloor,
   watermarkName,
+  checkGroupBy,
+  OTHER_DIM,
 } from "./analytics";
 import {
   auditCursor,
@@ -713,16 +717,18 @@ export function memoryStore(
     },
     series: async (query: SeriesQuery): Promise<readonly SeriesPoint[]> => {
       refuseClosed(name, closed);
+      const byService = checkGroupBy(query.groupBy) === "service";
       const sums = new Map<
         string,
-        { at: number; dims: string; value: number }
+        { at: number; dims: string; service?: string; value: number }
       >();
       for (const row of rowsFor(query)) {
-        const key = `${row.bucket}|${row.dims}`;
+        const key = `${row.bucket}|${row.dims}${byService ? `|${row.service}` : ""}`;
         const before = sums.get(key);
         sums.set(key, {
           at: row.bucket,
           dims: row.dims,
+          ...(byService ? { service: row.service } : {}),
           value: (before?.value ?? 0) + row.value,
         });
       }
@@ -735,16 +741,31 @@ export function memoryStore(
         [...sums.values()]
           .sort(
             (a, b) =>
-              a.at - b.at || (a.dims < b.dims ? -1 : a.dims > b.dims ? 1 : 0),
+              a.at - b.at ||
+              (a.dims < b.dims ? -1 : a.dims > b.dims ? 1 : 0) ||
+              (a.service ?? "").localeCompare(b.service ?? ""),
           )
           .map((point) =>
             Object.freeze({
               at: point.at,
+              ...(point.service === undefined
+                ? {}
+                : { service: point.service }),
               dims: dimsOf(point.dims),
               value: point.value,
             }),
           ),
       );
+    },
+    distinct: async (query: CounterQuery): Promise<DistinctCount> => {
+      refuseClosed(name, closed);
+      const seen = new Set<string>();
+      let other = false;
+      for (const row of rowsFor(query)) {
+        if (row.dims.includes(OTHER_DIM)) other = true;
+        else seen.add(row.dims);
+      }
+      return Object.freeze({ count: seen.size, other });
     },
     topK: async (query: TopKQuery): Promise<readonly TopKRow[]> => {
       refuseClosed(name, closed);

@@ -600,6 +600,16 @@ export interface AgentDto {
     readonly banCount: number;
     readonly health: "ok" | "signature-failing";
     readonly lastError?: string;
+    /** The engine's IP feeds (PR-AN): size, last refresh, last attempt, last failure; at most 32. */
+    readonly intel?: {
+      readonly feeds: readonly {
+        readonly id: string;
+        readonly size: number;
+        readonly refreshedAt: number | null;
+        readonly attemptedAt: number | null;
+        readonly error?: string;
+      }[];
+    };
     /** The engine's warnings in force (PR-CP6): kind, since, share; at most 16. */
     readonly warnings?: readonly {
       readonly kind: string;

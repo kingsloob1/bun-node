@@ -46,6 +46,7 @@ import {
   agentEnvelope,
   agentRouteOf,
   artefactSignedBody,
+  MAX_HEARTBEAT_FEEDS,
   MAX_HEARTBEAT_WARNINGS,
   notModifiedBody,
 } from "../agent/protocol";
@@ -555,7 +556,39 @@ export function isHeartbeat(
     (value.health === "ok" || value.health === "signature-failing") &&
     (value.lastError === undefined ||
       (typeof value.lastError === "string" && value.lastError.length <= 500)) &&
-    (value.warnings === undefined || isWarnings(value.warnings))
+    (value.warnings === undefined || isWarnings(value.warnings)) &&
+    (value.intel === undefined || isIntel(value.intel))
+  );
+}
+
+/** Whether `value` is a heartbeat's intel status (bounded, PR-AN). */
+function isIntel(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const { feeds, ...rest } = value as Record<string, unknown>;
+  const time = (t: unknown) =>
+    t === null || (Number.isSafeInteger(t) && (t as number) >= 0);
+  return (
+    Object.keys(rest).length === 0 &&
+    Array.isArray(feeds) &&
+    feeds.length <= MAX_HEARTBEAT_FEEDS &&
+    feeds.every((item: unknown) => {
+      if (typeof item !== "object" || item === null) return false;
+      const f = item as Record<string, unknown>;
+      return (
+        Object.keys(f).every((key) =>
+          ["id", "size", "refreshedAt", "attemptedAt", "error"].includes(key),
+        ) &&
+        typeof f.id === "string" &&
+        f.id.length > 0 &&
+        f.id.length <= 64 &&
+        Number.isSafeInteger(f.size) &&
+        (f.size as number) >= 0 &&
+        time(f.refreshedAt) &&
+        time(f.attemptedAt) &&
+        (f.error === undefined ||
+          (typeof f.error === "string" && f.error.length <= 200))
+      );
+    })
   );
 }
 

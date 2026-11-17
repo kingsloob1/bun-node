@@ -149,6 +149,20 @@ import type { InternalFacts } from "./internal";
 import { internalOf, THROWAWAY_ENGINE } from "./internal";
 
 /** Options for {@link createSecurity}. */
+/** One IP feed's state, as `ipIntel()`'s `status()` reports it. */
+export interface IntelFeedStatus {
+  /** The feed's id. */
+  readonly id: string;
+  /** Its entries. */
+  readonly entries: number;
+  /** When it last refreshed, epoch ms. */
+  readonly updatedAt: number | undefined;
+  /** When a refresh was last tried, epoch ms. */
+  readonly attemptedAt: number | undefined;
+  /** The last refresh's failure. */
+  readonly error: string | undefined;
+}
+
 /** How long a warning counts as in force after it was last raised (`status().warnings`). */
 const WARNING_IN_FORCE_MS = 5 * 60_000;
 
@@ -176,6 +190,19 @@ export interface CreateSecurityOptions<TRequest = Request> {
    * the app's own logging or metrics. Its errors are logged and ignored.
    */
   readonly onDecision?: (decision: Decision, facts: RequestFacts) => void;
+  /**
+   * Called with every event `signal()` takes (and `check()`'s
+   * `pattern.hit`, with the pattern), its facts and the keys the engine
+   * resolved: the analytics' `analyticsSignalHook` counts sign-in and
+   * challenge outcomes and pattern hits from it (PR-AN). Never with a raw
+   * account id: `subject` is keyed. A hook that throws is logged.
+   */
+  readonly onSignal?: (
+    event: string,
+    facts: RequestFacts,
+    subject: SubjectKeys,
+    detail?: { readonly pattern?: string },
+  ) => void;
   /**
    * Called with each warning as it is raised: every
    * `SecurityWarningKind`, such as the trust check's (layers.md L2.5),
@@ -422,6 +449,8 @@ export interface SecurityStatus {
    * from `intel`'s status). What an agent's heartbeat reports (PR-CP6).
    */
   readonly warnings: readonly SecurityWarning[];
+  /** The IP intelligence's feeds (`intel`'s `status()`, when it has one), for the heartbeat (PR-AN). */
+  readonly intel?: { readonly feeds: readonly IntelFeedStatus[] };
 }
 
 /** The engine `createSecurity()` returns. */
@@ -790,6 +819,8 @@ class Run {
   delayMs = 0;
   /** The request's crawler claim (layers.md L3.2), for the decision. */
   crawler: CrawlerRequest | undefined;
+  /** The address's offence score after this request's offences, when any added to it. */
+  score: number | undefined;
 
   constructor(
     /**
@@ -1844,6 +1875,24 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       : this.#keyedListsOf(internals).apiKeys.get(key);
   }
 
+  /** The intel's feeds, when it reports them. */
+  #intelStatus(): { intel?: { feeds: readonly IntelFeedStatus[] } } {
+    const intel = this.#options.intel as
+      | {
+          readonly status?: () => {
+            readonly feeds?: readonly IntelFeedStatus[];
+          };
+        }
+      | undefined;
+    if (typeof intel?.status !== "function") return {};
+    try {
+      const feeds = intel.status().feeds;
+      return feeds === undefined ? {} : { intel: Object.freeze({ feeds }) };
+    } catch {
+      return {};
+    }
+  }
+
   /** Logs and forwards a warning. */
   #warn(warning: SecurityWarning): void {
     this.#recentWarnings.set(warning.kind, { warning, at: this.#now() });
@@ -2014,6 +2063,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     facts: RequestFacts,
     event: string,
     data?: SignalData,
+    /** Internal: the identifier pattern `check()` matched, for `onSignal`. */
+    pattern?: string,
   ): readonly RuleHit[] | Promise<readonly RuleHit[]> {
     this.#assertOpen();
     this.#refuseInternal(facts);
@@ -2032,6 +2083,18 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     );
     if (event === "auth.failure" || event === "auth.success") {
       this.#signalled.add(facts);
+    }
+    if (this.#options.onSignal !== undefined) {
+      try {
+        this.#options.onSignal(
+          event,
+          facts,
+          resolved.subject,
+          pattern === undefined ? undefined : { pattern },
+        );
+      } catch (error) {
+        this.#hookError("onSignal", error);
+      }
     }
     const lists = resolved.service?.exempt.has("lists")
       ? undefined
@@ -2309,7 +2372,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     const counted =
       facts === undefined || this.#internals.mode === "off"
         ? undefined
-        : this.signal(facts, "pattern.hit");
+        : this.signal(facts, "pattern.hit", undefined, match.rule);
     const finish = (): void => {
       if (!dry) throw refusal;
     };
@@ -2759,6 +2822,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         ...(this.#store === undefined ? {} : { store: this.#storeStatus() }),
       }),
       warnings: Object.freeze(this.#warningsInForce(now)),
+      ...this.#intelStatus(),
     });
   }
 
@@ -3079,6 +3143,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         weight;
       score = pass.score;
     }
+    pass.run.score = Math.max(pass.run.score ?? 0, score);
     const step = ladder.steps.find((candidate) => score >= candidate.score);
     trace?.push({
       layer: "L4",
@@ -4501,10 +4566,11 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
             spoofed: claim.verdict.status === "spoofed",
           });
     const hits = run.hits;
+    const scored = run.score === undefined ? {} : { score: run.score };
     if (hits.length === 0 && run.tags.size === 0) {
       return crawler === undefined
-        ? this.#allow(subject)
-        : { ...this.#allow(subject), crawler };
+        ? { ...this.#allow(subject), ...scored }
+        : { ...this.#allow(subject), crawler, ...scored };
     }
     let action: SecurityAction = "allow";
     let decider: RuleHit | undefined;
@@ -4524,6 +4590,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       risk,
       subject,
       ...(crawler === undefined ? {} : { crawler }),
+      ...scored,
     };
     if (action === "delay" && run.delayMs > 0) decision.delayMs = run.delayMs;
     if (action === "block" || action === "challenge" || action === "ban") {

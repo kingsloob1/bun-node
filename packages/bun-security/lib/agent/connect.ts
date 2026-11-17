@@ -44,6 +44,7 @@ import type { AgentEventBatch, AgentEventSource } from "./events";
 import type { EventBatcher } from "./batcher";
 import type {
   AgentHeartbeat,
+  AgentFeedStatus,
   AgentWarning,
   AgentNudge,
   AgentNudgeEvent,
@@ -63,6 +64,7 @@ import {
   agentEnvelope,
   agentRequestId,
   artefactSignedBody,
+  MAX_HEARTBEAT_FEEDS,
   MAX_HEARTBEAT_WARNINGS,
   notModifiedBody,
 } from "./protocol";
@@ -92,6 +94,15 @@ export interface AgentEngine {
       readonly since: number;
       readonly share?: number;
     }[];
+    readonly intel?: {
+      readonly feeds: readonly {
+        readonly id: string;
+        readonly entries: number;
+        readonly updatedAt: number | undefined;
+        readonly attemptedAt: number | undefined;
+        readonly error: string | undefined;
+      }[];
+    };
   };
 }
 
@@ -215,7 +226,35 @@ export interface SecurityAgent {
   readonly close: () => Promise<void>;
 }
 
-/** The engine's warnings in force, for a heartbeat: kind, since and share only, at most {@link MAX_HEARTBEAT_WARNINGS}. */
+/** The engine's IP feeds, for a heartbeat: at most {@link MAX_HEARTBEAT_FEEDS}, each failure cut to 200 characters (PR-AN). */
+function intelOf(engine: AgentEngine): {
+  intel?: { feeds: AgentFeedStatus[] };
+} {
+  let feeds;
+  try {
+    feeds = engine.status?.().intel?.feeds;
+  } catch {
+    return {};
+  }
+  if (feeds === undefined) return {};
+  return {
+    intel: {
+      feeds: feeds.slice(0, MAX_HEARTBEAT_FEEDS).map((feed) => ({
+        id: feed.id.slice(0, 64),
+        size: Math.max(0, Math.trunc(feed.entries)),
+        refreshedAt:
+          feed.updatedAt === undefined ? null : Math.trunc(feed.updatedAt),
+        attemptedAt:
+          feed.attemptedAt === undefined ? null : Math.trunc(feed.attemptedAt),
+        ...(feed.error === undefined
+          ? {}
+          : { error: feed.error.slice(0, 200) }),
+      })),
+    },
+  };
+}
+
+/** The engine's warnings in force, for a heartbeat (kind, since and share only, bounded). */
 function warningsOf(engine: AgentEngine): { warnings?: AgentWarning[] } {
   let listed;
   try {
@@ -804,6 +843,7 @@ export function connectAgent(options: ConnectAgentOptions): SecurityAgent {
       health: health(),
       ...(lastError === null ? {} : { lastError: lastError.slice(0, 500) }),
       ...warningsOf(options.security),
+      ...intelOf(options.security),
     };
     const answer = await call(
       AGENT_ROUTES.heartbeat,

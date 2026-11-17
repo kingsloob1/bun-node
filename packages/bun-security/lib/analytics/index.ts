@@ -8,6 +8,7 @@
  * - {@link createEventRing}: the decisions worth an event, sampled and
  *   capped; {@link createRedactor}: what of a request an event may keep;
  * - {@link analyticsHook}: the three on `createSecurity`'s `onDecision`;
+ *   {@link analyticsSignalHook}: the recorder on its `onSignal` (PR-AN);
  * - {@link AgentEventBatch}: what an agent posts to `/agent/events` (its
  *   batcher is PR-CP4's).
  *
@@ -19,6 +20,7 @@
  */
 import type { Decision } from "../engine/decision";
 import type { RequestFacts } from "../engine/facts";
+import type { CreateSecurityOptions } from "../engine/security";
 import type { AnalyticsRecorder } from "./recorder";
 import type { Redactor } from "./redact";
 import type { EventRing } from "./ring";
@@ -49,8 +51,10 @@ export {
   createAnalyticsRecorder,
   type DecisionExtras,
   LATENCY_BUCKETS_MS,
+  LOGIN_FAILURE_MEMORY_MS,
   OTHER,
   REFUSING_ACTIONS,
+  type SignalRecord,
 } from "./recorder";
 export {
   createRedactor,
@@ -87,6 +91,29 @@ export interface AnalyticsHookOptions {
   readonly ring: EventRing;
   /** The redaction of each event's sample. Default: none kept (no `sample`). */
   readonly redactor?: Redactor;
+}
+
+/**
+ * `createSecurity({ onSignal })`'s analytics (PR-AN): each signal counted by
+ * the recorder (challenge answers, sign-in outcomes, identifier-pattern
+ * hits), from the keys the engine resolved.
+ */
+export function analyticsSignalHook(options: {
+  /** The recorder. */
+  readonly recorder: Pick<AnalyticsRecorder, "recordSignal">;
+}): NonNullable<CreateSecurityOptions["onSignal"]> {
+  return (event, facts, subject, detail) => {
+    options.recorder.recordSignal(event, {
+      ...(facts.routeKey === undefined ? {} : { route: facts.routeKey }),
+      subject: {
+        ...(subject.ip === undefined ? {} : { ip: subject.ip }),
+        ...(subject.username === undefined
+          ? {}
+          : { username: subject.username }),
+      },
+      ...(detail?.pattern === undefined ? {} : { pattern: detail.pattern }),
+    });
+  };
 }
 
 /**
