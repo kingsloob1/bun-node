@@ -25,6 +25,8 @@ export type { PolicyFromStore, PolicySourceStatus } from "./follow";
 export { memoryStore } from "./memory";
 export type { MemoryStoreOptions } from "./memory";
 export { DEFAULT_STORE_PREFIX, storeSchema, storeTables } from "./sql";
+export { postgresStore } from "./postgres";
+export type { PostgresStoreOptions } from "./postgres";
 export { sqliteStore } from "./sqlite";
 export type { SqliteStoreOptions } from "./sqlite";
 export { DOC_KINDS, MAX_PAGE_LIMIT } from "./types";

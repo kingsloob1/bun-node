@@ -1110,6 +1110,7 @@ const { changes, head } = await store.changesSince(0n, 100);
 |---|---|---|---|---|
 | `memoryStore()` | no | one | pushed | tests, examples, one process |
 | `sqliteStore({ path })` | yes | several on one host (WAL) | polled | bun-sql's SQLite dialect; `syncSchema` on connect or by call; a `codec` encodes every body at rest (where field sealing plugs in) |
+| `postgresStore({ url })` | yes | several, on several hosts | pushed (`LISTEN`/`NOTIFY`; polled while `LISTEN` cannot be set up) | bun-sql's Postgres dialect; writers take a per-store advisory lock so the change sequence commits in order and no reader skips a change; ids listed by code point whatever the database's locale; `syncSchema` and `codec` as SQLite's |
 | `policyFile(path)` | the file | one | pushed (file watching) | read-only: one policy, every write refused |
 
 - **Optimistic concurrency.** Every `put` names the revision it read (`null`:

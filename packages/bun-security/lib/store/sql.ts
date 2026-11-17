@@ -150,8 +150,28 @@ export function storeSchema(
       {
         name: `ix_${prefix}docs_updated`,
         table: docs,
-        columns: ["kind", "updated_at", "id"],
+        columns: [
+          "kind",
+          "updated_at",
+          dialect.codePointCollation === null
+            ? "id"
+            : { name: "id", collation: dialect.codePointCollation },
+        ],
       },
+      // Where ids sort in the database's locale (Postgres), a list by id is
+      // ordered by code point, and needs its own index to read in that order.
+      ...(dialect.codePointCollation === null
+        ? []
+        : [
+            {
+              name: `ix_${prefix}docs_id`,
+              table: docs,
+              columns: [
+                "kind",
+                { name: "id", collation: dialect.codePointCollation },
+              ],
+            },
+          ]),
       {
         name: `ix_${prefix}versions_id`,
         table: versions,
@@ -179,6 +199,22 @@ export interface SqlSecurityStoreInit {
   readonly now: () => number;
   /** Encodes every stored body and decodes it on the way out (storage.md §8's seam). Default: as given. */
   readonly codec?: StoreCodec;
+  /**
+   * Runs first in every mutating transaction, before any row is touched:
+   * where an engine whose writers commit in parallel serialises them, so
+   * change sequence numbers commit in order (Postgres: a transaction-scoped
+   * advisory lock). Absent where the engine has one writer (SQLite).
+   */
+  readonly serialize?: (tx: SQL) => Promise<void>;
+  /**
+   * Runs in the transaction after each change row, with its sequence number:
+   * where Postgres notifies the feed's listeners (delivered on commit).
+   */
+  readonly afterChange?: (tx: SQL, seq: bigint) => Promise<void>;
+  /** The pushed change feed, where the engine has one. */
+  readonly subscribe?: SecurityStoreDriver["subscribe"];
+  /** Runs once the store is closed: where a listener's client is closed. */
+  readonly onClose?: () => Promise<void>;
 }
 
 /** A stored row of the docs table. */
@@ -255,6 +291,12 @@ export function sqlSecurityStore(
     );
   }
   const tables = storeTables(init.prefix);
+  // Ids are ordered by code point on every engine, as the memory store
+  // orders them: Postgres' TEXT sorts by the database's locale otherwise.
+  const idOrder =
+    dialect.codePointCollation === null
+      ? "id"
+      : `id COLLATE ${dialect.codePointCollation}`;
   const codec: StoreCodec = init.codec ?? {
     seal: (body) => body,
     open: (stored) => stored,
@@ -392,7 +434,9 @@ export function sqlSecurityStore(
        RETURNING seq`,
       p.values,
     )) as { seq: number | bigint }[];
-    return BigInt(rows[0]!.seq);
+    const seq = BigInt(rows[0]!.seq);
+    await init.afterChange?.(sql, seq);
+    return seq;
   };
 
   /** Writes a document's new body and revision with `sql`. */
@@ -444,6 +488,7 @@ export function sqlSecurityStore(
       closed = true;
       const open = client ?? (await opening?.catch(() => undefined));
       client = undefined;
+      await init.onClose?.();
       await open?.close();
     },
     syncSchema: async (options) => await sync(await connection(), options),
@@ -468,18 +513,20 @@ export function sqlSecurityStore(
       if (after !== undefined) {
         where.push(
           resolved.sort === "id"
-            ? `id ${resolved.direction === "asc" ? ">" : "<"} ${p.bind(after.id)}`
+            ? `${idOrder} ${resolved.direction === "asc" ? ">" : "<"} ${p.bind(after.id)}`
             : keysetAfter(dialect, p.bind, {
                 columns: ["updated_at"],
                 values: [after.value as number],
-                idColumn: "id",
+                idColumn: idOrder,
                 id: after.id,
                 direction: resolved.direction,
               }),
         );
       }
       const order =
-        resolved.sort === "id" ? `id ${dir}` : `updated_at ${dir}, id ${dir}`;
+        resolved.sort === "id"
+          ? `${idOrder} ${dir}`
+          : `updated_at ${dir}, ${idOrder} ${dir}`;
       const rows = (await sql.unsafe(
         `SELECT kind, id, revision, doc, updated_at FROM ${tables.docs}
           WHERE ${where.join(" AND ")}
@@ -504,6 +551,7 @@ export function sqlSecurityStore(
       const body = jsonBody(doc, "a document");
       const sql = await connection();
       return await dialect.transaction(sql, async (tx) => {
+        await init.serialize?.(tx);
         if (!(await write(tx, kind, id, body, ifRevision))) {
           return Object.freeze({
             ok: false as const,
@@ -525,6 +573,7 @@ export function sqlSecurityStore(
       refusePolicyWrite(kind, "delete()");
       const sql = await connection();
       return await dialect.transaction(sql, async (tx) => {
+        await init.serialize?.(tx);
         const p = new Params(dialect);
         const result = await tx.unsafe(
           `DELETE FROM ${tables.docs}
@@ -547,6 +596,7 @@ export function sqlSecurityStore(
       const input = checkVersionInput(version, now);
       const sql = await connection();
       return await dialect.transaction(sql, async (tx) => {
+        await init.serialize?.(tx);
         const current = await read(tx, "policy", policyId);
         const head =
           current === undefined ? null : (current.doc as { head: string }).head;
@@ -649,6 +699,7 @@ export function sqlSecurityStore(
       const input = checkBundleInput(bundle, expectedVersion);
       const sql = await connection();
       return await dialect.transaction(sql, async (tx) => {
+        await init.serialize?.(tx);
         const p = new Params(dialect);
         const rows = (await tx.unsafe(
           `SELECT version FROM ${tables.bundles} WHERE service_id = ${p.bind(serviceId)}`,
@@ -728,6 +779,7 @@ export function sqlSecurityStore(
         updatedAt: Number(row.updated_at),
       } satisfies StoredBundle);
     },
+    ...(init.subscribe === undefined ? {} : { subscribe: init.subscribe }),
     changesSince: async (since, limit) => {
       checkFeedRead(since, limit);
       const sql = await connection();
