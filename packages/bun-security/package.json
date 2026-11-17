@@ -73,6 +73,16 @@
       "types": "./dts/stores/index.d.ts",
       "default": "./lib/stores/index.ts"
     },
+    "./sealing": {
+      "@kingsleyweb/source": "./lib/sealing/index.ts",
+      "types": "./dts/sealing/index.d.ts",
+      "default": "./lib/sealing/index.ts"
+    },
+    "./lib/sealing": {
+      "@kingsleyweb/source": "./lib/sealing/index.ts",
+      "types": "./dts/sealing/index.d.ts",
+      "default": "./lib/sealing/index.ts"
+    },
     "./challenge": {
       "@kingsleyweb/source": "./lib/challenge/index.ts",
       "types": "./dts/challenge/index.d.ts",

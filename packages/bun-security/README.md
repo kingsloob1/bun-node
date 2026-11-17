@@ -15,8 +15,9 @@ from a policy compiled once, before your handler sees it.
 > rules, challenges with bot signals, the sensitive endpoints (sign-in,
 > codes, resets: presets, the login defences, device cookies, identifier
 > checks), IP intelligence (`./intel`), verified crawlers, API keys,
-> the security store (`./store`: a policy from a file or a SQLite database,
-> followed as it changes), and attack simulators for testing a policy
+> the security store (`./store`: a policy from a file, a SQLite or a
+> Postgres database, followed as it changes; `./sealing`: its secrets
+> sealed at rest), and attack simulators for testing a policy
 > (`./testing`), and the control plane's management API (`./control`;
 > the agent, audit log and analytics follow in later PRs).
 
@@ -25,8 +26,8 @@ bun add @kingsleyweb/bun-security
 ```
 
 Bun 1.4.2 or later. Its runtime dependencies are `@kingsleyweb/bun-common`
-and `@kingsleyweb/bun-sql` (the store's SQL layer); `./stores` needs
-`@kingsleyweb/bun-cache` (an optional peer).
+and `@kingsleyweb/bun-sql` (the store's SQL layer); `./stores` and
+`./sealing` need `@kingsleyweb/bun-cache` (an optional peer).
 
 Runnable examples of everything below, each asserting what it shows, are in
 [`examples/bun-security`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-security):
@@ -1109,7 +1110,7 @@ const { changes, head } = await store.changesSince(0n, 100);
 | Store | Durable | Processes | Change feed | Notes |
 |---|---|---|---|---|
 | `memoryStore()` | no | one | pushed | tests, examples, one process |
-| `sqliteStore({ path })` | yes | several on one host (WAL) | polled | bun-sql's SQLite dialect; `syncSchema` on connect or by call; a `codec` encodes every body at rest (where field sealing plugs in) |
+| `sqliteStore({ path })` | yes | several on one host (WAL) | polled | bun-sql's SQLite dialect; `syncSchema` on connect or by call; a `codec` encodes every body at rest ([sealing secrets](#sealing-secrets-at-rest)) |
 | `postgresStore({ url })` | yes | several, on several hosts | pushed (`LISTEN`/`NOTIFY`; polled while `LISTEN` cannot be set up) | bun-sql's Postgres dialect; writers take a per-store advisory lock so the change sequence commits in order and no reader skips a change; ids listed by code point whatever the database's locale; `syncSchema` and `codec` as SQLite's |
 | `policyFile(path)` | the file | one | pushed (file watching) | read-only: one policy, every write refused |
 
@@ -1124,6 +1125,60 @@ const { changes, head } = await store.changesSince(0n, 100);
   the `bun:test` suite every store passes (and a third-party one must), with
   a two-process race for a `multiProcess` store, and `faultyStore(store,
   { fail, delayMs })` for testing what an engine does when its store fails.
+
+### Sealing secrets at rest
+
+`@kingsleyweb/bun-security/sealing` seals the secrets a store keeps (an
+agent's HMAC secret, a webhook's URL and signing secret, a break-glass TOTP
+seed), so a copy of the database, a dump or a backup does not hold them in
+clear. It needs the optional peer `@kingsleyweb/bun-cache`, whose
+`./encryption` envelope it uses (AES-256-GCM under a key derived per seal):
+
+```ts
+import { sealedFields } from "@kingsleyweb/bun-security/sealing";
+import { postgresStore } from "@kingsleyweb/bun-security/store";
+
+const codec = sealedFields({
+  keys: [
+    { id: "2026-11", key: process.env.STORE_KEY_2026_11! }, // seals: openssl rand -base64 32
+    { id: "2026-10", key: process.env.STORE_KEY_2026_10! }, // still opens
+  ],
+});
+const store = postgresStore({ url: process.env.SECURITY_STORE_URL!, codec });
+```
+
+- **Field by field.** Only the named fields are sealed; every other field
+  stays as it was, so the store's lists and filters, and a person reading
+  the table, still see what a record is. At rest a sealed field is
+  `{ "$sealed": "<base64url>" }`.
+- **What is sealed by default** (`DEFAULT_SEALED_FIELDS`): `agentKey.secret`,
+  `serviceIdentity.secret`, `alertChannel.url` and `alertChannel.secret`,
+  `operator.totpSeed`. Policies and bundles are not: they hold no secret (a
+  service identity's `verifier` is its token's SHA-256, and the bundle
+  signing key never reaches the store), and the control plane diffs and
+  reviews them. `fields: { doc: { <kind>: ["path", "list.*.field"] }, policy:
+  [...], bundle: [...] }` replaces the default; a `*` stands for every element
+  or property.
+- **Bound to its place.** A sealed value opens only in the table, kind,
+  document id, version and field (array indexes included) it was sealed
+  for. Copied to another row or field by someone with write access to the
+  database, it is refused, and the read rejects with a `SealedFieldError`
+  (`reason`: `"auth"`, `"unknown-key"`, `"malformed"`, `"unsealed"`) that
+  names the place and the key id, never a value. A plain value planted in a
+  sealed field is refused too, unless `acceptUnsealed: true`, which is for
+  a store that held its secrets before sealing was turned on. What sealing
+  does not stop: someone who can write the database putting back an
+  **earlier** value of the same field of the same row.
+- **Rotation.** Put the new key first: it seals every write from then on,
+  and the old keys keep opening what they sealed. `await resealStore(store,
+  codec)` then rewrites each document still sealed under an older key (or
+  holding a plain value, with `acceptUnsealed`) at the revision it read,
+  which uses a revision and a change per document; one changed in between is
+  counted as a conflict and left as its writer sealed it. Once it reports
+  nothing left, drop the old key.
+- **Keys** come from the environment or a secret manager, never from the
+  store they protect. The codec is synchronous: resolve a KMS's keys before
+  building it, and build a new codec (and store) to take a new ring.
 
 ## The control plane's management API
 

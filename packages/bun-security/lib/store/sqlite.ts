@@ -32,7 +32,8 @@ export interface SqliteStoreOptions {
   readonly now?: () => number;
   /**
    * Encodes every stored body and decodes it on the way out: where
-   * storage.md §8's field sealing (PR-D3) plugs in. Default: stored as given.
+   * storage.md §8's field sealing plugs in (`sealedFields` from
+   * `./sealing`). Default: stored as given.
    */
   readonly codec?: StoreCodec;
 }

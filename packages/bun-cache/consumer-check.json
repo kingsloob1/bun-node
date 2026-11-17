@@ -177,6 +177,25 @@
       "types": ["CacheLiveBusOptions"]
     },
     {
+      "$comment": "Field sealing (bun-security's storage.md §8, PR-D3): the cache's envelope for one value, bound to a purpose and the caller's parts. Server-only (node:crypto); its declarations import nothing outside the package.",
+      "spelling": "@kingsleyweb/bun-cache/encryption",
+      "values": [
+        "sealField",
+        "openField",
+        "fieldKeyRing",
+        "fieldKeyId",
+        "FIELD_LABELS",
+        "CacheDecryptError"
+      ],
+      "types": ["FieldContext", "FieldKeyRing", "CacheKey", "CacheKeyRing"],
+      "snippet": "const ring = m.fieldKeyRing([{ id: \"2026-11\", key: new Uint8Array(32) }]);\nexport type _ringNotAny = Expect<IsAny<typeof ring>>;\nexport const _primary: string = ring.primaryKeyId;\nconst context: t.FieldContext = { purpose: \"app/store\", bind: [\"docs\", \"k1\", \"secret\"] };\nconst sealed = m.sealField(\"value\", ring, context);\nexport type _sealed = Equal<typeof sealed, Uint8Array>;\nexport type _opened = Equal<ReturnType<typeof m.openField>, Uint8Array>;\nexport const _plain: Uint8Array = m.openField(sealed, [{ id: \"2026-11\", key: \"a\".repeat(64) }] satisfies t.CacheKeyRing, context);\nexport type _keyId = Equal<ReturnType<typeof m.fieldKeyId>, string | undefined>;\nexport type _reason = Equal<InstanceType<typeof m.CacheDecryptError>[\"reason\"], \"auth\" | \"unknown-key\" | \"unencrypted\" | \"malformed\" | \"cipher\">;\nexport const _label: \"bun-cache/field/1\" = m.FIELD_LABELS.aad;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-cache/lib/encryption",
+      "values": ["sealField", "openField", "fieldKeyRing"],
+      "types": ["FieldContext", "FieldKeyRing"]
+    },
+    {
       "$comment": "The Worker the Cloudflare drivers' endpoint points at, which users deploy (plan Status, PR-C10). It runs on Cloudflare's runtime, so it is checked as a browser entry: no Node or Bun types in its graph, and it imports nothing.",
       "spelling": "@kingsleyweb/bun-cache/cloudflare-worker",
       "browser": true,

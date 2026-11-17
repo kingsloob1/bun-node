@@ -337,6 +337,16 @@ break-glass TOTP seeds.
 - Never encrypted, because never stored: CAPTCHA secrets and store URLs live
   in the EP's environment only (control-plane.md §8).
 
+Built in PR-D3 (README §17.25): bun-cache's `./encryption` (`sealField`,
+`openField`, `fieldKeyRing`, `fieldKeyId`; the HKDF label
+`bun-cache/field/1/aes-256-gcm/<purpose>`, the purpose
+`bun-security/store`), and bun-security's `./sealing`: `sealedFields(...)`
+is the `codec` of `sqliteStore` and `postgresStore`, sealing named fields
+(by kind, plus policy and bundle paths) as `{ "$sealed": "<base64url>" }`,
+each bound to its table role, kind, id, version and concrete path;
+`resealStore(store, codec)` is the reseal job. The KMS hook is a ring
+resolved before the codec is built, since the codec is synchronous.
+
 ---
 
 ## 9. The conformance kit

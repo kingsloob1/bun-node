@@ -76,6 +76,7 @@ bun add mongodb            # only if you use mongoDriver()
 | `@kingsleyweb/bun-cache/keyv` | `toKeyvStore` ([Keyv](#keyv-and-nestjscache-manager)) |
 | `@kingsleyweb/bun-cache/throttle` | `cacheThrottleStore` ([Throttling](#throttling)) |
 | `@kingsleyweb/bun-cache/live` | `cacheLiveBus` ([Live invalidation](#live-invalidation-across-processes)) |
+| `@kingsleyweb/bun-cache/encryption` | `sealField`, `openField`, `fieldKeyRing`, `fieldKeyId` ([Sealing one field](#sealing-one-field-encryption)) |
 | `@kingsleyweb/bun-cache/testing` | the driver and cipher conformance kits, `faulty`, `fakeClock` ([Testing helpers](#testing-helpers)) |
 | `@kingsleyweb/bun-cache/cloudflare-worker` | the Worker you deploy for the Cloudflare drivers ([The Cloudflare KV driver](#the-cloudflare-kv-driver)) |
 
@@ -93,6 +94,7 @@ provides these caches with decorators and a response interceptor.
   [Distinct counts](#distinct-counts) ·
   [Codecs](#codecs) · [Compression and limits](#compression-and-limits) ·
   [Encryption at rest](#encryption-at-rest) ·
+  [Sealing one field](#sealing-one-field-encryption) ·
   [Namespaces and versions](#namespaces-and-versions) ·
   [Typed caches](#typed-caches-and-validate) ·
   [Events, statistics, logging](#events-statistics-logging) ·
@@ -952,6 +954,55 @@ K_names    = HKDF-SHA-256(ikm = hashNames.key, salt = empty, info = "bun-cache/n
 namespace  = hex(HMAC-SHA-256(K_names, "ns"  0x00 | full namespace))[0..32]
 key        = hex(HMAC-SHA-256(K_names, "key" 0x00 | full namespace 0x00 | full key))[0..32]
 tag        = hex(HMAC-SHA-256(K_names, "tag" 0x00 | full namespace 0x00 | tag))[0..32]
+```
+
+### Sealing one field (`./encryption`)
+
+`@kingsleyweb/bun-cache/encryption` is the same envelope for one value
+outside a cache: a secret in a database row, a token in a file. The ring
+is `encrypt.keys`' format (the first key seals, every key opens what it
+sealed), and a sealed value is bound to a `purpose` and to the parts you
+name, so it opens only where it was sealed:
+
+```ts
+import { fieldKeyRing, openField, sealField } from "@kingsleyweb/bun-cache/encryption";
+
+const ring = fieldKeyRing([
+  { id: "2026-11", key: process.env.FIELD_KEY_2026_11! }, // seals
+  { id: "2026-10", key: process.env.FIELD_KEY_2026_10! }, // still opens
+]);
+const context = { purpose: "app/accounts", bind: ["accounts", "42", "apiSecret"] };
+const sealed = sealField("the secret", ring, context);  // Uint8Array
+const value = new TextDecoder().decode(openField(sealed, ring, context));
+```
+
+- **Binding.** `purpose` (1–128 printable ASCII characters) separates
+  users of one key: it is folded into the key derivation, so two purposes
+  never share a key, and a cache entry and a field never do either, even
+  under the same ring key. `bind` (a list of strings, default none) is
+  authenticated part by part, in order: the same value copied to another
+  row or field fails to open.
+- **Failures** throw the package's `CacheDecryptError` (`"sealed field did
+  not open (auth, key id …)"`), with the cache's reasons: `"auth"` for a
+  changed byte, a wrong key under a known id or another context,
+  `"unknown-key"`, `"unencrypted"`, `"malformed"`, `"cipher"`. A malformed
+  ring, context or value is a `TypeError` that never shows a key.
+- **Rotation.** Put the new key first; values sealed under the old one
+  keep opening while it stays in the ring. `fieldKeyId(sealed)` names the
+  key a value was sealed with (unauthenticated: for choosing what to
+  re-seal, never for trusting it).
+- **`fieldKeyRing(keys)`** validates a ring once and derives each
+  purpose's keys on first use; `sealField` and `openField` also take a plain
+  ring, at the cost of deriving its keys on every call.
+- Synchronous, and server-only (`node:crypto`). Its labels, for a reader in
+  another language (the envelope as in [The format](#the-format), its
+  sealed body the value itself):
+
+```
+K      = HKDF-SHA-256(ikm = ring key, salt = empty, info = "bun-cache/field/1/aes-256-gcm/" | purpose, 32 bytes)
+K_salt = HMAC-SHA-256(K, "field" | salt | 0x01)
+AAD    = u32 LE length | "bun-cache/field/1" | u32 LE length | purpose | u32 LE bind count
+         | per bind part: u32 LE length | UTF-8 | envelope bytes up to the ciphertext
 ```
 
 ## Namespaces and versions

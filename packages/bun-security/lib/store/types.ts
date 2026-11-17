@@ -247,10 +247,11 @@ export interface StoreCodecContext {
 
 /**
  * How a durable store encodes every body it stores and decodes it on the
- * way out: the seam storage.md §8's field sealing (PR-D3) plugs into, so a
- * sealed body copied to another row (another context) fails to open.
- * `seal` answers a JSON value (a sealed field is its base64 text);
- * `open` throws for a body it cannot open. Default: stored as given.
+ * way out: the seam storage.md §8's field sealing plugs into
+ * (`sealedFields` from `./sealing`), so a sealed body copied to another row
+ * (another context) fails to open. Both are synchronous: `seal` answers a
+ * JSON value, `open` throws for a body it cannot open. Default: stored as
+ * given.
  */
 export interface StoreCodec {
   /** Encodes a body for storage. */

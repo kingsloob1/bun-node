@@ -3,7 +3,7 @@
   "type": "module",
   "version": "3.2.0",
   "private": false,
-  "description": "Caching over pluggable drivers for Bun: one typed API (TTLs, tags, single-flight, stale-while-revalidate, counters, an L1 memory tier kept coherent by a bus) over memory, file, SQLite, Postgres, MySQL, MariaDB, Redis, MongoDB, S3, Azure Blob Storage, Cloudflare KV and Cloudflare D1 drivers, an HTTP response cache for bun-common (./http), a Keyv store for cache-manager and @nestjs/cache-manager (./keyv), a shared store for bun-common's throttle() (./throttle), a bus for bun-common's live invalidation across processes (./live), and a conformance kit for custom drivers",
+  "description": "Caching over pluggable drivers for Bun: one typed API (TTLs, tags, single-flight, stale-while-revalidate, counters, an L1 memory tier kept coherent by a bus) over memory, file, SQLite, Postgres, MySQL, MariaDB, Redis, MongoDB, S3, Azure Blob Storage, Cloudflare KV and Cloudflare D1 drivers, an HTTP response cache for bun-common (./http), a Keyv store for cache-manager and @nestjs/cache-manager (./keyv), a shared store for bun-common's throttle() (./throttle), a bus for bun-common's live invalidation across processes (./live), field sealing with the cache's envelope (./encryption), and a conformance kit for custom drivers",
   "author": "okafor obinna <kingsloob1@gmail.com>",
   "license": "MIT",
   "homepage": "https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-cache#readme",
@@ -105,6 +105,16 @@
       "@kingsleyweb/source": "./lib/live/index.ts",
       "types": "./dts/live/index.d.ts",
       "default": "./lib/live/index.ts"
+    },
+    "./encryption": {
+      "@kingsleyweb/source": "./lib/encryption/index.ts",
+      "types": "./dts/encryption/index.d.ts",
+      "default": "./lib/encryption/index.ts"
+    },
+    "./lib/encryption": {
+      "@kingsleyweb/source": "./lib/encryption/index.ts",
+      "types": "./dts/encryption/index.d.ts",
+      "default": "./lib/encryption/index.ts"
     },
     "./cloudflare-worker": {
       "@kingsleyweb/source": "./lib/cloudflare/worker.ts",
