@@ -394,6 +394,90 @@ export function analyticsConformance(withStore: WithStore): void {
     );
 
     check(
+      "a services filter reads a set of services: their sum, their events, none for []",
+      async () => {
+        await withStore(async (raw) => {
+          const store = analytics(raw);
+          await store.appendEvents(
+            "b",
+            ["a", "b", "c"].map((service, i) =>
+              event(`e${i}`, T0 + i, { service }),
+            ),
+            ["a", "b", "c"].map((service, i) =>
+              row("requests", T0, i + 1, undefined, service),
+            ),
+          );
+          const sum = async (services: string[]): Promise<number[]> =>
+            (
+              await store.series({
+                metric: "requests",
+                from: T0,
+                to: T0 + MINUTE,
+                services,
+              })
+            ).map((p) => p.value);
+          expect(await sum(["a", "c"])).toEqual([1 + 3]);
+          expect(await sum([])).toEqual([]);
+          expect(
+            (
+              await store.topK({
+                metric: "requests",
+                from: T0,
+                to: T0 + MINUTE,
+                services: ["b"],
+                limit: 5,
+              })
+            )[0]?.value,
+          ).toBe(2);
+          const ids = async (services: string[]): Promise<string[]> =>
+            (
+              await store.listEvents({ limit: 10, direction: "asc", services })
+            ).items.map((e) => e.id);
+          expect(await ids(["c", "a"])).toEqual(["e0", "e2"]);
+          expect(
+            (await store.listEvents({ limit: 10, id: "e1" })).items.map(
+              (e) => e.service,
+            ),
+          ).toEqual(["b"]);
+          expect(await ids([])).toEqual([]);
+          // A cursor is bound to its set.
+          const first = await store.listEvents({
+            limit: 1,
+            services: ["a", "b"],
+          });
+          expect(
+            await rejects(() =>
+              store.listEvents({
+                limit: 1,
+                services: ["a"],
+                cursor: first.next,
+              }),
+            ),
+          ).toBe(true);
+          expect(
+            (
+              await store.listEvents({
+                limit: 1,
+                services: ["b", "a"],
+                cursor: first.next,
+              })
+            ).items,
+          ).toHaveLength(1);
+          expect(
+            await rejects(() =>
+              store.series({
+                metric: "requests",
+                from: T0,
+                to: T0 + 1,
+                services: Array.from({ length: 1_001 }, (_, i) => `s${i}`),
+              }),
+            ),
+          ).toBe(true);
+        });
+      },
+    );
+
+    check(
       "top-K sums a range per dims, the largest first, ties by dims",
       async () => {
         await withStore(async (raw) => {

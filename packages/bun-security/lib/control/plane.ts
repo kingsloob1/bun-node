@@ -187,6 +187,8 @@ function newId(prefix: string): string {
 export class ControlPlane {
   /** Live event listeners. */
   readonly #listeners = new Set<(event: SecurityLiveEventDto) => void>();
+  /** Told when an operator's access may have changed (a role binding written). */
+  readonly #accessListeners = new Set<() => void>();
 
   /**
    * @param options The API's resolved options.
@@ -1513,6 +1515,7 @@ export class ControlPlane {
       createdAt: this.options.now(),
     };
     await this.store.put("roleBinding", id, body, null);
+    this.#accessChanged();
     return this.#binding((await this.store.get("roleBinding", id))!);
   }
 
@@ -1522,6 +1525,28 @@ export class ControlPlane {
       const current = await this.store.get("roleBinding", id);
       if (current === undefined) throw notFound(`role binding "${id}"`);
       throw conflict(`role binding "${id}" changed`, this.#binding(current));
+    }
+    this.#accessChanged();
+  }
+
+  /**
+   * Listens for changes that may change an operator's access (a role
+   * binding created or deleted): the live hub re-checks its subscriptions.
+   * Answers the unsubscribe.
+   */
+  onAccessChanged(listener: () => void): () => void {
+    this.#accessListeners.add(listener);
+    return () => this.#accessListeners.delete(listener);
+  }
+
+  /** Tells the access listeners; one that throws does not stop the others. */
+  #accessChanged(): void {
+    for (const listener of [...this.#accessListeners]) {
+      try {
+        listener();
+      } catch {
+        // A listener's failure is its own.
+      }
     }
   }
 

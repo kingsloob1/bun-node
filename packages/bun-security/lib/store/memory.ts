@@ -205,6 +205,8 @@ export function memoryStore(
         row.tier === resolved.tier &&
         row.metric === resolved.metric &&
         (resolved.service === undefined || row.service === resolved.service) &&
+        (resolved.services === undefined ||
+          resolved.services.includes(row.service)) &&
         row.bucket >= resolved.from &&
         row.bucket < resolved.to &&
         dimsMatch(row.dims, resolved.needles),

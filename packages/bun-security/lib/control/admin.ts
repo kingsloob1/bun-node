@@ -22,6 +22,11 @@ export interface AdminMount {
   readonly basePath: string;
   /** Its router. */
   readonly router: BunRouter;
+  /** The management API's live hub, whose WebSocket channel is attached to the listener after the mount. */
+  readonly live?: {
+    /** Adds the channel to the adapter. */
+    readonly attach: (adapter: BunHttpAdapter) => void;
+  };
 }
 
 /** Options for {@link secureAdmin}. */
@@ -128,6 +133,8 @@ export async function secureAdmin(
     );
   }
   adapter.use(options.api.basePath, options.api.router);
+  // The live channel's socket is the adapter's, added after the mount.
+  options.api.live?.attach(adapter);
   if (options.ui !== undefined)
     adapter.use(options.ui.basePath, options.ui.router);
   const server = await adapter.setListenOptions({

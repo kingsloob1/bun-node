@@ -31,6 +31,40 @@ import { addRoute, sendProblem } from "./route";
 import { routes } from "./routes";
 import { addAgentEventsRoute, addAgentRoutes } from "./agentRoutes";
 import { sha256Of } from "./artefacts";
+import type { SecurityApiLive } from "./live/transports";
+import { LiveHub } from "./live/hub";
+import { setLiveHooks } from "./liveHooks";
+import { createLive, isUpgrade, liveDocsRouter } from "./live/transports";
+
+/** Two AsyncAPI documents as one: the second's channels, operations and components added to the first's. */
+function mergeAsyncApi(
+  first: Record<string, unknown>,
+  second: Record<string, unknown>,
+): Record<string, unknown> {
+  const section = (
+    doc: Record<string, unknown>,
+    key: string,
+  ): Record<string, unknown> =>
+    (doc[key] as Record<string, unknown> | undefined) ?? {};
+  const components: Record<string, unknown> = {
+    ...section(first, "components"),
+  };
+  for (const [key, value] of Object.entries(section(second, "components"))) {
+    components[key] = {
+      ...((components[key] as Record<string, unknown> | undefined) ?? {}),
+      ...(value as Record<string, unknown>),
+    };
+  }
+  return {
+    ...first,
+    channels: { ...section(first, "channels"), ...section(second, "channels") },
+    operations: {
+      ...section(first, "operations"),
+      ...section(second, "operations"),
+    },
+    components,
+  };
+}
 
 /** What {@link createSecurityApi} returns. */
 export interface SecurityApi {
@@ -42,8 +76,15 @@ export interface SecurityApi {
   readonly plane: ControlPlane;
   /** The OpenAPI 3.1 document of the routes. */
   readonly openapi: () => Record<string, unknown>;
-  /** The AsyncAPI 3.0 document of the live stream. */
+  /** The AsyncAPI 3.0 document of the live stream: its SSE route and its WebSocket channel. */
   readonly asyncapi: () => Record<string, unknown>;
+  /**
+   * The live hub (ui.md §6): `attach(adapter)` adds the WebSocket channel at
+   * `<basePath>/live` (after the router is mounted; `secureAdmin` does it),
+   * `publishBatch` and `publishBan` are PR-CP4's hooks, `close()` ends every
+   * live connection.
+   */
+  readonly live: SecurityApiLive;
   /**
    * Recomputes the audit chain and checks every checkpoint, stored and
    * read back from the sinks; names the first entry where it broke (and
@@ -130,7 +171,21 @@ export function createSecurityApi(options: SecurityApiOptions): SecurityApi {
     addAgentEventsRoute(router, context);
     addAgentRoutes(router, context);
   }
-  for (const spec of routes(resolved))
+  const hub = new LiveHub(plane, { now: resolved.now });
+  const live = createLive(hub, resolved);
+  // CP4's stored batches and bans, to the hub.
+  setLiveHooks(plane, {
+    publishBatch: (service, batch) => hub.publishBatch(service, batch),
+    publishBan: (ban) => hub.publishBan(ban),
+  });
+  const liveDocs = liveDocsRouter();
+  // A WebSocket upgrade to /live is the channel's, on the adapter: the
+  // router passes it on untouched (the SSE route would answer it otherwise).
+  router.use("/live", (req, _res, next) => {
+    if (isUpgrade(req)) next("router");
+    else next();
+  });
+  for (const spec of routes(resolved, hub))
     addRoute(router, spec, resolved, plane, guard);
 
   const documents = {
@@ -141,10 +196,16 @@ export function createSecurityApi(options: SecurityApiOptions): SecurityApi {
         servers: [{ url: resolved.basePath }],
       }).document as unknown as Record<string, unknown>,
     asyncapi: () =>
-      generateAsyncApi(router, {
-        title: resolved.docs.title,
-        version: resolved.docs.version,
-      }).document as unknown as Record<string, unknown>,
+      mergeAsyncApi(
+        generateAsyncApi(router, {
+          title: resolved.docs.title,
+          version: resolved.docs.version,
+        }).document as unknown as Record<string, unknown>,
+        generateAsyncApi(liveDocs, {
+          title: resolved.docs.title,
+          version: resolved.docs.version,
+        }).document as unknown as Record<string, unknown>,
+      ),
   };
   router.get("/openapi.json", (_req, res) =>
     res.json(documents.openapi() as never),
@@ -189,6 +250,7 @@ export function createSecurityApi(options: SecurityApiOptions): SecurityApi {
     router,
     basePath: resolved.basePath,
     plane,
+    live,
     ...documents,
     verifyAudit: async () => await plane.audit.verify(),
     addArtefact: async (bytes: Uint8Array) => {
