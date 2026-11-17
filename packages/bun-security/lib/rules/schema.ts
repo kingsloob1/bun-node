@@ -5,7 +5,11 @@
  */
 import { toDurationMs } from "@kingsleyweb/bun-common";
 import type { Duration } from "@kingsleyweb/bun-common";
-import { parseCidr } from "../ip/address";
+import {
+  isWholeFamilyRange,
+  parseCidr,
+  WHOLE_FAMILY_RANGE,
+} from "../ip/address";
 import { globRefusal } from "./glob";
 import { MANAGED_RULE_IDS } from "./managed";
 import { regexRefusal } from "./regex";
@@ -375,7 +379,9 @@ function checkMatch(
       if (parseCidr(range) === null) {
         issues.add(
           [...at, "cidr", ...(Array.isArray(matcher.cidr) ? [i] : [])],
-          `must be an address or a range ("203.0.113.0/24"); got ${describe(range)}`,
+          isWholeFamilyRange(range)
+            ? `${WHOLE_FAMILY_RANGE}; leave the cidr matcher out to match every client`
+            : `must be an address or a range ("203.0.113.0/24"); got ${describe(range)}`,
         );
       }
     });

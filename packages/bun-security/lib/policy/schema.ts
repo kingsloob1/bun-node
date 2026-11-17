@@ -13,7 +13,11 @@
  */
 import { toDurationMs } from "@kingsleyweb/bun-common";
 import type { Duration, StandardSchemaV1 } from "@kingsleyweb/bun-common";
-import { parseCidr } from "../ip/address";
+import {
+  isWholeFamilyRange,
+  parseCidr,
+  WHOLE_FAMILY_RANGE,
+} from "../ip/address";
 import type { ParsedCidr } from "../ip/address";
 import { CidrTrie } from "../ip/trie";
 import { validateApiKeys } from "../apikeys/policy";
@@ -402,7 +406,9 @@ function checkEntry(
     if (!cidr) {
       issues.add(
         [...path, "ip"],
-        `is not an IP address or CIDR range: ${describe(value.ip)}`,
+        isWholeFamilyRange(value.ip)
+          ? `${WHOLE_FAMILY_RANGE}; use a request rule instead`
+          : `is not an IP address or CIDR range: ${describe(value.ip)}`,
       );
     }
   }
@@ -1501,7 +1507,9 @@ export function validatePolicy(
           if (!cidr) {
             issues.add(
               ["internal", "ranges", i],
-              `is not a CIDR range: ${describe(range)}`,
+              isWholeFamilyRange(range)
+                ? `${WHOLE_FAMILY_RANGE}; the internal list can only be narrowed, to ranges inside ${INTERNAL_RANGES.join(", ")}`
+                : `is not a CIDR range: ${describe(range)}`,
             );
           } else if (!insideInternal(cidr)) {
             issues.add(

@@ -144,6 +144,41 @@ export function normalizeAddress(value: unknown): string | null {
 }
 
 /**
+ * What a policy is told when it gives a `/0` range: every address of a
+ * family. {@link parseCidr} refuses one (bun-common's `parseIpRange` does, as
+ * proxy-addr does for `trustProxy`, and the CIDR trie holds no zero-length
+ * prefix), and each place that takes a range adds its own advice after it.
+ */
+export const WHOLE_FAMILY_RANGE =
+  "a /0 range covers every address of its family";
+
+/**
+ * Whether `value` is a `/0` range: an address with prefix `0`
+ * (`0.0.0.0/0`, `::/0`), an IPv4 netmask of `0.0.0.0`, or an IPv4-mapped
+ * IPv6 address with prefix `96` (`::ffff:0:0/96`, which maps to the IPv4
+ * `/0`). {@link parseCidr} answers `null` for each, and the places that
+ * report it use {@link WHOLE_FAMILY_RANGE} rather than calling the value
+ * unparseable.
+ */
+export function isWholeFamilyRange(value: unknown): boolean {
+  if (typeof value !== "string" || value.length > 64) return false;
+  const slash = value.lastIndexOf("/");
+  if (slash <= 0) return false;
+  const address = parseIpAddress(value.slice(0, slash));
+  if (address === null) return false;
+  const suffix = value.slice(slash + 1);
+  if (/^\d{1,3}$/.test(suffix)) {
+    const bits = Number(suffix);
+    return (
+      bits === 0 ||
+      (bits === 96 && toIpv4IfMapped(address).kind !== address.kind)
+    );
+  }
+  const mask = address.kind === "ipv4" ? parseIpAddress(suffix) : null;
+  return mask?.kind === "ipv4" && mask.octets.every((octet) => octet === 0);
+}
+
+/**
  * Parses an address or a CIDR range (`203.0.113.0/24`, `2001:db8::/32`, an
  * IPv4 netmask as `trustProxy` reads one): `null` for anything else. A bare
  * address is a whole-address range. An IPv4-mapped IPv6 range of /96 or
