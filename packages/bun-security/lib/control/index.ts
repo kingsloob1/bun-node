@@ -60,3 +60,41 @@ export type { PublishOutcome, PublishRequest } from "./plane";
 export { ApiProblem } from "./problems";
 export { bundlePublicKey, signBundle } from "./signing";
 export type { BundleSigner, ResolvedSigner } from "./signing";
+export { ALERT_RETENTION, Alerting } from "./alerts/alerting";
+export type {
+  AlertingOptions,
+  AlertLogEntry,
+  EvaluationReport,
+  OpenAlert,
+} from "./alerts/alerting";
+export { ALERT_RATE_LIMITS } from "./alerts/limiter";
+export { ALERT_RULE_PRESETS, alertRulePreset } from "./alerts/presets";
+export type { AlertRulePresetName } from "./alerts/presets";
+export {
+  ALERT_DELIVERY_JOB,
+  ALERT_RETRY,
+  jobsDeliveryQueue,
+  memoryDeliveryQueue,
+  retryDelay,
+} from "./alerts/queue";
+export type {
+  AlertDeliveryQueue,
+  DeliveryQueueStats,
+  JobsQueueLike,
+  MemoryDeliveryQueue,
+  MemoryDeliveryQueueOptions,
+} from "./alerts/queue";
+export { ALERT_FACTS, renderMessage, signWebhook } from "./alerts/senders";
+export type { AlertEmail } from "./alerts/senders";
+export { ALERT_SEVERITIES } from "./alerts/types";
+export type {
+  AlertChannelSpec,
+  AlertCondition,
+  AlertDeadLetter,
+  AlertDelivery,
+  AlertMessage,
+  AlertMetric,
+  AlertRecord,
+  AlertRuleSpec,
+  AlertSeverity,
+} from "./alerts/types";

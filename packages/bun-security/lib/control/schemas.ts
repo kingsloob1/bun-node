@@ -125,7 +125,7 @@ export const DiffQuery = s.query({
 });
 
 /** A page of `item`. */
-function page<T>(item: Schema<T>): Schema<{
+export function page<T>(item: Schema<T>): Schema<{
   readonly items: T[];
   readonly next?: string;
   readonly totalEstimate?: number;
@@ -615,6 +615,16 @@ export const Agent: Schema<AgentDto> = s.object({
       banCount: s.int({ min: 0 }),
       health: s.enum(["ok", "signature-failing"]),
       lastError: s.optional(s.string()),
+      warnings: s.optional(
+        s.array(
+          s.object({
+            kind: s.string(),
+            since: s.int({ min: 0 }),
+            share: s.optional(s.number()),
+          }),
+          16,
+        ),
+      ),
     }),
   ),
   revision: s.int({ min: 1 }),

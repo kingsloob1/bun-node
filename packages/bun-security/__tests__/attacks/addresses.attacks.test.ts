@@ -91,7 +91,8 @@ describe("T-L9-2: a key-cardinality flood, 3,000 addresses probing /.env once ea
   const attack = paced(keyCardinalityFlood({ count: 3000, path: "/.env" }), 2);
 
   it("keeps the scores within maxKeys, counts the evictions, warns once, and still refuses every probe", async () => {
-    const app = await concaveApp({ engine: { maxKeys: 500 } });
+    const clock = fakeClock();
+    const app = await concaveApp({ engine: { maxKeys: 500 }, clock });
     const result = await app.run(attack);
     expect(result.refused).toBe(3000);
     expect(result.codes).toEqual({ not_found: 3000 });
@@ -101,6 +102,14 @@ describe("T-L9-2: a key-cardinality flood, 3,000 addresses probing /.env once ea
     expect(
       app.warnings.filter((warning) => warning.kind === "state.evictions"),
     ).toHaveLength(1);
+    // In force for 5 minutes in status(), what an agent's heartbeat reports (PR-CP6).
+    const kinds = () =>
+      app.security!.status().warnings.map((warning) => warning.kind);
+    expect(kinds()).toContain("state.evictions");
+    clock.advance(4 * 60_000);
+    expect(kinds()).toContain("state.evictions");
+    clock.advance(2 * 60_000);
+    expect(kinds()).not.toContain("state.evictions");
   });
 
   it("negative control: under the default bound nothing is evicted and nothing warns", async () => {
@@ -111,6 +120,7 @@ describe("T-L9-2: a key-cardinality flood, 3,000 addresses probing /.env once ea
     expect(state.scores).toBe(3000);
     expect(state.evictions).toBe(0);
     expect(app.warnings).toEqual([]);
+    expect(app.security!.status().warnings).toEqual([]);
   });
 
   it("plain traffic from 3,000 addresses: the default store's counters stay within maxKeys, each drop counted and warned of once, no one refused", async () => {

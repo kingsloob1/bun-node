@@ -3,6 +3,7 @@
  * a store, the host's `authenticate`, `authorize` or deploy-time `owners`,
  * the step-up hook or approvals, the bundle signer, CSRF.
  */
+import type { AlertingOptions } from "./alerts/alerting";
 import type { AgentEventsOptions } from "./agentEvents";
 import type { BunRequest, Duration, LoggerLike } from "@kingsleyweb/bun-common";
 import { ConfigError, toDurationMs } from "@kingsleyweb/bun-common";
@@ -162,6 +163,14 @@ export interface SecurityApiOptions {
    * limit. Absent: no such route. Needs a store with analytics.
    */
   readonly agentEvents?: AgentEventsOptions;
+  /**
+   * Alerting (README §9.3, PR-CP6): the rules and channels kept in the
+   * store, evaluated every minute and delivered with rate limits, digests
+   * and retries; the control plane's own alerts routed to the channels that
+   * receive them. Absent: no alerting (the host's `onAlert` still hears
+   * every control-plane alert).
+   */
+  readonly alerts?: AlertingOptions;
   /** Where errors are logged. Default a console logger named `bun-security`. */
   readonly logger?: LoggerLike;
   /** The clock, epoch milliseconds. Default `Date.now`. */

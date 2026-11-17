@@ -155,6 +155,7 @@ assertType<
     | "policy.refused"
     | "policy.unavailable"
     | "login.failure-rate"
+    | "feed.refresh-failed"
   >
 >();
 

@@ -73,7 +73,8 @@ export type SecurityWarningKind =
   | "crawler.conflict"
   | "policy.refused"
   | "policy.unavailable"
-  | "login.failure-rate";
+  | "login.failure-rate"
+  | "feed.refresh-failed";
 
 /**
  * A warning (layers.md L2.5, L9.6): the trust configuration looks wrong, or

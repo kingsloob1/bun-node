@@ -147,6 +147,9 @@ import { isPolicyFromStore, PolicyFollower } from "../store/follow";
 import type { SecurityWarning, TrustStatus } from "./trust";
 
 /** Options for {@link createSecurity}. */
+/** How long a warning counts as in force after it was last raised (`status().warnings`). */
+const WARNING_IN_FORCE_MS = 5 * 60_000;
+
 export interface CreateSecurityOptions<TRequest = Request> {
   /**
    * The policy: a {@link SecurityPolicy}, compiled here, or a compiled one;
@@ -411,6 +414,12 @@ export interface SecurityStatus {
   readonly trust: TrustStatus;
   /** The local state's sizes and evictions. */
   readonly state: StateStatus;
+  /**
+   * The warnings in force: each kind's latest, raised in the last 5
+   * minutes, and a feed whose last refresh failed (`feed.refresh-failed`,
+   * from `intel`'s status). What an agent's heartbeat reports (PR-CP6).
+   */
+  readonly warnings: readonly SecurityWarning[];
 }
 
 /** The engine `createSecurity()` returns. */
@@ -1359,6 +1368,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     const health = store.health();
     if (health.healthy) {
       this.#storeWarned = false;
+      this.#recentWarnings.delete("store.unavailable");
       return;
     }
     const now = this.#now();
@@ -1698,8 +1708,69 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     return this.#closed;
   }
 
+  /** Each kind's latest warning, and when it was raised: `status().warnings`. */
+  readonly #recentWarnings = new Map<
+    string,
+    { warning: SecurityWarning; at: number }
+  >();
+
+  /** The warnings in force (`status().warnings`). */
+  #warningsInForce(now: number): SecurityWarning[] {
+    const out: SecurityWarning[] = [];
+    for (const [kind, { warning, at }] of this.#recentWarnings) {
+      if (now - at <= WARNING_IN_FORCE_MS) out.push(warning);
+      else this.#recentWarnings.delete(kind);
+    }
+    // The store's state is read live: its warning is raised once per outage.
+    const store = this.#store?.health();
+    if (
+      store !== undefined &&
+      !store.healthy &&
+      store.failingSince !== undefined &&
+      now - store.failingSince >= 30_000 &&
+      !out.some((warning) => warning.kind === "store.unavailable")
+    ) {
+      out.push(
+        Object.freeze({
+          kind: "store.unavailable",
+          message: `the shared store "${this.#store!.name}" is failing`,
+          service: this.#policy.service,
+          minutes: Math.max(1, Math.round((now - store.failingSince) / 60_000)),
+          share: 1,
+          since: store.failingSince,
+        }),
+      );
+    }
+    const intel = this.#options.intel as
+      | {
+          readonly status?: () => {
+            readonly feeds?: readonly {
+              readonly id: string;
+              readonly error: string | undefined;
+              readonly attemptedAt: number | undefined;
+            }[];
+          };
+        }
+      | undefined;
+    for (const feed of intel?.status?.().feeds ?? []) {
+      if (feed.error === undefined) continue;
+      out.push(
+        Object.freeze({
+          kind: "feed.refresh-failed",
+          message: `the feed "${feed.id}" did not refresh: ${feed.error}`,
+          service: this.#policy.service,
+          minutes: 0,
+          share: 0,
+          since: feed.attemptedAt ?? now,
+        }),
+      );
+    }
+    return out;
+  }
+
   /** Logs and forwards a warning. */
   #warn(warning: SecurityWarning): void {
+    this.#recentWarnings.set(warning.kind, { warning, at: this.#now() });
     this.#logger.warn(warning.message, {
       kind: warning.kind,
       service: warning.service,
@@ -2598,6 +2669,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         warning: this.#evictions.warning(now),
         ...(this.#store === undefined ? {} : { store: this.#storeStatus() }),
       }),
+      warnings: Object.freeze(this.#warningsInForce(now)),
     });
   }
 
