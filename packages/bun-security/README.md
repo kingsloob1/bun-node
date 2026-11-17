@@ -14,9 +14,10 @@ from a policy compiled once, before your handler sees it.
 > state across processes (`./stores`), WebSocket message limits, request
 > rules, challenges with bot signals, the sensitive endpoints (sign-in,
 > codes, resets: presets, the login defences, device cookies, identifier
-> checks), IP intelligence (`./intel`), verified crawlers, API keys, and
+> checks), IP intelligence (`./intel`), verified crawlers, API keys,
 > the security store (`./store`: a policy from a file or a SQLite database,
-> followed as it changes). The control plane follows in later PRs.
+> followed as it changes), and attack simulators for testing a policy
+> (`./testing`). The control plane follows in later PRs.
 
 ```sh
 bun add @kingsleyweb/bun-security
@@ -315,9 +316,12 @@ lost stops counting after `releaseAfter` (5 minutes). `complete()` also counts
 `server.error` (a `5xx`) for counted rules.
 
 Every table of local state (scores, ban history, in-flight requests, the
-default store's counters) is bounded by `maxKeys`; past it the oldest entry is dropped, counted
-in `security.status().state.evictions`, and a `state.evictions` warning goes to
-`onWarning` and the logger.
+default store's counters) is bounded by `maxKeys`; past it the oldest entry
+is dropped. A drop from the engine's own tables is counted in
+`security.status().state.evictions`, and a `state.evictions` warning goes to
+`onWarning` and the logger. The default store's counters are not counted
+yet: bun-common's `memoryThrottleStore` reports no drops
+([#819](https://github.com/kingsloob1/bun-node/issues/819)).
 
 ## Bans
 
@@ -441,8 +445,9 @@ requestRules: {
   length), `drop` (no answer), `challenge` (see
   [Challenges](#challenges)), `log`. `mode: "dryRun"` records what a rule would have
   done; `off` skips it.
-- **Scoring:** each enforced hit counts the `pattern.hit` event (the managed
-  set's `probe.hit`) for counted rules, and adds the rule's `weight` (default
+- **Scoring:** each enforced hit counts the `rule.hit` event (the managed
+  set's `probe.hit`; `pattern.hit` is the identifier checks' alone) for
+  counted rules, and adds the rule's `weight` (default
   1, 0 for `log`) to the client address's score, so a run of probes reaches
   the ladder's ban.
 - **Regular expressions are restricted** (JavaScriptCore backtracks and has
@@ -897,7 +902,8 @@ The login defences (`profiles.login`, on by default on routes marked
   shared store's `pfAdd` when there is one).
 - **Password spraying**: 10 distinct addresses failing one username in an
   hour tag its requests `step-up` (`decision.tags`), for the app to require
-  a second factor.
+  a second factor; a request carrying a valid device cookie for the
+  username is not tagged, so the owner's known device signs in as usual.
 - **A success from an address with 10 failures** is tagged `risky-success`
   and raises the `login.risky-success` warning.
 - **Outcome inference**: when the app signals neither `auth.failure` nor
@@ -923,6 +929,60 @@ a reserved domain (`example.*`, `.test`, `.invalid`, `.localhost`,
 under the request's client, so a counted rule can ban it. A job with no
 request passes `undefined`. `check(facts, "password", password)` asks
 `createSecurity`'s `breachedPassword` hook and refuses a breached password.
+
+## Testing your policy with simulated attacks
+
+`./testing` has the attacks this package defends against as request lists,
+and a runner that sends them to your app and reports what happened. They
+measure outcomes (each answer's status, the refusals and their problem
+codes, where the first refusal came), never speed, and need no network: the
+target is your app's socket-free `fetch()` (`fetchTarget`) or a
+`withSecurity` handler (`handlerTarget`).
+
+```ts
+import { createSecurity } from "@kingsleyweb/bun-security";
+import { credentialStuffing, fetchTarget, paced, pathScan, runAttack } from "@kingsleyweb/bun-security/testing";
+
+let now = Date.now();
+const security = createSecurity({ policy, secret, now: () => now });
+// … installSecurity(app, security) and the app's routes …
+
+const result = await runAttack(credentialStuffing({ path: "/auth/login", count: 1000, everyMs: 3000 }), fetchTarget(app), {
+  advance: (ms) => { now += ms; }, // a six-hour attack runs in milliseconds
+  settle: () => Bun.sleep(0),      // let each answer's outcome reach the engine first
+});
+expect(result.firstRefused).toBeLessThanOrEqual(10);
+
+// The negative control: the same attack, the defence off, succeeds.
+```
+
+| Simulator | The attack |
+|---|---|
+| `credentialStuffing` | leaked username and password pairs from one address |
+| `distributedGuessing` | one account's password guessed from many addresses |
+| `passwordSpraying` | one password against many accounts, from a pool of addresses |
+| `lowAndSlow` | attempts spread over hours, under any per-minute limit |
+| `accountEnumeration`, `probeAnswers`, `enumerationLeaks` | telling real accounts from missing ones by status, body or time |
+| `pathScan` (`PROBE_PATHS`) | ffuf-style probing of well-known paths, then a burst of dead links |
+| `ipv6Rotation`, `addressRotation` | one client rotating addresses: inside one IPv6 /64, or Tor exits |
+| `keyCardinalityFlood` | thousands of addresses, one request each, to swell the state tables |
+| `burst` | many requests from one address at once, or `everyMs` apart |
+| `forwardedForSpoof` | a client claiming another address in `X-Forwarded-For` |
+| `crawl`, `spoofedCrawler` (`CRAWLER_USER_AGENTS`) | a search-engine crawler, verified or spoofed |
+| `disposableSignups` | sign-ups with disposable addresses |
+| `apiKeyAbuse` | one API key used from many addresses (a leaked key) |
+| `crossSitePosts` | cross-site form posts with the victim's cookies |
+
+A request may carry `at` (ms from the attack's start): `runAttack`'s
+`advance` moves your fake clock there rather than waiting. `paced(attack,
+everyMs)` spaces an attack's requests, `sequence(name, ...attacks)` runs
+several one after another. The runner counts as refused any `403`, `429`
+or `503`, any problem+json answer with a `code` except a `401` (a failed
+sign-in made uniform is the app's answer), and a dropped connection (status
+`0`, code `dropped`); `refused` replaces that test. `staticCrawlerResolver`
+verifies crawlers from fixed DNS records, and `nthAddress` and
+`ipv6InPrefix` give distinct public addresses (never an internal range,
+which the engine lets past most layers).
 
 ## The policy
 

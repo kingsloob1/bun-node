@@ -336,9 +336,11 @@ export interface CountedRule {
   /**
    * The event counted: `request` (every request that passed the lists),
    * `throttled` (a limit refused it), `route.notFound` (no route matched),
-   * `server.error` (a `5xx` answer), the app's signals (`auth.failure`,
-   * `mfa.failure`, `signup`, `password.reset`, `pattern.hit`, or any name of
-   * its own through `signal()`).
+   * `server.error` (a `5xx` answer), `rule.hit` (a request rule's hit),
+   * `probe.hit` (the managed probe set's), `pattern.hit` (an identifier
+   * check's refusal, `security.check()`), the app's signals (`auth.failure`,
+   * `mfa.failure`, `signup`, `password.reset`, or any name of its own
+   * through `signal()`).
    */
   readonly event: string;
   /** How many occurrences trip it: a positive whole number. */
@@ -450,7 +452,9 @@ export interface LoginProfilePolicy {
   /**
    * Distinct addresses failing for one username in a window (a spray at
    * one account): at `stepUpAt` the account's requests are tagged
-   * `step-up`, for the app to require a second factor. `false` for none.
+   * `step-up`, for the app to require a second factor, except a request
+   * carrying a valid device cookie for the account (its owner's known
+   * device). `false` for none.
    */
   readonly distinctAddresses?:
     | {

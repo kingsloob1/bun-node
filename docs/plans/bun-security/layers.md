@@ -65,7 +65,8 @@ platform default and per-group and per-service overrides (ConcaveHR's
 count are the engine's outcomes and signals: `auth.failure`,
 `mfa.failure`, `signup`, `password.reset`, `request` (every request that
 passed the lists), `route.notFound` (no route matched, L14), `pattern.hit`
-(L11.7), `throttled` (a 429 from the throttle foundation), any app signal.
+(an identifier check, L11.7), `rule.hit` (a request rule, L7), `probe.hit`
+(the managed probe set, L7), `throttled` (a 429 from the throttle foundation), any app signal.
 `B` may be `null` ("until removed"). When the count reaches the threshold
 the counter is cleared and the action applied (ConcaveHR deletes the counter
 on a trip, so one burst gives one ban).

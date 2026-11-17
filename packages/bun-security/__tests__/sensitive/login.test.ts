@@ -257,6 +257,53 @@ describe("T-L11-1: credential stuffing", () => {
     ).toEqual([]);
   });
 
+  it("a valid device cookie for the username skips the step-up tag; a missing, another account's or forged one does not", async () => {
+    const clock = fakeClock();
+    const security = engine({}, clock);
+    // The owner signs in on the office laptop before the attack.
+    const first = login("hank", "198.51.100.250");
+    await decide(security, first);
+    await security.signal(first, "auth.success");
+    const cookie = cookiePair(security.deviceCookie(first));
+    for (let i = 0; i < 10; i++) {
+      await security.signal(
+        login("hank", `198.51.100.${i + 1}`),
+        "auth.failure",
+      );
+      clock.advance(2_000);
+    }
+    // The owner's known device: no second factor asked.
+    const owner = await decide(
+      security,
+      login("hank", "198.51.100.250", cookie),
+    );
+    expect(owner.tags).toEqual([]);
+    // From a new address the cookie still counts: it is the device's.
+    expect(
+      (await decide(security, login("hank", "203.0.113.9", cookie))).tags,
+    ).toEqual([]);
+    // Negative controls: without the cookie, with another account's, or a
+    // forged one, the request is tagged.
+    expect(
+      (await decide(security, login("hank", "198.51.100.250"))).tags,
+    ).toEqual(["step-up"]);
+    const ivy = login("ivy", "198.51.100.251");
+    await decide(security, ivy);
+    await security.signal(ivy, "auth.success");
+    const ivyCookie = cookiePair(security.deviceCookie(ivy));
+    expect(
+      (await decide(security, login("hank", "198.51.100.251", ivyCookie))).tags,
+    ).toEqual(["step-up"]);
+    expect(
+      (
+        await decide(
+          security,
+          login("hank", "198.51.100.250", `${cookie.slice(0, -2)}xx`),
+        )
+      ).tags,
+    ).toEqual(["step-up"]);
+  });
+
   it("low and slow over six hours from one address: the distinct-usernames detector still fires within an hour's window", async () => {
     const clock = fakeClock();
     const security = engine({}, clock);

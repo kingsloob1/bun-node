@@ -188,10 +188,15 @@ export interface CreateSecurityOptions<TRequest = Request> {
    */
   readonly throttleStore?: ThrottleStore;
   /**
-   * The bound on each table of local state: the default store's counters,
-   * counted-rule trips, in-flight requests (layers.md L9.6). Past it the
-   * oldest entry is dropped, counted, and a `state.evictions` warning
-   * raised. A positive whole number. Default `100_000`.
+   * The bound on each table of local state (layers.md L9.6): the offence
+   * scores, in-flight requests, local distinct counts and API-key memory,
+   * and the default `throttleStore`'s counters, where limits and counted
+   * rules count. Past it the oldest entry is dropped. A drop from the
+   * engine's own tables is counted in
+   * `status().state.evictions` and raises a `state.evictions` warning; the
+   * default store's counters are bounded the same way but their drops are
+   * not counted yet (bun-common's `memoryThrottleStore` reports none,
+   * kingsloob1/bun-node#819). A positive whole number. Default `100_000`.
    */
   readonly maxKeys?: number;
   /**
@@ -2988,7 +2993,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
    * Layer L7: the request rules that hold for the request in this stage
    * (layers.md L7), in policy order, then the managed probe set's. Each
    * enforced hit applies its action (a refusal, a ban of the client
-   * address, a drop, or a log), counts its event (`pattern.hit`, or
+   * address, a drop, or a log), counts its event (`rule.hit`, or
    * `probe.hit` for the managed set) for the counted rules and the ladder's
    * weights, and adds the rule's own weight to the address's score. A hit
    * in dry run is recorded as what it would have done, and counts nothing.

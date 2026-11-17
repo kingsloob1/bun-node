@@ -15,7 +15,8 @@
  * - **Distinct usernames failing from one address** (credential stuffing:
  *   one source, many accounts): a challenge, then a ban of the address.
  * - **Distinct addresses failing for one username** (a spray at one
- *   account): the username's requests are tagged `step-up`.
+ *   account): the username's requests are tagged `step-up`, except those
+ *   carrying a valid device cookie for it.
  * - **A success from an address with many failures** is tagged
  *   `risky-success` and warned of.
  *
@@ -151,7 +152,10 @@ export class LoginDefences {
             now,
           )
         : 0,
-      login.distinctAddresses === undefined
+      // A valid device cookie for the username skips the tag: the owner on
+      // a known device is not asked for a second factor while the account
+      // is attacked from many addresses (plan §17.19).
+      login.distinctAddresses === undefined || keys.device !== undefined
         ? 0
         : this.#store(
             (store) =>

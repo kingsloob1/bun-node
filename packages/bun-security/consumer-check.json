@@ -364,23 +364,63 @@
       "types": ["SecurityStoreDriver"]
     },
     {
-      "$comment": "The security store kit (storage.md §9): a bun:test suite, and a store that fails on demand.",
+      "$comment": "Testing kits: the security store's (storage.md §9: a bun:test suite, and a store that fails on demand) and the attack simulators (plan §11.2, PR-T2: request lists, the runner and the fakes, for an app to test its own policy).",
       "spelling": "@kingsleyweb/bun-security/testing",
-      "values": ["runSecurityStoreConformance", "faultyStore"],
+      "values": [
+        "runSecurityStoreConformance",
+        "faultyStore",
+        "runAttack",
+        "fetchTarget",
+        "handlerTarget",
+        "credentialStuffing",
+        "distributedGuessing",
+        "passwordSpraying",
+        "lowAndSlow",
+        "accountEnumeration",
+        "probeAnswers",
+        "enumerationLeaks",
+        "pathScan",
+        "PROBE_PATHS",
+        "ipv6Rotation",
+        "addressRotation",
+        "keyCardinalityFlood",
+        "burst",
+        "forwardedForSpoof",
+        "crawl",
+        "spoofedCrawler",
+        "CRAWLER_USER_AGENTS",
+        "disposableSignups",
+        "apiKeyAbuse",
+        "crossSitePosts",
+        "nthAddress",
+        "ipv6InPrefix",
+        "staticCrawlerResolver",
+        "paced",
+        "sequence"
+      ],
       "types": [
         "StoreConformanceFactory",
         "StoreConformanceInstance",
         "StoreConformanceOptions",
         "StoreConformanceCrossProcess",
         "FaultyStoreOptions",
-        "StoreOperation"
+        "StoreOperation",
+        "Attack",
+        "AttackRequest",
+        "AttackResult",
+        "AttackTarget",
+        "FetchableApp",
+        "ProbeAnswer",
+        "RunAttackOptions",
+        "ServeHandler",
+        "SignInAttackOptions"
       ],
-      "snippet": "import { memoryStore } from \"@kingsleyweb/bun-security/store\";\nconst run: Promise<void> = m.runSecurityStoreConformance(\"mine\", () => ({ store: memoryStore() }), { raceSize: 5 });\nconst faulty = m.faultyStore(memoryStore(), { fail: (op: t.StoreOperation) => (op === \"put\" ? new Error(\"down\") : undefined), delayMs: 1 });\nexport type _faultyNotAny = Expect<IsAny<typeof faulty>>;\nexport const _r = run;"
+      "snippet": "import { memoryStore } from \"@kingsleyweb/bun-security/store\";\nconst run: Promise<void> = m.runSecurityStoreConformance(\"mine\", () => ({ store: memoryStore() }), { raceSize: 5 });\nconst faulty = m.faultyStore(memoryStore(), { fail: (op: t.StoreOperation) => (op === \"put\" ? new Error(\"down\") : undefined), delayMs: 1 });\nexport type _faultyNotAny = Expect<IsAny<typeof faulty>>;\nexport const _r = run;\nimport { BunHttpAdapter } from \"@kingsleyweb/bun-common\";\nconst app = new BunHttpAdapter(0);\nexport const _result: Promise<t.AttackResult> = m.runAttack(m.credentialStuffing({ count: 10, everyMs: 1000 }), m.fetchTarget(app));\nexport const _crawler: t.Attack = m.spoofedCrawler({ crawler: \"bing\" });\nexport const _codes: Equal<t.AttackResult[\"codes\"], Readonly<Record<string, number>>> = true;\nexport type _resultNotAny = Expect<IsAny<t.AttackResult>>;"
     },
     {
       "spelling": "@kingsleyweb/bun-security/lib/testing",
-      "values": ["faultyStore"],
-      "types": ["StoreOperation"]
+      "values": ["faultyStore", "runAttack", "pathScan"],
+      "types": ["StoreOperation", "AttackResult"]
     }
   ],
   "workspaceDependencies": [

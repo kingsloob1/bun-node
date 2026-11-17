@@ -243,15 +243,22 @@ describe("L7 request rules: matchers and targets", () => {
 });
 
 describe("L7 request rules: events and the ladder", () => {
-  it("counts pattern.hit for counted rules", () => {
+  it("counts rule.hit for counted rules, and never pattern.hit (the identifier checks')", () => {
     const security = engine(
       one(
         { id: "probe", when: { path: { glob: "/**/*.php" } }, action: "log" },
         {
           countedRules: [
             {
-              id: "php-probes",
+              id: "identifiers",
               event: "pattern.hit",
+              threshold: 1,
+              window: "1m",
+              duration: "1h",
+            },
+            {
+              id: "php-probes",
+              event: "rule.hit",
               threshold: 3,
               window: "1m",
               duration: "1h",
@@ -263,7 +270,12 @@ describe("L7 request rules: events and the ladder", () => {
     const actions = ["/a.php", "/b.php", "/c.php", "/"].map(
       (path) => decide(security, at(path)).action,
     );
+    // The third hit trips php-probes; a pattern.hit rule at threshold 1
+    // would have banned at the first.
     expect(actions).toEqual(["log", "log", "ban", "ban"]);
+    expect(security.bans().map((ban) => ban.rule)).toEqual([
+      "counted:php-probes",
+    ]);
   });
 
   it("adds each hit's weight to the address's score, which the ladder bans on", () => {

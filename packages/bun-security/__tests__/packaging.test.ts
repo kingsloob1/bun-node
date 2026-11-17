@@ -164,7 +164,7 @@ describe("package.json exports", () => {
     }
   });
 
-  it("gives the security store ./store, and its kit ./testing (PR-D1)", () => {
+  it("gives the security store ./store, and the testing kits ./testing (PR-D1, PR-T2)", () => {
     for (const area of ["store", "testing"]) {
       for (const key of [`./${area}`, `./lib/${area}`]) {
         expect(manifest.exports[key]).toEqual({
