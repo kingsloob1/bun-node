@@ -77,6 +77,11 @@ export interface SecurityApi {
   readonly plane: ControlPlane;
   /** The OpenAPI 3.1 document of the routes. */
   readonly openapi: () => Record<string, unknown>;
+  /**
+   * Whether the break-glass account is configured: what a UI shows a
+   * signed-out operator, who cannot read `/meta` (bun-ui's `/security`).
+   */
+  readonly breakGlass: boolean;
   /** The AsyncAPI 3.0 document of the live stream: its SSE route and its WebSocket channel. */
   readonly asyncapi: () => Record<string, unknown>;
   /**
@@ -309,6 +314,7 @@ export function createSecurityApi(options: SecurityApiOptions): SecurityApi {
       repairTimer = undefined;
       alerts?.close();
     },
+    breakGlass: resolved.breakGlass !== undefined,
     plane,
     live,
     alerts,

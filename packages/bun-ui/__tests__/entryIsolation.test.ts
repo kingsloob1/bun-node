@@ -24,6 +24,12 @@ const JOBS = ["@kingsleyweb/bun-common", "@kingsleyweb/bun-jobs"] as const;
 /** The docs viewer's server entries: bun-common alone (no peer). */
 const DOCS = ["@kingsleyweb/bun-common"] as const;
 
+/** The security UI's server entries: bun-common, and its own domain package (its contract's constants). */
+const SECURITY = [
+  "@kingsleyweb/bun-common",
+  "@kingsleyweb/bun-security",
+] as const;
+
 /** The `@kingsleyweb/*` packages each entry may load at run time. */
 const ALLOWED: Record<string, readonly string[]> = {
   ".": [],
@@ -37,6 +43,10 @@ const ALLOWED: Record<string, readonly string[]> = {
   "./docs/hosted": DOCS,
   "./docs/browser": [],
   "./lib/docs/browser": [],
+  "./security": SECURITY,
+  "./lib/security": SECURITY,
+  "./security/browser": [],
+  "./lib/security/browser": [],
   "./docs/embed": [],
   "./docs/embed/routing": [],
   "./docs/embed/router": [],

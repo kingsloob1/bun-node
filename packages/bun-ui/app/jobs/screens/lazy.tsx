@@ -1,10 +1,10 @@
-import type { ComponentType, LazyExoticComponent } from "react";
 import type { AddFlowDialogProps } from "./job/AddFlowDialog";
 import type { AddedByStateGroupProps } from "./overview/added";
 import type { SectionProps } from "./overview/sections";
 import type { JobDefaultsPanelProps } from "./queues/panels/jobDefaults";
-import { lazy, Suspense } from "react";
-import { Spinner } from "../../kit/components/Spinner";
+import { onDemand } from "../../kit/onDemand";
+
+export { onDemand };
 
 /**
  * The screens loaded on demand. Each section's code (and its stylesheet) is a
@@ -13,45 +13,6 @@ import { Spinner } from "../../kit/components/Spinner";
  * chunk once. The chunks are served from `assetsPath` like the entry, which
  * the CSP's `script-src 'self'` allows.
  */
-
-/**
- * Wraps a lazily imported screen in a Suspense boundary with a labelled
- * spinner. A chunk that fails to load (a network blip, a redeploy) throws to
- * the route's `ScreenErrorBoundary`; `React.lazy` would keep that rejection
- * for good, so a failed load swaps in a fresh `lazy()` and "Reload this
- * screen" really fetches the chunk again.
- */
-export function onDemand<TProps extends object = Record<string, never>>(
-  load: () => Promise<ComponentType<TProps>>,
-  label: string,
-): ComponentType<TProps> {
-  let Screen: LazyExoticComponent<ComponentType<TProps>>;
-  const create = () =>
-    lazy(async () => {
-      try {
-        return { default: await load() };
-      } catch (error) {
-        Screen = create();
-        throw error;
-      }
-    });
-  Screen = create();
-  function OnDemand(props: TProps) {
-    return (
-      <Suspense
-        fallback={
-          <Spinner
-            label={label}
-            showLabel
-          />
-        }
-      >
-        <Screen {...props} />
-      </Suspense>
-    );
-  }
-  return OnDemand;
-}
 
 /** `/queues`, on demand. */
 export const QueuesListScreen = onDemand(

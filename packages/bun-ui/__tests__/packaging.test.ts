@@ -240,17 +240,31 @@ describe("this package's peers and the browser bundle", () => {
   // and `/jobs/browser` in a consumer without it.
   it("keeps @kingsleyweb/bun-jobs an optional peer, needed by the jobs server entries alone", () => {
     expect(manifest.peerDependencies["@kingsleyweb/bun-jobs"]).toBeDefined();
-    expect(optional).toEqual(new Set(["@kingsleyweb/bun-jobs", "@types/bun"]));
+    expect(optional).toEqual(
+      new Set([
+        "@kingsleyweb/bun-jobs",
+        "@kingsleyweb/bun-security",
+        "@types/bun",
+      ]),
+    );
     for (const entry of checkConfig.entries ?? []) {
       const jobsServer =
         /^@kingsleyweb\/bun-ui\/(?:lib\/)?jobs(?:\/|$)/.test(entry.spelling) &&
         !/\/browser(?:\/|$)/.test(entry.spelling);
+      const securityServer =
+        /^@kingsleyweb\/bun-ui\/(?:lib\/)?security(?:\/|$)/.test(
+          entry.spelling,
+        ) && !/\/browser(?:\/|$)/.test(entry.spelling);
       expect({
         spelling: entry.spelling,
         peers: entry.peers ?? [],
       }).toEqual({
         spelling: entry.spelling,
-        peers: jobsServer ? ["@kingsleyweb/bun-jobs"] : [],
+        peers: jobsServer
+          ? ["@kingsleyweb/bun-jobs"]
+          : securityServer
+            ? ["@kingsleyweb/bun-security"]
+            : [],
       });
     }
   });

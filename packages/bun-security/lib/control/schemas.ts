@@ -403,6 +403,7 @@ export const Meta: Schema<SecurityApiMetaDto> = s.object({
   approvals: s.enum(["off", "two-person"]),
   signingKeyId: s.string(),
   builtInRbac: s.boolean(),
+  breakGlass: s.boolean(),
   store: s.object({ name: s.string(), durable: s.boolean() }),
 });
 

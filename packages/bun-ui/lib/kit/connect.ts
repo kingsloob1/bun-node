@@ -37,16 +37,28 @@ export interface ConnectSourcesOptions {
    * page's port.
    */
   websocketPort?: number | null;
+  /**
+   * Whether the UI opens WebSockets. Default `true`. `false` (a UI whose live
+   * updates are server-sent events, which `'self'` and the API's `http(s)`
+   * origin already cover) adds no `ws(s)` source at all.
+   */
+  sockets?: boolean;
 }
 
 /**
  * The `connect-src` sources after `'self'`: the `ws(s)` form of the page's own
  * origin (older WebKit does not let `'self'` match `ws:`/`wss:`), a dedicated
  * socket port on the same hostname, and a cross-origin API in both forms.
- * Never a bare `ws:` or `wss:`, which would allow a socket to any host.
+ * Never a bare `ws:` or `wss:`, which would allow a socket to any host. With
+ * `sockets: false`, only the cross-origin API's `http(s)` origin.
  */
 export function connectSources(options: ConnectSourcesOptions): string[] {
   const sources: string[] = [];
+  if (options.sockets === false) {
+    return options.apiOrigin === undefined
+      ? sources
+      : [new URL(options.apiOrigin).origin];
+  }
   const socket = options.secure ? "wss" : "ws";
   const match = HOST.exec(options.host ?? "");
   const port = match?.[2] === undefined ? undefined : Number(match[2]);

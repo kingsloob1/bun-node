@@ -31,6 +31,16 @@
       "types": "./dts/jobs/browser/index.d.ts",
       "default": "./lib/jobs/browser/index.ts"
     },
+    "./security": {
+      "@kingsleyweb/source": "./lib/security/index.ts",
+      "types": "./dts/security/index.d.ts",
+      "default": "./lib/security/index.ts"
+    },
+    "./security/browser": {
+      "@kingsleyweb/source": "./lib/security/browser/index.ts",
+      "types": "./dts/security/browser/index.d.ts",
+      "default": "./lib/security/browser/index.ts"
+    },
     "./docs": {
       "@kingsleyweb/source": "./lib/docs/index.ts",
       "types": "./dts/docs/index.d.ts",
@@ -101,6 +111,16 @@
       "types": "./dts/jobs/browser/index.d.ts",
       "default": "./lib/jobs/browser/index.ts"
     },
+    "./lib/security": {
+      "@kingsleyweb/source": "./lib/security/index.ts",
+      "types": "./dts/security/index.d.ts",
+      "default": "./lib/security/index.ts"
+    },
+    "./lib/security/browser": {
+      "@kingsleyweb/source": "./lib/security/browser/index.ts",
+      "types": "./dts/security/browser/index.d.ts",
+      "default": "./lib/security/browser/index.ts"
+    },
     "./lib/docs": {
       "@kingsleyweb/source": "./lib/docs/index.ts",
       "types": "./dts/docs/index.d.ts",
@@ -157,18 +177,22 @@
     "test:serial": "bun test --check",
     "test:timings": "rm -f bun-timings.json && bun test --check --parallel --timings=bun-timings.json --update-timings",
     "check": "bun check && bun check -p app && bun check -p __tests__/jobs/app/pkg",
-    "gen:client": "bun-client generate --module scripts/jobs/routes-openapi.ts --out app/jobs/api/routes.gen.ts",
-    "check:client": "bun-client generate --module scripts/jobs/routes-openapi.ts --out app/jobs/api/routes.gen.ts --check",
+    "gen:client": "bun-client generate --module scripts/jobs/routes-openapi.ts --out app/jobs/api/routes.gen.ts && bun-client generate --module scripts/security/routes-openapi.ts --out app/security/api/routes.gen.ts",
+    "check:client": "bun-client generate --module scripts/jobs/routes-openapi.ts --out app/jobs/api/routes.gen.ts --check && bun-client generate --module scripts/security/routes-openapi.ts --out app/security/api/routes.gen.ts --check",
     "lint": "bun lint",
     "format": "bun fmt",
     "format:check": "bun fmt --check"
   },
   "peerDependencies": {
     "@kingsleyweb/bun-jobs": "workspace:^",
+    "@kingsleyweb/bun-security": "workspace:^",
     "@types/bun": ">=1.4.2"
   },
   "peerDependenciesMeta": {
     "@kingsleyweb/bun-jobs": {
+      "optional": true
+    },
+    "@kingsleyweb/bun-security": {
       "optional": true
     },
     "@types/bun": {
@@ -183,6 +207,7 @@
     "@kingsleyweb/bun-client": "workspace:^",
     "@kingsleyweb/bun-jobs": "workspace:^",
     "@kingsleyweb/bun-nest": "workspace:^",
+    "@kingsleyweb/bun-security": "workspace:^",
     "@nestjs/common": "catalog:",
     "@nestjs/core": "catalog:",
     "@tanstack/react-query": "catalog:",

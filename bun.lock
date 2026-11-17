@@ -312,6 +312,7 @@
         "@kingsleyweb/bun-client": "workspace:^",
         "@kingsleyweb/bun-jobs": "workspace:^",
         "@kingsleyweb/bun-nest": "workspace:^",
+        "@kingsleyweb/bun-security": "workspace:^",
         "@nestjs/common": "catalog:",
         "@nestjs/core": "catalog:",
         "@tanstack/react-query": "catalog:",
@@ -330,10 +331,12 @@
       },
       "peerDependencies": {
         "@kingsleyweb/bun-jobs": "workspace:^",
+        "@kingsleyweb/bun-security": "workspace:^",
         "@types/bun": ">=1.4.2",
       },
       "optionalPeers": [
         "@kingsleyweb/bun-jobs",
+        "@kingsleyweb/bun-security",
         "@types/bun",
       ],
     },

@@ -385,6 +385,8 @@ export interface SecurityApiMetaDto {
   readonly signingKeyId: string;
   /** Whether role bindings are the built-in RBAC's (`false` under a host's own `authorize`). */
   readonly builtInRbac: boolean;
+  /** Whether the break-glass account is configured (`POST /break-glass/session` is served). */
+  readonly breakGlass: boolean;
   /** The store's name and whether it is durable. */
   readonly store: { readonly name: string; readonly durable: boolean };
 }

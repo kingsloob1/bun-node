@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import { isApiError } from "../api/errors";
 import { queryKeys } from "../api/queryKeys";
 import { ErrorView } from "../components/ErrorView";
-import { Spinner } from "../../kit/components/Spinner";
+import { MetaGate } from "../../kit/MetaGate";
 import { useApiClient, useUiConfig } from "../context";
 import { MetaContext } from "./hooks";
 
@@ -73,30 +73,22 @@ export function MetaProvider({ children }: MetaProviderProps) {
     [meta.data, permissions.data],
   );
 
-  const error = meta.error ?? permissions.error;
-  if (error && !value) {
-    return (
-      <BootstrapError
-        error={error}
-        onRetry={() => {
-          void meta.refetch();
-          void permissions.refetch();
-        }}
-      />
-    );
-  }
-  if (!value) {
-    return (
-      <main
-        className="bootstrap-screen"
-        data-testid="bootstrap-loading"
-      >
-        <Spinner
-          label="Loading the jobs API"
-          showLabel
+  return (
+    <MetaGate
+      value={value}
+      error={meta.error ?? permissions.error}
+      loadingLabel="Loading the jobs API"
+      renderError={(error) => (
+        <BootstrapError
+          error={error}
+          onRetry={() => {
+            void meta.refetch();
+            void permissions.refetch();
+          }}
         />
-      </main>
-    );
-  }
-  return <MetaContext value={value}>{children}</MetaContext>;
+      )}
+    >
+      {(loaded) => <MetaContext value={loaded}>{children}</MetaContext>}
+    </MetaGate>
+  );
 }

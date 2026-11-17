@@ -28,7 +28,7 @@ import {
  * Every UI the package builds, by name: `app/<name>/main.tsx` into
  * `dist/<name>/` (the kit's `uiEntry`, `uiDistDir`). A new UI is a new name.
  */
-const UIS = ["jobs", "docs"] as const;
+const UIS = ["jobs", "docs", "security"] as const;
 
 const { values } = parseArgs({
   args: Bun.argv.slice(2),
