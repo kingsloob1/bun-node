@@ -273,6 +273,140 @@ describe("getOrSet: the cross-process lock (§3.4)", () => {
   });
 });
 
+/**
+ * `driver` as one process sees it: its `acquireLock` calls numbered `held`
+ * (from 0) wait for `gate` before reaching the driver, announcing their
+ * arrival on `arrived`; `released` resolves after its first `releaseLock`.
+ */
+function slowLock(driver: CacheDriver, held: number) {
+  const gate = createDeferred<void>();
+  const arrived = createDeferred<void>();
+  const released = createDeferred<void>();
+  let calls = 0;
+  const view = new Proxy(driver, {
+    get(target, property) {
+      const value: unknown = Reflect.get(target, property, target);
+      if (typeof value !== "function") return value;
+      const call = (...args: unknown[]): unknown =>
+        Reflect.apply(value, target, args);
+      if (property === "acquireLock") {
+        return async (...args: unknown[]) => {
+          if (calls++ === held) {
+            arrived.resolve();
+            await gate.promise;
+          }
+          return await call(...args);
+        };
+      }
+      if (property === "releaseLock") {
+        return async (...args: unknown[]) => {
+          const result = await call(...args);
+          released.resolve();
+          return result;
+        };
+      }
+      return call;
+    },
+  });
+  return { view, gate, arrived, released };
+}
+
+describe("getOrSet: a lock taken just after the holder let go (#835)", () => {
+  test("a waiter whose lock arrives after the holder stored and released reads the value, not loading again", async () => {
+    const driver = memoryDriver();
+    const one = slowLock(driver, Number.POSITIVE_INFINITY);
+    const two = slowLock(driver, 1);
+    const a = createCache({
+      driver: one.view,
+      namespace: "app",
+      sweepInterval: 0,
+    });
+    const b = createCache({
+      driver: two.view,
+      namespace: "app",
+      sweepInterval: 0,
+    });
+    let loads = 0;
+    const gate = createDeferred<void>();
+    const holder = a.getOrSet(
+      "k",
+      async () => {
+        loads++;
+        await gate.promise;
+        return "from-a";
+      },
+      { lock: true },
+    );
+    await sleep(10);
+    const waiter = b.getOrSet(
+      "k",
+      async () => {
+        loads++;
+        return "from-b";
+      },
+      { lock: { wait: { interval: 5, timeout: 5_000 } } },
+    );
+    // b read a miss and its next lock request is on the way.
+    await two.arrived.promise;
+    // (The probe names the lock a holds.)
+    expect(await driver.acquireLock!("app", "k", "probe", 1_000)).toBe(false);
+    gate.resolve();
+    expect(await holder).toBe("from-a");
+    await one.released.promise;
+    // Now it lands: the lock is free, and the value is stored.
+    two.gate.resolve();
+    expect(await waiter).toBe("from-a");
+    expect(loads).toBe(1);
+    // b let go of the lock it took.
+    expect(await driver.acquireLock!("app", "k", "probe", 1_000)).toBe(true);
+    await a.close();
+    await b.close();
+  });
+
+  test("a first lock request that lands after another process stored and released reads the value too", async () => {
+    const driver = memoryDriver();
+    const one = slowLock(driver, Number.POSITIVE_INFINITY);
+    const two = slowLock(driver, 0);
+    const a = createCache({
+      driver: one.view,
+      namespace: "app",
+      sweepInterval: 0,
+    });
+    const b = createCache({
+      driver: two.view,
+      namespace: "app",
+      sweepInterval: 0,
+    });
+    let loads = 0;
+    const late = b.getOrSet(
+      "k",
+      async () => {
+        loads++;
+        return "from-b";
+      },
+      { lock: true },
+    );
+    // b read a miss and its lock request is on the way; a loads meanwhile.
+    await two.arrived.promise;
+    expect(
+      await a.getOrSet(
+        "k",
+        async () => {
+          loads++;
+          return "from-a";
+        },
+        { lock: true },
+      ),
+    ).toBe("from-a");
+    await one.released.promise;
+    two.gate.resolve();
+    expect(await late).toBe("from-a");
+    expect(loads).toBe(1);
+    await a.close();
+    await b.close();
+  });
+});
+
 describe("getOrSet: the loader's noStore() (§3.4)", () => {
   test("every caller sharing the flight gets the value, and nothing is stored", async () => {
     const { cache } = makeCache();

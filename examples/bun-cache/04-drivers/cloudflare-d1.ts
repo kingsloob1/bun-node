@@ -194,16 +194,22 @@ try {
   });
   const fenced: unknown[] = [];
   cache.on("fenced", (event) => fenced.push(event));
+  // The loader says when it runs and waits to be let go, so the invalidation
+  // lands while it runs however slow the machine is.
+  const running = Promise.withResolvers<void>();
+  const letGo = Promise.withResolvers<void>();
   const loading = cache.getOrSet(
     "slow",
     async () => {
-      await Bun.sleep(150);
+      running.resolve();
+      await letGo.promise;
       return "computed before the invalidation";
     },
     { tags: ["slow-tag"] },
   );
-  await Bun.sleep(40); // the loader is running
+  await running.promise; // the loader is running
   await elsewhere.invalidateTags(["slow-tag"]);
+  letGo.resolve();
   checkEqual(
     "the caller still gets its value",
     await loading,

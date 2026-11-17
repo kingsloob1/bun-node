@@ -470,6 +470,32 @@ describe("cloudflareD1Driver: the fence, one statement", () => {
   });
 });
 
+/** Whether `error` is a dropped connection, not an answer. */
+function isTransportError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "ECONNRESET" || code === "ConnectionClosed";
+}
+
+/**
+ * Takes the lock for `owner`, asking again once if the connection drops:
+ * fifty requests at once to the local Worker on a loaded machine had one
+ * reset (`ECONNRESET`). Asking again is safe because a lock is retaken by
+ * its own owner (`OR owner = excluded.owner`): if the lost request took the
+ * lock, the second one answers `true` again, so the count of winners is
+ * still the lock's.
+ */
+async function acquireOnce(
+  acquire: (owner: string) => Promise<boolean>,
+  owner: string,
+): Promise<boolean> {
+  try {
+    return await acquire(owner);
+  } catch (error) {
+    if (!isTransportError(error)) throw error;
+    return await acquire(owner);
+  }
+}
+
 describe("cloudflareD1Driver: locks and counters across contenders", () => {
   test("50 contenders on a free lock: one winner; a lapsed lock is taken over; release needs the owner", async () => {
     let now = Date.now();
@@ -478,7 +504,10 @@ describe("cloudflareD1Driver: locks and counters across contenders", () => {
       Array.from(
         { length: 50 },
         async (_, index) =>
-          await driver.acquireLock("ns", "k", `o${index}`, 10_000),
+          await acquireOnce(
+            async (owner) => await driver.acquireLock("ns", "k", owner, 10_000),
+            `o${index}`,
+          ),
       ),
     );
     expect(won.filter(Boolean).length).toBe(1);
@@ -488,6 +517,46 @@ describe("cloudflareD1Driver: locks and counters across contenders", () => {
     expect(await driver.acquireLock("ns", "k", "late", 10_000)).toBe(true);
     expect(await driver.releaseLock("ns", "k", winner)).toBe(false);
     expect(await driver.releaseLock("ns", "k", "late")).toBe(true);
+  });
+
+  test("a contender whose connection drops after its lock was taken asks again and still counts once (the retry's control)", async () => {
+    const driver = make();
+    // Every contender's first request reaches the database, then o0's
+    // connection drops before the answer: the worst case for a retry.
+    const dropping = async (owner: string, first: { done: boolean }) => {
+      const taken = await driver.acquireLock("ns", "drop", owner, 10_000);
+      if (owner === "o0" && !first.done) {
+        first.done = true;
+        throw Object.assign(new Error("The socket connection was closed"), {
+          code: "ECONNRESET",
+        });
+      }
+      return taken;
+    };
+    const first = { done: false };
+    // o0 goes first and takes the lock; its answer is lost.
+    const zero = await acquireOnce(
+      async (owner) => await dropping(owner, first),
+      "o0",
+    );
+    const rest = await Promise.all(
+      Array.from(
+        { length: 9 },
+        async (_, index) =>
+          await acquireOnce(
+            async (owner) => await dropping(owner, first),
+            `o${index + 1}`,
+          ),
+      ),
+    );
+    expect(first.done).toBe(true);
+    expect([zero, ...rest].filter(Boolean)).toEqual([true]);
+    expect(zero).toBe(true);
+    // Without the retry, the dropped answer is an error, not a count.
+    const unretried = { done: false };
+    await expect(dropping("o0", unretried)).rejects.toThrow(
+      "The socket connection was closed",
+    );
   });
 
   test("an expired counter restarts with its new expiry", async () => {
