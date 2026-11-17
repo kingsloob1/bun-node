@@ -11,6 +11,8 @@ the host installs neither and has no build step.
 |---|---|---|
 | `@kingsleyweb/bun-ui/jobs` | `jobsUi()`: the management UI for the `@kingsleyweb/bun-jobs` management API. [Guide](guides/jobs.md) | `@kingsleyweb/bun-jobs` |
 | `@kingsleyweb/bun-ui/jobs/browser` | the jobs UI's browser-safe config contract (`JobsUiConfig`, `JOBS_UI_CONFIG_ELEMENT_ID`, …) | nothing |
+| `@kingsleyweb/bun-ui/security` | `securityUi()`: the management UI for `@kingsleyweb/bun-security`'s control plane. [Guide](guides/security.md) | `@kingsleyweb/bun-security` |
+| `@kingsleyweb/bun-ui/security/browser` | the security UI's browser-safe config contract (`SecurityUiConfig`, `SECURITY_UI_CONFIG_ELEMENT_ID`, …) | nothing |
 | `@kingsleyweb/bun-ui/docs` | `docsUi()`: a self-hosted viewer for one OpenAPI 3.1 or AsyncAPI 3.0 document. [Guide](guides/docs.md) | nothing |
 | `@kingsleyweb/bun-ui/docs/browser` | the docs viewer's browser-safe config contract and the `unauthorized` helpers | nothing |
 | `@kingsleyweb/bun-ui/docs/hosted` | what bun-common's `docsRouter` `"self-hosted"` viewer loads to serve the viewer itself | nothing |

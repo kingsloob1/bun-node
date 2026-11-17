@@ -29,6 +29,9 @@ import { DEFAULT_ENTRY as DOCS_ENTRY } from "../../../lib/docs/assets";
 import { createDocsUi } from "../../../lib/docs/docsUi";
 import { DEFAULT_ENTRY as JOBS_ENTRY } from "../../../lib/jobs/assets";
 import { createJobsUi } from "../../../lib/jobs/jobsUi";
+import { DEFAULT_ENTRY as SECURITY_ENTRY } from "../../../lib/security/assets";
+import { createSecurityUi } from "../../../lib/security/securityUi";
+import { memorySecurityApi } from "../../security/server/helpers";
 import { chromeProfile } from "./profile";
 
 /** Where Chrome may be, in search order. */
@@ -100,6 +103,14 @@ const DOCS_CASES = {
   page: { path: "/docs-page", layout: { scope: "page" } },
 } satisfies Record<string, Case>;
 
+/** The security UI's cases: the kit's frame, as the jobs UI's. */
+const SECURITY_CASES = {
+  left: { path: "/sec-content-left", layout: { align: "left" } },
+  default: { path: "/sec-default", layout: undefined },
+  right: { path: "/sec-content-right", layout: { align: "right" } },
+  pageCenter: { path: "/sec-page-center", layout: { scope: "page" } },
+} satisfies Record<string, Case>;
+
 /** A rectangle, rounded to whole pixels. */
 interface Box {
   left: number;
@@ -167,6 +178,7 @@ describe.skipIf(chromePath === undefined)(
   () => {
     let jobs: BunJobs;
     let api: ReturnType<typeof createJobsApi>;
+    let securityApi: Awaited<ReturnType<typeof memorySecurityApi>>;
     let app: BunHttpAdapter;
     let origin: string;
     let view: Bun.WebView | undefined;
@@ -215,6 +227,21 @@ describe.skipIf(chromePath === undefined)(
         );
         app.use(ui.basePath, ui.router);
       }
+      securityApi = await memorySecurityApi({ basePath: "/sec-api" });
+      app.use(securityApi.basePath, securityApi.router);
+      for (const { path, layout } of Object.values(SECURITY_CASES) as Case[]) {
+        const ui = createSecurityUi(
+          {
+            api: securityApi,
+            basePath: path,
+            dev: true,
+            logger: noopLogger,
+            ...(layout === undefined ? {} : { layout }),
+          },
+          { entry: SECURITY_ENTRY },
+        );
+        app.use(ui.basePath, ui.router);
+      }
       const server = await app.listen(0);
       origin = `http://127.0.0.1:${server.port}`;
       // Build each bundle before the browser asks.
@@ -224,6 +251,9 @@ describe.skipIf(chromePath === undefined)(
       expect((await fetch(`${origin}${DOCS_CASES.default.path}`)).status).toBe(
         200,
       );
+      expect(
+        (await fetch(`${origin}${SECURITY_CASES.default.path}`)).status,
+      ).toBe(200);
 
       profile = chromeProfile("layout");
       view = new Bun.WebView({
@@ -250,6 +280,8 @@ describe.skipIf(chromePath === undefined)(
       await app?.close();
       await api?.close();
       await jobs?.close();
+      securityApi?.live.close();
+      securityApi?.close();
     });
 
     /** Opens a case's page, waits for `ready`, and measures it. */
@@ -279,6 +311,9 @@ describe.skipIf(chromePath === undefined)(
 
     /** The jobs app is ready once its Overview's screen renders. */
     const JOBS_READY = '[data-testid="app-ready"] .screen';
+    /** The security app is ready once its Overview renders. */
+    const SECURITY_READY =
+      '[data-testid="app-ready"] .screen[data-testid="overview"]';
     /** The docs viewer is ready once the document's reference renders. */
     const DOCS_READY = ".screen.http-docs";
 
@@ -355,6 +390,48 @@ describe.skipIf(chromePath === undefined)(
         expect(result.nav!.left).toBe(blockLeft);
         expect(result.screen.right).toBe(result.page - PAD);
         expect(result.brand!.left).toBe(blockLeft + 16);
+      }, 30_000);
+    });
+
+    describe("securityUi(): the kit's frame", () => {
+      it("centres the screen by default, 1400px wide, the nav at the edge", async () => {
+        const result = await measure(
+          SECURITY_CASES.default.path,
+          SECURITY_READY,
+        );
+        expect(result.nav!.left).toBe(0);
+        expect(result.nav!.width).toBe(NAV);
+        expect(result.screen.width).toBe(1400);
+        const { left, right } = gaps(result);
+        expect(left).toBeGreaterThan(400);
+        expect(Math.abs(left - right)).toBeLessThanOrEqual(1);
+      }, 30_000);
+
+      it("puts it against the nav with align: left", async () => {
+        const result = await measure(SECURITY_CASES.left.path, SECURITY_READY);
+        expect(gaps(result).left).toBe(0);
+        expect(result.screen.left).toBe(NAV + PAD);
+      }, 30_000);
+
+      it("puts it against the right edge with align: right", async () => {
+        const result = await measure(SECURITY_CASES.right.path, SECURITY_READY);
+        expect(gaps(result).right).toBe(0);
+        expect(result.screen.right).toBe(result.page - PAD);
+      }, 30_000);
+
+      it("moves the nav and the screen as one block in page scope", async () => {
+        const result = await measure(
+          SECURITY_CASES.pageCenter.path,
+          SECURITY_READY,
+        );
+        const blockLeft = (result.page - (NAV + 1400 + 2 * PAD)) / 2;
+        expect(Math.abs(result.nav!.left - blockLeft)).toBeLessThanOrEqual(1);
+        expect(
+          Math.abs(result.screen.left - (blockLeft + NAV + PAD)),
+        ).toBeLessThanOrEqual(1);
+        expect(
+          Math.abs(result.brand!.left - (blockLeft + 16)),
+        ).toBeLessThanOrEqual(1);
       }, 30_000);
     });
 

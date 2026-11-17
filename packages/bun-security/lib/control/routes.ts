@@ -120,6 +120,7 @@ export function routes(
           approvals: options.approvals,
           signingKeyId: options.signer.keyId,
           builtInRbac: options.authorize === undefined,
+          breakGlass: options.breakGlass !== undefined,
           store: {
             name: plane.store.name,
             durable: plane.store.capabilities.durable,

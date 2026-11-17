@@ -1,0 +1,28 @@
+/* The security app's few styles of its own; the frame and width are the kit's. */
+.scope-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.scope-picker-label {
+  font-size: 0.875rem;
+  color: var(--color-text-muted, inherit);
+}
+
+.overview-cards {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+}
+
+.break-glass-form {
+  display: grid;
+  gap: 0.75rem;
+  max-width: 28rem;
+  margin-top: 1.5rem;
+}
+
+.break-glass-error {
+  color: var(--color-danger, inherit);
+}

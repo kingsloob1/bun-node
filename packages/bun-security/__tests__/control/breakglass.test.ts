@@ -252,6 +252,15 @@ describe("the break-glass login", () => {
     expect(alerts.map((alert) => alert.kind)).not.toContain("breakGlass.login");
   });
 
+  it("is reported by /meta and on the API object when configured, and not otherwise", async () => {
+    const { api, call } = breakGlassApi();
+    expect(api.breakGlass).toBe(true);
+    const plain = testApi();
+    expect(plain.api.breakGlass).toBe(false);
+    expect((await call("GET", "/meta")).body.breakGlass).toBe(true);
+    expect((await plain.call("GET", "/meta")).body.breakGlass).toBe(false);
+  });
+
   it("documents the login route when configured", async () => {
     const { call } = breakGlassApi();
     const openapi = (await call("GET", "/openapi.json")).body;

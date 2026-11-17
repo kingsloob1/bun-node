@@ -160,6 +160,7 @@ describe("DOM isolation between test files", () => {
       "docs/app/register-dom.ts",
       "harness/dom.ts",
       "jobs/app/register-dom.ts",
+      "security/app/register-dom.ts",
     ]);
     expect(
       loadsDom(join(ROOT, "jobs", "app", "queues", "helpers.test.ts")),
@@ -167,6 +168,10 @@ describe("DOM isolation between test files", () => {
     expect(
       loadsDom(join(ROOT, "docs", "app", "unauthorizedViewer.test.tsx")),
     ).toBe(true);
+    // The step-up test drives the client over a fake window, with no DOM.
+    expect(loadsDom(join(ROOT, "security", "app", "stepUp.test.tsx"))).toBe(
+      false,
+    );
     expect(loadsDom(join(ROOT, "jobs", "server", "options.test.ts"))).toBe(
       false,
     );

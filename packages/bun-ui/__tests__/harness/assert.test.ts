@@ -80,7 +80,7 @@ describe("the app tests", () => {
   it("covers every UI's app tests", () => {
     expect(
       APP_TESTS.map((dir) => relative(join(import.meta.dir, ".."), dir)),
-    ).toEqual(["docs/app", "jobs/app"]);
+    ).toEqual(["docs/app", "jobs/app", "security/app"]);
   });
 
   it("assert absence with the helpers, never a matcher that may not fail", () => {

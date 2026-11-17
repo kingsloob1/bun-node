@@ -62,6 +62,13 @@ interface BundleBudget {
  *   appears, is held to 120 / 40 KiB. With the kit (BU-4, 2026-11-10): 339.6
  *   to 339.9 KiB (106.1 to 106.2 KiB gzipped), the bindings that hand the
  *   kit's components the viewer's `isApiError` and query reset.
+ *
+ * **security**
+ * - Set 2026-11-17 (PR-U1, Bun 1.4.5-canary.1): entry measured 296.8 KiB
+ *   (95.1 KiB gzipped) — React 19, TanStack Query, bun-client's typed client
+ *   and SSE stream, the frame, the scope picker and the Overview; the API
+ *   reference (the docs viewer's screens) is a lazy chunk, the largest at
+ *   54.8 KiB (18.8 KiB gzipped). Later screens (U2–U5) go in lazy chunks.
  */
 const BUNDLE_BUDGETS: Readonly<Record<string, BundleBudget>> = {
   jobs: {
@@ -69,6 +76,13 @@ const BUNDLE_BUDGETS: Readonly<Record<string, BundleBudget>> = {
     entryGzipBytes: 112 * 1024,
     chunkBytes: 101 * 1024,
     chunkGzipBytes: 33 * 1024,
+    lazy: true,
+  },
+  security: {
+    entryBytes: 327 * 1024,
+    entryGzipBytes: 105 * 1024,
+    chunkBytes: 61 * 1024,
+    chunkGzipBytes: 21 * 1024,
     lazy: true,
   },
   docs: {
@@ -144,7 +158,7 @@ describe("the budget rows", () => {
     ]
       .map((path) => path.split("/")[0])
       .sort();
-    expect(uis).toEqual(["docs", "jobs"]);
+    expect(uis).toEqual(["docs", "jobs", "security"]);
     expect(Object.keys(BUNDLE_BUDGETS).sort()).toEqual(uis);
   });
 });

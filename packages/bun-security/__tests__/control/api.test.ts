@@ -78,6 +78,7 @@ describe("authentication and CSRF", () => {
     expect((await call("GET", "/meta")).body).toMatchObject({
       csrfHeader: "x-bun-security-csrf",
       stepUp: "none",
+      breakGlass: false,
     });
     const noHeader = await call(
       "POST",

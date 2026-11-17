@@ -1,9 +1,11 @@
 {
-  "$comment": "Import spellings a consumer of @kingsleyweb/bun-ui writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-ui` from the repo root. Every spelling here worked at some point; removing one hides a regression. An entry's `peers` names the optional peers it legitimately needs: it is checked in a consumer that has exactly them, and every entry without `peers` in one that has none, so the root and every `/<ui>/browser` entry are proved to need no domain package. `/jobs` needs bun-jobs (its types name `JobsApi`, and it throws bun-jobs' `ConfigError`); `/docs` and `/docs/hosted` need none. The `./docs/embed*` entries (the viewer's screens, for a host app that bundles them) are NOT here: TSX with CSS side-effect imports and React types, shipped as source, a bundler-only surface covered in-repo by the jobs app importing them by name (`app/jobs`), and by `__tests__/entryIsolation.test.ts`.",
+  "$comment": "Import spellings a consumer of @kingsleyweb/bun-ui writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-ui` from the repo root. Every spelling here worked at some point; removing one hides a regression. An entry's `peers` names the optional peers it legitimately needs: it is checked in a consumer that has exactly them, and every entry without `peers` in one that has none, so the root and every `/<ui>/browser` entry are proved to need no domain package. `/jobs` needs bun-jobs (its types name `JobsApi`, and it throws bun-jobs' `ConfigError`); `/security` needs bun-security (its types name `SecurityApi`, and it reads the contract's CSRF header default); `/docs` and `/docs/hosted` need none. The `./docs/embed*` entries (the viewer's screens, for a host app that bundles them) are NOT here: TSX with CSS side-effect imports and React types, shipped as source, a bundler-only surface covered in-repo by the jobs app importing them by name (`app/jobs`), and by `__tests__/entryIsolation.test.ts`.",
   "workspaceDependencies": [
     "packages/bun-contract",
     "packages/bun-common",
-    "packages/bun-jobs"
+    "packages/bun-jobs",
+    "packages/bun-sql",
+    "packages/bun-security"
   ],
   "entries": [
     {
@@ -264,6 +266,86 @@
       "spelling": "@kingsleyweb/bun-ui/lib/docs/hosted",
       "values": ["resolveHostedAssets", "ASSET_CACHE_CONTROL"],
       "types": ["UiAssets"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/security",
+      "peers": ["@kingsleyweb/bun-security"],
+      "values": [
+        "securityUi",
+        "createSecurityUi",
+        "DEFAULT_BASE_PATH",
+        "DEFAULT_TITLE",
+        "SECURITY_UI_CONFIG_ELEMENT_ID"
+      ],
+      "types": [
+        "SecurityUi",
+        "SecurityUiOptions",
+        "SecurityUiApiOptions",
+        "SecurityUiUrlOptions",
+        "SecurityUiBaseOptions",
+        "SecurityUiAuthorize",
+        "SecurityUiAuthorizeContext",
+        "SecurityUiInternals",
+        "SecurityUiConfig",
+        "UiUnauthorized",
+        "UiUnauthorizedStatus",
+        "UiColorToken",
+        "UiThemeColors",
+        "UiThemeInput",
+        "UiThemeOptions",
+        "UiAlign",
+        "UiLayout",
+        "UiLayoutOptions",
+        "UiLayoutScope"
+      ],
+      "snippet": "const ui = m.securityUi({ apiUrl: \"/security-api\", basePath: \"/security\" });\nexport type _ui = Expect<IsAny<typeof ui>>;\nexport type _router = Expect<IsAny<typeof ui.router>>;\nconst _basePath: Equal<typeof ui.basePath, string> = true;\nconst _breakGlass: Equal<typeof ui.config.breakGlass, boolean> = true;\nexport type _api = Expect<IsAny<t.SecurityUiApiOptions[\"api\"]>>;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/security",
+      "peers": ["@kingsleyweb/bun-security"],
+      "values": ["securityUi", "SECURITY_UI_CONFIG_ELEMENT_ID"],
+      "types": ["SecurityUiOptions"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/security/index.ts",
+      "peers": ["@kingsleyweb/bun-security"],
+      "values": ["securityUi"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/security/index.js",
+      "peers": ["@kingsleyweb/bun-security"],
+      "values": ["securityUi"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/security/securityUi",
+      "peers": ["@kingsleyweb/bun-security"],
+      "values": ["securityUi", "DEFAULT_BASE_PATH"]
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/security/types",
+      "peers": ["@kingsleyweb/bun-security"],
+      "types": ["SecurityUi", "SecurityUiOptions"],
+      "runtime": false
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/security/browser",
+      "values": ["SECURITY_UI_CONFIG_ELEMENT_ID"],
+      "types": [
+        "SecurityUiConfig",
+        "UiTheme",
+        "UiUnauthorized",
+        "UiUnauthorizedStatus",
+        "UiAlign",
+        "UiLayout",
+        "UiLayoutScope"
+      ],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/lib/security/browser/config",
+      "values": ["SECURITY_UI_CONFIG_ELEMENT_ID"],
+      "types": ["SecurityUiConfig", "UiTheme"],
+      "browser": true
     }
   ]
 }

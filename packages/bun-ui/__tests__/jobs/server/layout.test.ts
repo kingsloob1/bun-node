@@ -1,6 +1,6 @@
 /**
  * The `layout` option (#785) through the real routers, socket-free: every UI
- * (`jobsUi()`, `docsUi()`) hands the browser the checked layout, centred by
+ * (`jobsUi()`, `docsUi()`, `securityUi()`) hands the browser the checked layout, centred by
  * default, refuses a bad one with its own `ConfigError`, and serves nothing
  * else for it: no stylesheet and no change to the CSP. The list of UIs is the
  * rule's check: a new UI goes in it.
@@ -12,6 +12,10 @@ import {
   fetchShell as fetchDocsShell,
   fixtureDocsUi,
 } from "../../docs/server/helpers";
+import {
+  fetchSecurityShell,
+  fixtureSecurityUi,
+} from "../../security/server/helpers";
 import { fetchShell, fixtureUi } from "./helpers";
 
 /** The UIs under test, each over its fixture bundle, with the error it throws. */
@@ -26,6 +30,12 @@ const UIS = [
     "docsUi()",
     (options: object = {}) => fixtureDocsUi(options),
     fetchDocsShell,
+    CommonConfigError,
+  ],
+  [
+    "securityUi()",
+    (options: object = {}) => fixtureSecurityUi(options),
+    fetchSecurityShell,
     CommonConfigError,
   ],
 ] as const;
