@@ -17,7 +17,7 @@ from a policy compiled once, before your handler sees it.
 > checks), IP intelligence (`./intel`), verified crawlers, API keys,
 > the security store (`./store`: a policy from a file, a SQLite or a
 > Postgres database, followed as it changes; `./sealing`: its secrets
-> sealed at rest), and attack simulators for testing a policy
+> sealed at rest), events and analytics (`./analytics`), and attack simulators for testing a policy
 > (`./testing`), and the control plane's management API (`./control`;
 > the agent, audit log and analytics follow in later PRs).
 
@@ -1185,6 +1185,74 @@ const store = postgresStore({ url: process.env.SECURITY_STORE_URL!, codec });
 - **Keys** come from the environment or a secret manager, never from the
   store they protect. The codec is synchronous: resolve a KMS's keys before
   building it, and build a new codec (and store) to take a new ring.
+
+## Events and analytics
+
+`@kingsleyweb/bun-security/analytics` turns decisions into the numbers and
+events an analytics page reads, without letting an attack's volume, or a
+credential, reach the store.
+
+```ts
+import { createSecurity } from "@kingsleyweb/bun-security";
+import {
+  analyticsHook,
+  createAnalyticsRecorder,
+  createEventRing,
+  createRedactor,
+} from "@kingsleyweb/bun-security/analytics";
+
+const recorder = createAnalyticsRecorder({ service: "api" });
+const ring = createEventRing({ service: "api", recorder });
+const security = createSecurity({
+  policy,
+  secret: process.env.SECURITY_SECRET!,
+  onDecision: analyticsHook({ recorder, ring, redactor: createRedactor() }),
+});
+// Each second: ring.take(500) and recorder.flush() make an agent's batch.
+```
+
+- **Counters** (`createAnalyticsRecorder`), per minute: requests by action,
+  by route, by rule (and dry run), by country, by ASN (200 a minute, then
+  `(other)`), answers by status class, a decision-latency histogram. Exact
+  refusals per subject per day (`refused`), and each minute's 100 most
+  refused and busiest subjects by space-saving (`top.refused`,
+  `top.requests`). At most 2,000 rows a minute; past any bound a value is
+  counted under `(other)` and the overflow under `analytics.overflow`.
+- **Events** (`createEventRing`): every refusal, challenge or dry-run hit,
+  and one `allow` in a thousand. At most 10 a minute per subject and rule,
+  30 per subject, 600 per rule, 1,000,000 a day; past a cap the request is
+  only counted (`events.capped { cap }`, with an `events.capped` warning at
+  most once a minute), and the ring holds 10,000 (`events.dropped`).
+- **What an event keeps** (`createRedactor`): the method; the route's
+  template, or the path with credential-looking segments as `:redacted`;
+  the query and the headers with sensitive names (`password`, `token`,
+  `key`, `session`, `cookie`, … by substring, any case) and
+  credential-looking values (a JWT, `Bearer …`, a card number, a long key)
+  as `[redacted]`; a JSON or form body the same way, 4 KB in all, and only
+  its field names on a `login`, `mfa`, `otp`, `reset` or `signup` route;
+  any other body its type and length only. The answer keeps its status and
+  headers, and a body only when the engine answered itself.
+- **Subjects** are the engine's keys: the address, the API key's HMAC and
+  the username's HMAC. A raw user id is never kept; with `userKey`, the
+  app's own key of it is. A list entry's default id, which names its key
+  or user, is rewritten the same way.
+- **At the control plane**: `createSecurityApi({ agentEvents: {
+  authenticate } })` adds `POST /agent/events`: on an adapter that defers
+  bodies (`secureAdmin`'s does), the agent is authenticated in a `use`
+  middleware while the request's body stream is still unread (measured on a
+  real socket; what the runtime has already buffered is not covered, and an
+  adapter that reads bodies before routing has read it first), each agent
+  is rate limited, the body is at most 1 MiB as sent and 8 MiB unpacked,
+  and a batch is stored once by its id (`ingestEventBatch`).
+  `analyticsMaintenance(store).start()` rolls minutes into hours and hours
+  into days, and deletes by retention (events 14 days, minutes 7, hours 90,
+  days 400; at most 90, 30, 400 days and 5 years), on a timer or from a
+  bun-jobs schedule.
+- **In the store** (`./store`): `appendEvents`, `addCounters`,
+  `listEvents`, `series`, `topK`, `rollup`, `deleteBefore` on
+  `memoryStore`, `sqliteStore` and `postgresStore`
+  (`capabilities.analytics`). A counter for an hour already rolled up is
+  added to it too, so a late batch is never lost from the rollups.
 
 ## The control plane's management API
 

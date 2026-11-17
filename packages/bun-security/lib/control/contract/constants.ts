@@ -107,6 +107,9 @@ export const SECURITY_API_ERROR_CODES = /* @__PURE__ */ Object.freeze([
   "not_modified",
   "audit_unavailable",
   "break_glass_locked",
+  "too_large",
+  "unsupported_encoding",
+  "rate_limited",
   "internal",
 ] as const);
 

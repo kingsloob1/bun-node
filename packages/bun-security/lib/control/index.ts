@@ -5,6 +5,7 @@
  * enforcement point. Its browser-safe contract is `./control/contract`.
  */
 export { secureAdmin, isPrivateBind } from "./admin";
+export type { AgentEventsOptions, AgentIdentity } from "./agentEvents";
 export type { AdminListener, AdminMount, SecureAdminOptions } from "./admin";
 export { createSecurityApi } from "./api";
 export { auditHash } from "./audit/log";

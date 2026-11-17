@@ -135,6 +135,15 @@ commit last, and a reader that already read past the later one would skip it.
 taken first in every mutating transaction, so numbers commit in order
 (README §17.23 says why this design). SQLite has one writer already.
 
+**The analytics operations** (PR-CP1, README §17.26) are optional members,
+present exactly when `capabilities.analytics` is set (memory, SQLite,
+Postgres). `appendEvents` takes the batch's counters too, so one call stores
+a batch once; `series` and `topK` read one tier, chosen by the range by
+default; `rollup` moves a watermark per tier pair, and `addCounters` adds a
+row below a watermark to the rolled-up tiers as well. On Postgres the
+analytics writes take an advisory lock of their own (shared for counters,
+exclusive for a rollup), apart from the change feed's.
+
 **Built in stages** (the user's decision, 2026-11-16): PR-D1 builds the
 documents, the policy versions (`appendVersion`, `listVersions`, and
 `getVersion`, added there) and the change feed. Bans, the audit chain, the

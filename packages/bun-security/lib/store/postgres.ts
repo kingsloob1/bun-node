@@ -80,7 +80,7 @@ const CAPABILITIES: SecurityStoreCapabilities = Object.freeze({
   multiHost: true,
   transactions: true,
   changeFeed: "push",
-  analytics: false,
+  analytics: true,
   cidrQuery: false,
   readOnly: false,
 });
@@ -166,6 +166,15 @@ export function postgresInit(
         ADVISORY_LOCK_CLASS,
         prefix,
       ]);
+    },
+    // The analytics writes take a lock of their own (the prefix's key with
+    // `:analytics`), apart from the change feed's: counters added in
+    // parallel share it, a rollup moving its watermark holds it alone.
+    serializeAnalytics: async (tx, exclusive) => {
+      await tx.unsafe(
+        `SELECT ${exclusive ? "pg_advisory_xact_lock" : "pg_advisory_xact_lock_shared"}($1, hashtext($2))`,
+        [ADVISORY_LOCK_CLASS, `${prefix}:analytics`],
+      );
     },
     afterChange: async (tx, seq) => {
       await tx.unsafe("SELECT pg_notify($1, $2)", [channel, String(seq)]);

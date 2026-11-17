@@ -3,6 +3,7 @@
  * a store, the host's `authenticate`, `authorize` or deploy-time `owners`,
  * the step-up hook or approvals, the bundle signer, CSRF.
  */
+import type { AgentEventsOptions } from "./agentEvents";
 import type { BunRequest, Duration, LoggerLike } from "@kingsleyweb/bun-common";
 import { ConfigError, toDurationMs } from "@kingsleyweb/bun-common";
 import type { SecurityStoreDriver } from "../store/types";
@@ -122,6 +123,12 @@ export interface SecurityApiOptions {
     /** The documents' version. Default the protocol version. */
     readonly version?: string;
   };
+  /**
+   * `POST /agent/events`, where agents post their event batches (PR-CP1):
+   * how an agent is authenticated (PR-CP4's signed requests), and its rate
+   * limit. Absent: no such route. Needs a store with analytics.
+   */
+  readonly agentEvents?: AgentEventsOptions;
   /** Where errors are logged. Default a console logger named `bun-security`. */
   readonly logger?: LoggerLike;
   /** The clock, epoch milliseconds. Default `Date.now`. */

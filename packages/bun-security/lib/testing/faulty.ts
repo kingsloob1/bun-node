@@ -28,7 +28,14 @@ export type StoreOperation =
   | "getCounter"
   | "resetCounter"
   | "claimKey"
-  | "changesSince";
+  | "changesSince"
+  | "appendEvents"
+  | "addCounters"
+  | "listEvents"
+  | "series"
+  | "topK"
+  | "rollup"
+  | "deleteBefore";
 
 /** Options for {@link faultyStore}. */
 export interface FaultyStoreOptions {
@@ -85,5 +92,25 @@ export function faultyStore(
     resetCounter: wrap("resetCounter", store.resetCounter),
     claimKey: wrap("claimKey", store.claimKey),
     changesSince: wrap("changesSince", store.changesSince),
+    // The analytics operations, where the store has them.
+    ...(store.appendEvents === undefined
+      ? {}
+      : { appendEvents: wrap("appendEvents", store.appendEvents) }),
+    ...(store.addCounters === undefined
+      ? {}
+      : { addCounters: wrap("addCounters", store.addCounters) }),
+    ...(store.listEvents === undefined
+      ? {}
+      : { listEvents: wrap("listEvents", store.listEvents) }),
+    ...(store.series === undefined
+      ? {}
+      : { series: wrap("series", store.series) }),
+    ...(store.topK === undefined ? {} : { topK: wrap("topK", store.topK) }),
+    ...(store.rollup === undefined
+      ? {}
+      : { rollup: wrap("rollup", store.rollup) }),
+    ...(store.deleteBefore === undefined
+      ? {}
+      : { deleteBefore: wrap("deleteBefore", store.deleteBefore) }),
   });
 }

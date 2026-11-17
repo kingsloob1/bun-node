@@ -23,6 +23,7 @@ import type { SecurityApiOptions } from "./options";
 import type { AuditCheckpoint } from "../store/types";
 import type { AuditVerifyDto } from "./contract/types";
 import { csrf } from "../http/csrf";
+import { agentEventsRoute } from "./agentEvents";
 import { resolveOptions } from "./options";
 import { ControlPlane } from "./plane";
 import { ApiProblem } from "./problems";
@@ -89,6 +90,15 @@ export function createSecurityApi(options: SecurityApiOptions): SecurityApi {
     resolved.csrf === false
       ? undefined
       : csrf({ origins: resolved.csrf.origins, onlyWithCookies: true });
+  if (options.agentEvents !== undefined) {
+    const agents = agentEventsRoute(
+      resolved.store,
+      options.agentEvents,
+      resolved.now,
+    );
+    router.use("/agent/events", agents.guard);
+    router.post("/agent/events", agents.handle);
+  }
   for (const spec of routes(resolved))
     addRoute(router, spec, resolved, plane, guard);
 

@@ -47,7 +47,9 @@ published packages under `packages/`:
   durable configuration (`memoryStore`, `sqliteStore`, `postgresStore`, the
   read-only `policyFile`) and `createSecurity` can follow a policy kept
   there; `./sealing` seals the store's secrets at rest with bun-cache's
-  `./encryption` envelope; its conformance kit is `./testing`. Bun only; bun-common and bun-sql are its
+  `./encryption` envelope; `./analytics` holds the events and counters
+  (the recorder, the event ring, redaction, rollups and retention); its
+  conformance kit is `./testing`. Bun only; bun-common and bun-sql are its
   runtime dependencies.
 - **`@kingsleyweb/bun-sql`** — the SQL layer bun-jobs, bun-cache and
   bun-security share ([storage.md §4](docs/plans/bun-security/storage.md),

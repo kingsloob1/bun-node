@@ -73,6 +73,16 @@
       "types": "./dts/stores/index.d.ts",
       "default": "./lib/stores/index.ts"
     },
+    "./analytics": {
+      "@kingsleyweb/source": "./lib/analytics/index.ts",
+      "types": "./dts/analytics/index.d.ts",
+      "default": "./lib/analytics/index.ts"
+    },
+    "./lib/analytics": {
+      "@kingsleyweb/source": "./lib/analytics/index.ts",
+      "types": "./dts/analytics/index.d.ts",
+      "default": "./lib/analytics/index.ts"
+    },
     "./sealing": {
       "@kingsleyweb/source": "./lib/sealing/index.ts",
       "types": "./dts/sealing/index.d.ts",

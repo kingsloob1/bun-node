@@ -45,7 +45,7 @@ const CAPABILITIES: SecurityStoreCapabilities = Object.freeze({
   multiHost: false,
   transactions: true,
   changeFeed: "poll",
-  analytics: false,
+  analytics: true,
   cidrQuery: false,
   readOnly: false,
 });

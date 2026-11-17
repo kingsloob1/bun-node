@@ -163,8 +163,19 @@ export function policyFile(
     startWatching();
   };
 
+  // The memory store's analytics stay out: a policy file holds a policy.
+  const {
+    appendEvents: _appendEvents,
+    addCounters: _addCounters,
+    listEvents: _listEvents,
+    series: _series,
+    topK: _topK,
+    rollup: _rollup,
+    deleteBefore: _deleteBefore,
+    ...configuration
+  } = inner;
   const store: SecurityStoreDriver = {
-    ...inner,
+    ...configuration,
     name,
     capabilities: CAPABILITIES,
     connect: async () => {

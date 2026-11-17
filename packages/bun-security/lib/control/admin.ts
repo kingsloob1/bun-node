@@ -111,6 +111,10 @@ export async function secureAdmin(
     }
   }
   const adapter = new BunHttpAdapter(0, {
+    // Bodies are read on a route's first need, not before routing: an
+    // agent's batch is authenticated while its body stream is still unread
+    // (bytes the runtime has already buffered from the socket aside).
+    request: { deferBody: true },
     ...(options.logger === undefined ? {} : { logger: options.logger }),
     ...(options.trustProxy === undefined
       ? {}

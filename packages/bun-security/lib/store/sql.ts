@@ -20,6 +20,7 @@ import type {
   SchemaSyncOptions,
   SqlDialect,
 } from "@kingsleyweb/bun-sql";
+import type { ResolvedCounter, ResolvedCounterQuery } from "./analytics";
 import type {
   AppendAuditResult,
   AppendResult,
@@ -29,18 +30,28 @@ import type {
   BundleInput,
   Change,
   ChangeKind,
+  CounterRow,
   DocKind,
+  EventFilter,
+  EventListQuery,
   ListQuery,
   Page,
   PolicyVersionInput,
   PolicyVersionRecord,
   PutBundleResult,
   PutResult,
+  RetainedTable,
+  SecurityEvent,
   SecurityStoreCapabilities,
   SecurityStoreDriver,
+  SeriesPoint,
+  SeriesQuery,
   StoreCodec,
   StoredBundle,
   StoredDoc,
+  Tier,
+  TopKQuery,
+  TopKRow,
 } from "./types";
 import { ConfigError } from "@kingsleyweb/bun-common";
 import {
@@ -50,6 +61,22 @@ import {
   resolveSyncOptions,
   syncSqlSchema,
 } from "@kingsleyweb/bun-sql";
+import {
+  carryUp,
+  checkDeleteBefore,
+  checkRollup,
+  checkTopKLimit,
+  dimsOf,
+  eventCursor,
+  eventPosition,
+  resolveCounterQuery,
+  resolveCounters,
+  resolveEventQuery,
+  resolveEvents,
+  retentionFloor,
+  ROLLUPS,
+  watermarkName,
+} from "./analytics";
 import {
   auditCursor,
   auditPosition,
@@ -75,6 +102,7 @@ import {
   versionCursor,
   versionPosition,
 } from "./shared";
+import { MAX_SERIES_POINTS, TIER_MS } from "./types";
 
 /** What a table prefix may be: letters, digits and `_`, starting with a letter or `_`. */
 const PREFIX = /^[a-z_]\w{0,39}$/i;
@@ -100,6 +128,14 @@ export function storeTables(prefix: string): {
   checkpoints: string;
   /** Short-lived counters and claims shared by control-plane instances. */
   counters: string;
+  /** The analytics events. */
+  events: string;
+  /** The ingested event batches' ids, for idempotency. */
+  eventBatches: string;
+  /** The analytics counters, every tier. */
+  analyticsCounters: string;
+  /** The analytics state: each rollup's watermark. */
+  analyticsState: string;
 } {
   return {
     docs: `${prefix}docs`,
@@ -110,6 +146,10 @@ export function storeTables(prefix: string): {
     auditHead: `${prefix}audit_head`,
     checkpoints: `${prefix}audit_checkpoints`,
     counters: `${prefix}counters`,
+    events: `${prefix}events`,
+    eventBatches: `${prefix}event_batches`,
+    analyticsCounters: `${prefix}analytics_counters`,
+    analyticsState: `${prefix}analytics_state`,
   };
 }
 
@@ -127,9 +167,19 @@ export function storeSchema(
     auditHead,
     checkpoints,
     counters,
+    events,
+    eventBatches,
+    analyticsCounters,
+    analyticsState,
   } = storeTables(prefix);
   const { idType, nameType, jsonType, timeType, serialType, longTextType } =
     dialect;
+  // An id column in an index, ordered by code point where the engine's
+  // default collation is a locale's (Postgres).
+  const collatedId =
+    dialect.codePointCollation === null
+      ? "id"
+      : { name: "id", collation: dialect.codePointCollation };
   return {
     tables: [
       {
@@ -210,6 +260,54 @@ export function storeSchema(
         ],
       },
       {
+        name: events,
+        primaryKey: ["id"],
+        columns: [
+          { name: "id", type: idType, suffix: "NOT NULL" },
+          { name: "service", type: idType, suffix: "NOT NULL" },
+          { name: "at", type: timeType, suffix: "NOT NULL" },
+          { name: "action", type: idType, suffix: "NOT NULL" },
+          { name: "rule", type: idType },
+          { name: "route", type: idType },
+          { name: "ip", type: idType },
+          { name: "user_id", type: idType },
+          { name: "api_key", type: idType },
+          { name: "username", type: idType },
+          { name: "country", type: idType },
+          { name: "asn", type: timeType },
+          { name: "dry_run", type: "INTEGER", suffix: "NOT NULL DEFAULT 0" },
+          { name: "event", type: jsonType, suffix: "NOT NULL" },
+        ],
+      },
+      {
+        name: eventBatches,
+        primaryKey: ["batch_id"],
+        columns: [
+          { name: "batch_id", type: idType, suffix: "NOT NULL" },
+          { name: "received_at", type: timeType, suffix: "NOT NULL" },
+        ],
+      },
+      {
+        name: analyticsCounters,
+        primaryKey: ["tier", "service", "metric", "bucket", "dims"],
+        columns: [
+          { name: "tier", type: idType, suffix: "NOT NULL" },
+          { name: "service", type: idType, suffix: "NOT NULL" },
+          { name: "metric", type: idType, suffix: "NOT NULL" },
+          { name: "bucket", type: timeType, suffix: "NOT NULL" },
+          { name: "dims", type: idType, suffix: "NOT NULL" },
+          { name: "value", type: timeType, suffix: "NOT NULL" },
+        ],
+      },
+      {
+        name: analyticsState,
+        primaryKey: ["name"],
+        columns: [
+          { name: "name", type: idType, suffix: "NOT NULL" },
+          { name: "value", type: timeType, suffix: "NOT NULL" },
+        ],
+      },
+      {
         name: changes,
         primaryKey: [],
         columns: [
@@ -263,6 +361,36 @@ export function storeSchema(
         table: versions,
         columns: ["policy_id", "id"],
       },
+      // Events read by service and time (the keyset order), by time alone
+      // (every service, and retention), and by address (README §8.2).
+      {
+        name: `ix_${prefix}events_service`,
+        table: events,
+        columns: ["service", "at", collatedId],
+      },
+      {
+        name: `ix_${prefix}events_at`,
+        table: events,
+        columns: ["at", collatedId],
+      },
+      { name: `ix_${prefix}events_ip`, table: events, columns: ["ip", "at"] },
+      {
+        name: `ix_${prefix}event_batches_at`,
+        table: eventBatches,
+        columns: ["received_at"],
+      },
+      // A tier's buckets by time, for rollups and retention.
+      {
+        name: `ix_${prefix}analytics_counters_bucket`,
+        table: analyticsCounters,
+        columns: ["tier", "bucket"],
+      },
+      // Every service's rows of one metric (a query without a service).
+      {
+        name: `ix_${prefix}analytics_counters_metric`,
+        table: analyticsCounters,
+        columns: ["tier", "metric", "bucket"],
+      },
     ],
   };
 }
@@ -297,6 +425,20 @@ export interface SqlSecurityStoreInit {
    * where Postgres notifies the feed's listeners (delivered on commit).
    */
   readonly afterChange?: (tx: SQL, seq: bigint) => Promise<void>;
+  /**
+   * Runs first in every analytics write: shared for adding counters,
+   * exclusive for a rollup, so a counter added while a rollup moves its
+   * watermark is either rolled up or carried up, never lost (Postgres: an
+   * advisory lock of its own, apart from the change feed's). Absent where
+   * the engine has one writer (SQLite).
+   */
+  readonly serializeAnalytics?: (tx: SQL, exclusive: boolean) => Promise<void>;
+  /**
+   * A test's seam: runs in a rollup's transaction after its rows are
+   * written and before its watermark moves, where a test pauses it to show
+   * what the analytics lock prevents. Absent in every real store.
+   */
+  readonly rollupWritten?: (tx: SQL) => Promise<void>;
   /** The pushed change feed, where the engine has one. */
   readonly subscribe?: SecurityStoreDriver["subscribe"];
   /** Runs once the store is closed: where a listener's client is closed. */
@@ -378,6 +520,35 @@ interface ChangeRow {
   deleted: number | bigint | boolean;
 }
 
+/** The events table's columns, in the order an insert binds them. */
+const EVENT_COLUMNS = [
+  "id",
+  "service",
+  "at",
+  "action",
+  "rule",
+  "route",
+  "ip",
+  "user_id",
+  "api_key",
+  "username",
+  "country",
+  "asn",
+  "dry_run",
+  "event",
+] as const;
+
+/** Events per insert statement (14 parameters each, under every engine's limit). */
+const EVENT_CHUNK = 200;
+
+/** Counter rows per upsert statement (6 parameters each). */
+const COUNTER_CHUNK = 500;
+
+/** `text` with `LIKE`'s wildcards and its escape character escaped by `\`. */
+function escapeLike(text: string): string {
+  return text.replace(/[\\%_]/g, (char) => `\\${char}`);
+}
+
 /** A statement's parameters, numbered in the order they are bound. */
 class Params {
   /** The values, in order. */
@@ -422,6 +593,81 @@ export function sqlSecurityStore(
     open: (stored) => stored,
   };
   const definition = storeSchema(init.prefix, dialect);
+  // The canonical dimensions ordered by code point, as the memory store
+  // orders them.
+  const dimsOrder =
+    dialect.codePointCollation === null
+      ? "dims"
+      : `dims COLLATE ${dialect.codePointCollation}`;
+  // A row's physical id, for a bounded delete.
+  const rowId = dialect.name === "postgres" ? "ctid" : "rowid";
+
+  /** A rollup's watermark, read with `sql`. */
+  const readWatermark = async (
+    sql: SQL,
+    from: Tier,
+    to: Tier,
+  ): Promise<number> => {
+    const p = new Params(dialect);
+    const rows = (await sql.unsafe(
+      `SELECT value FROM ${tables.analyticsState} WHERE name = ${p.bind(watermarkName(from, to))}`,
+      p.values,
+    )) as { value: number | bigint }[];
+    return rows[0] === undefined ? 0 : Number(rows[0].value);
+  };
+
+  /** Adds checked counter rows with `tx`, carried up past the watermarks, under the shared analytics lock. */
+  const addRows = async (
+    tx: SQL,
+    rows: readonly ResolvedCounter[],
+  ): Promise<void> => {
+    await init.serializeAnalytics?.(tx, false);
+    const marks = new Map<string, number>();
+    for (const [from, to] of ROLLUPS) {
+      marks.set(watermarkName(from, to), await readWatermark(tx, from, to));
+    }
+    const carried = carryUp(
+      rows,
+      (from, to) => marks.get(watermarkName(from, to)) ?? 0,
+    );
+    for (let at = 0; at < carried.length; at += COUNTER_CHUNK) {
+      const chunk = carried.slice(at, at + COUNTER_CHUNK);
+      const p = new Params(dialect);
+      const values = chunk.map(
+        (row) =>
+          `(${p.bind(row.tier)}, ${p.bind(row.service)}, ${p.bind(row.metric)}, ${p.bind(row.bucket)}, ${p.bind(row.dims)}, ${p.bind(row.value)})`,
+      );
+      await tx.unsafe(
+        `INSERT INTO ${tables.analyticsCounters} (tier, service, metric, bucket, dims, value)
+         VALUES ${values.join(", ")}
+         ON CONFLICT (tier, service, metric, bucket, dims)
+         DO UPDATE SET value = ${tables.analyticsCounters}.value + excluded.value`,
+        p.values,
+      );
+    }
+  };
+
+  /** A counter query's `WHERE`, and its values. */
+  const counterWhere = (
+    query: ResolvedCounterQuery,
+  ): { where: string; values: unknown[] } => {
+    const p = new Params(dialect);
+    const where = [
+      `tier = ${p.bind(query.tier)}`,
+      `metric = ${p.bind(query.metric)}`,
+      `bucket >= ${p.bind(query.from)}`,
+      `bucket < ${p.bind(query.to)}`,
+    ];
+    if (query.service !== undefined) {
+      where.push(`service = ${p.bind(query.service)}`);
+    }
+    for (const needle of query.needles) {
+      where.push(
+        `('&' || dims || '&') LIKE ${p.bind(`%${escapeLike(needle)}%`)} ESCAPE '\\'`,
+      );
+    }
+    return { where: where.join(" AND "), values: p.values };
+  };
   let client: SQL | undefined;
   let opening: Promise<SQL> | undefined;
   let closed = false;
@@ -911,6 +1157,241 @@ export function sqlSecurityStore(
         }),
         updatedAt: Number(row.updated_at),
       } satisfies StoredBundle);
+    },
+    appendEvents: async (
+      batchId,
+      batch: readonly SecurityEvent[],
+      rows?: readonly CounterRow[],
+    ) => {
+      const checked = resolveEvents(batchId, batch);
+      const resolvedRows = rows === undefined ? [] : resolveCounters(rows);
+      const sql = await connection();
+      return await dialect.transaction(sql, async (tx) => {
+        const p = new Params(dialect);
+        const taken = await tx.unsafe(
+          dialect.insertIgnore(
+            tables.eventBatches,
+            ["batch_id", "received_at"],
+            [p.bind(batchId), p.bind(now())],
+          ),
+          p.values,
+        );
+        if ((await dialect.affectedRows(taken, tx)) !== 1) {
+          return Object.freeze({ duplicate: true });
+        }
+        for (let at = 0; at < checked.length; at += EVENT_CHUNK) {
+          const chunk = checked.slice(at, at + EVENT_CHUNK);
+          const q = new Params(dialect);
+          const values = chunk.map((event) => {
+            const subjects = event.subjects ?? {};
+            return `(${[
+              event.id,
+              event.service,
+              event.at,
+              event.action,
+              event.rule ?? null,
+              event.route ?? null,
+              subjects.ip ?? null,
+              subjects.user ?? null,
+              subjects.apiKey ?? null,
+              subjects.username ?? null,
+              event.country ?? null,
+              event.asn ?? null,
+              event.dryRun === true ? 1 : 0,
+              dialect.jsonIn(event),
+            ]
+              .map((value) => q.bind(value))
+              .join(", ")})`;
+          });
+          await tx.unsafe(
+            `INSERT INTO ${tables.events} (${EVENT_COLUMNS.join(", ")})
+             VALUES ${values.join(", ")}
+             ON CONFLICT DO NOTHING`,
+            q.values,
+          );
+        }
+        if (resolvedRows.length > 0) await addRows(tx, resolvedRows);
+        return Object.freeze({ duplicate: false });
+      });
+    },
+    addCounters: async (rows: readonly CounterRow[]) => {
+      const resolved = resolveCounters(rows);
+      if (resolved.length === 0) return;
+      const sql = await connection();
+      await dialect.transaction(sql, async (tx) => {
+        await addRows(tx, resolved);
+      });
+    },
+    listEvents: async (query: EventListQuery): Promise<Page<SecurityEvent>> => {
+      const resolved = resolveEventQuery(query);
+      const after = eventPosition(resolved);
+      const sql = await connection();
+      const p = new Params(dialect);
+      const where: string[] = [];
+      const filter = resolved.filter;
+      const equal: [keyof EventFilter, string][] = [
+        ["service", "service"],
+        ["action", "action"],
+        ["rule", "rule"],
+        ["route", "route"],
+        ["ip", "ip"],
+        ["user", "user_id"],
+        ["apiKey", "api_key"],
+        ["username", "username"],
+        ["country", "country"],
+        ["asn", "asn"],
+      ];
+      for (const [field, column] of equal) {
+        if (filter[field] !== undefined) {
+          where.push(`${column} = ${p.bind(filter[field])}`);
+        }
+      }
+      if (filter.dryRun !== undefined) {
+        where.push(`dry_run = ${p.bind(filter.dryRun ? 1 : 0)}`);
+      }
+      if (filter.from !== undefined) where.push(`at >= ${p.bind(filter.from)}`);
+      if (filter.to !== undefined) where.push(`at < ${p.bind(filter.to)}`);
+      if (after !== undefined) {
+        where.push(
+          keysetAfter(dialect, p.bind, {
+            columns: ["at"],
+            values: [after.at],
+            idColumn: idOrder,
+            id: after.id,
+            direction: resolved.direction,
+          }),
+        );
+      }
+      const dir = resolved.direction === "asc" ? "ASC" : "DESC";
+      const rows = (await sql.unsafe(
+        `SELECT event FROM ${tables.events}
+          ${where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`}
+          ORDER BY at ${dir}, ${idOrder} ${dir}
+          LIMIT ${resolved.limit + 1}`,
+        p.values,
+      )) as { event: unknown }[];
+      const items = rows.slice(0, resolved.limit).map((row) => {
+        const event: unknown = dialect.jsonOut(row.event, null);
+        return Object.freeze(event as SecurityEvent);
+      });
+      const last = items.at(-1);
+      return Object.freeze({
+        items: Object.freeze(items),
+        ...(rows.length > resolved.limit && last !== undefined
+          ? { next: eventCursor(resolved, last) }
+          : {}),
+      });
+    },
+    series: async (query: SeriesQuery): Promise<readonly SeriesPoint[]> => {
+      const { where, values } = counterWhere(resolveCounterQuery(query));
+      const sql = await connection();
+      const rows = (await sql.unsafe(
+        `SELECT bucket, dims, SUM(value) AS value FROM ${tables.analyticsCounters}
+          WHERE ${where}
+          GROUP BY bucket, dims
+          ORDER BY bucket ASC, ${dimsOrder} ASC
+          LIMIT ${MAX_SERIES_POINTS + 1}`,
+        values,
+      )) as {
+        bucket: number | bigint;
+        dims: string;
+        value: number | bigint | string;
+      }[];
+      if (rows.length > MAX_SERIES_POINTS) {
+        throw new ConfigError(
+          `security store: the series has more than ${MAX_SERIES_POINTS} points; narrow the range or the dims`,
+        );
+      }
+      return Object.freeze(
+        rows.map((row) =>
+          Object.freeze({
+            at: Number(row.bucket),
+            dims: dimsOf(row.dims),
+            value: Number(row.value),
+          }),
+        ),
+      );
+    },
+    topK: async (query: TopKQuery): Promise<readonly TopKRow[]> => {
+      const limit = checkTopKLimit(query);
+      const { where, values } = counterWhere(resolveCounterQuery(query));
+      const sql = await connection();
+      const rows = (await sql.unsafe(
+        `SELECT dims, SUM(value) AS value FROM ${tables.analyticsCounters}
+          WHERE ${where}
+          GROUP BY dims
+          ORDER BY SUM(value) DESC, ${dimsOrder} ASC
+          LIMIT ${limit}`,
+        values,
+      )) as { dims: string; value: number | bigint | string }[];
+      return Object.freeze(
+        rows.map((row) =>
+          Object.freeze({ dims: dimsOf(row.dims), value: Number(row.value) }),
+        ),
+      );
+    },
+    rollup: async (from: Tier, to: Tier, until: number) => {
+      const end = checkRollup(from, to, until);
+      const sql = await connection();
+      return await dialect.transaction(sql, async (tx) => {
+        await init.serializeAnalytics?.(tx, true);
+        const start = await readWatermark(tx, from, to);
+        if (end <= start) return 0;
+        const width = TIER_MS[to];
+        const p = new Params(dialect);
+        const result = await tx.unsafe(
+          `INSERT INTO ${tables.analyticsCounters} (tier, service, metric, bucket, dims, value)
+           SELECT ${p.bind(to)}, service, metric, (bucket / ${width}) * ${width}, dims, SUM(value)
+             FROM ${tables.analyticsCounters}
+            WHERE tier = ${p.bind(from)} AND bucket >= ${p.bind(start)} AND bucket < ${p.bind(end)}
+            GROUP BY service, metric, (bucket / ${width}) * ${width}, dims
+           ON CONFLICT (tier, service, metric, bucket, dims)
+           DO UPDATE SET value = ${tables.analyticsCounters}.value + excluded.value`,
+          p.values,
+        );
+        const written = await dialect.affectedRows(result, tx);
+        await init.rollupWritten?.(tx);
+        const q = new Params(dialect);
+        await tx.unsafe(
+          `INSERT INTO ${tables.analyticsState} (name, value)
+           VALUES (${q.bind(watermarkName(from, to))}, ${q.bind(end)})
+           ON CONFLICT (name) DO UPDATE SET value = excluded.value`,
+          q.values,
+        );
+        return written;
+      });
+    },
+    deleteBefore: async (
+      table: RetainedTable,
+      before: number,
+      limit: number,
+    ) => {
+      checkDeleteBefore(table, before, limit);
+      const sql = await connection();
+      const p = new Params(dialect);
+      let target: string;
+      let condition: string;
+      if (table === "events") {
+        target = tables.events;
+        condition = `at < ${p.bind(before)}`;
+      } else if (table === "batches") {
+        target = tables.eventBatches;
+        condition = `received_at < ${p.bind(before)}`;
+      } else {
+        const floor = retentionFloor(table);
+        const bound =
+          floor === undefined
+            ? before
+            : Math.min(before, await readWatermark(sql, floor[0], floor[1]));
+        target = tables.analyticsCounters;
+        condition = `tier = ${p.bind(table)} AND bucket < ${p.bind(bound)}`;
+      }
+      const result = await sql.unsafe(
+        `DELETE FROM ${target} WHERE ${rowId} IN
+           (SELECT ${rowId} FROM ${target} WHERE ${condition} LIMIT ${limit})`,
+        p.values,
+      );
+      return await dialect.affectedRows(result, sql);
     },
     ...(init.subscribe === undefined ? {} : { subscribe: init.subscribe }),
     appendAudit: async (
