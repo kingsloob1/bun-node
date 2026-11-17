@@ -34,6 +34,7 @@ import type {
 import process from "node:process";
 import { describe, expect, test } from "bun:test";
 import { AUDIT_GENESIS_HASH } from "../store/shared";
+import { analyticsConformance } from "./analyticsConformance";
 import { raceStore } from "./race";
 import type { StoreCrossProcessResult } from "./race";
 
@@ -191,6 +192,17 @@ export async function runSecurityStoreConformance(
   const { capabilities } = probe.store;
   const hasSync = probe.store.syncSchema !== undefined;
   const hasSubscribe = probe.store.subscribe !== undefined;
+  const analyticsOperations = (
+    [
+      "appendEvents",
+      "addCounters",
+      "listEvents",
+      "series",
+      "topK",
+      "rollup",
+      "deleteBefore",
+    ] as const
+  ).filter((operation) => typeof probe.store[operation] === "function");
   await probe.store.close();
   await probe.cleanup?.();
   const raceSize = options.raceSize ?? 20;
@@ -212,6 +224,8 @@ export async function runSecurityStoreConformance(
       }
       expect(["push", "poll"]).toContain(capabilities.changeFeed);
       if (capabilities.changeFeed === "push") expect(hasSubscribe).toBe(true);
+      // The analytics operations are there exactly when it says so: all or none.
+      expect(analyticsOperations).toHaveLength(capabilities.analytics ? 7 : 0);
     });
 
     test("connect and close are idempotent", async () => {
@@ -1085,6 +1099,12 @@ export async function runSecurityStoreConformance(
         });
       },
     );
+
+    if (capabilities.analytics) {
+      analyticsConformance(async (body) => {
+        await withStore(factory, body);
+      });
+    }
 
     if (capabilities.multiProcess) {
       test(

@@ -29,7 +29,15 @@ export { postgresStore } from "./postgres";
 export type { PostgresStoreOptions } from "./postgres";
 export { sqliteStore } from "./sqlite";
 export type { SqliteStoreOptions } from "./sqlite";
-export { DOC_KINDS, MAX_AUDIT_SCOPES, MAX_PAGE_LIMIT } from "./types";
+export {
+  DOC_KINDS,
+  MAX_AUDIT_SCOPES,
+  MAX_BATCH_COUNTERS,
+  MAX_BATCH_EVENTS,
+  MAX_PAGE_LIMIT,
+  MAX_SERIES_POINTS,
+  TIER_MS,
+} from "./types";
 export { AUDIT_GENESIS_HASH } from "./shared";
 export type {
   AppendAuditResult,
@@ -43,7 +51,11 @@ export type {
   BundleInput,
   Change,
   ChangeKind,
+  CounterQuery,
+  CounterRow,
   DocKind,
+  EventFilter,
+  EventListQuery,
   ListQuery,
   Page,
   PolicyHead,
@@ -51,10 +63,18 @@ export type {
   PolicyVersionRecord,
   PutBundleResult,
   PutResult,
+  RetainedTable,
+  SecurityEvent,
+  SecurityEventSubjects,
   SecurityStoreCapabilities,
   SecurityStoreDriver,
+  SeriesPoint,
+  SeriesQuery,
   StoreCodec,
   StoreCodecContext,
   StoredBundle,
   StoredDoc,
+  Tier,
+  TopKQuery,
+  TopKRow,
 } from "./types";

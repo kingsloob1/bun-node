@@ -61,7 +61,7 @@ export interface SecurityStoreCapabilities {
   readonly transactions: boolean;
   /** How a follower learns of a change: `push` ({@link SecurityStoreDriver.subscribe}) or `poll` ({@link SecurityStoreDriver.changesSince}). */
   readonly changeFeed: "push" | "poll";
-  /** Events, counters, rollups and range queries (the analytics operations, which arrive with the CP). */
+  /** Events, counters, rollups and range queries: the analytics operations of {@link SecurityStoreDriver} are present. */
   readonly analytics: boolean;
   /** An index answering "which entries contain this address". */
   readonly cidrQuery: boolean;
@@ -367,6 +367,178 @@ export interface StoreCodec {
 /** The largest {@link ListQuery.limit}. */
 export const MAX_PAGE_LIMIT = 1_000;
 
+/** A tier of counters: a bucket's width (README §8.3). */
+export type Tier = "minute" | "hour" | "day";
+
+/** Each {@link Tier}'s bucket width, in milliseconds; buckets are aligned to the epoch (UTC). */
+export const TIER_MS: Readonly<Record<Tier, number>> = Object.freeze({
+  minute: 60_000,
+  hour: 3_600_000,
+  day: 86_400_000,
+});
+
+/** What analytics retention deletes from (README §8.4): the events, each counter tier, and the ingested batch ids. */
+export type RetainedTable = "events" | "minute" | "hour" | "day" | "batches";
+
+/** The keys an event is filed under (README §8.1): the subjects a refusal counts against. */
+export interface SecurityEventSubjects {
+  /** The address key: an IPv4 address, or an IPv6 `/64`. */
+  readonly ip?: string;
+  /** The user id the app's `identify()` answered. */
+  readonly user?: string;
+  /** The API key's id (never the key). */
+  readonly apiKey?: string;
+  /** The attempted login identifier, as its HMAC. */
+  readonly username?: string;
+}
+
+/**
+ * One stored decision (README §8.1): what an enforcement point decided for
+ * a request it sampled. The store indexes the named fields; `sample` is
+ * opaque to it (the redacted request, the redaction module's to fill).
+ */
+export interface SecurityEvent {
+  /** Its id: 1 to 64 characters, unique in the store (an enforcement point draws it at random). */
+  readonly id: string;
+  /** When the request was decided, epoch milliseconds. */
+  readonly at: number;
+  /** The service that decided it. */
+  readonly service: string;
+  /** The action taken (`block`, `challenge`, …; `log` for a dry-run-only hit, `allow` for a sampled allow). */
+  readonly action: string;
+  /** The rule that decided the action, when one did. */
+  readonly rule?: string;
+  /** Every rule hit, in the order the layers ran. */
+  readonly rules?: readonly string[];
+  /** Whether the deciding hit was in dry run (it would have been `action`). */
+  readonly dryRun?: boolean;
+  /** The route's key (its pattern, `POST /login`), when the route is known. */
+  readonly route?: string;
+  /** The subjects the request was counted against. */
+  readonly subjects?: SecurityEventSubjects;
+  /** The client's country, ISO 3166-1 alpha-2, when known. */
+  readonly country?: string;
+  /** The client's autonomous system number, when known. */
+  readonly asn?: number;
+  /** How long the decision took, milliseconds. */
+  readonly latencyMs?: number;
+  /** The status the request was answered with, when known. */
+  readonly status?: number;
+  /** The redacted request sample and anything else recorded: a JSON value the store keeps as given. */
+  readonly sample?: unknown;
+}
+
+/** Which events {@link SecurityStoreDriver.listEvents} answers: every field given must match. */
+export interface EventFilter {
+  /** One service's. */
+  readonly service?: string;
+  /** From this time, epoch milliseconds, inclusive. */
+  readonly from?: number;
+  /** Before this time, epoch milliseconds, exclusive. */
+  readonly to?: number;
+  /** One action's. */
+  readonly action?: string;
+  /** One deciding rule's. */
+  readonly rule?: string;
+  /** One route's. */
+  readonly route?: string;
+  /** One address key's. */
+  readonly ip?: string;
+  /** One user's. */
+  readonly user?: string;
+  /** One API key id's. */
+  readonly apiKey?: string;
+  /** One attempted login identifier's (its HMAC). */
+  readonly username?: string;
+  /** One country's. */
+  readonly country?: string;
+  /** One autonomous system's. */
+  readonly asn?: number;
+  /** Dry-run hits only (`true`), or enforced ones only (`false`). */
+  readonly dryRun?: boolean;
+}
+
+/** A page of events: newest first by default, keyset by time and id. */
+export interface EventListQuery extends EventFilter {
+  /** The most items a page holds, 1 to {@link MAX_PAGE_LIMIT}. */
+  readonly limit: number;
+  /** Where the previous page stopped: its `next`, bound to the same filter and direction. */
+  readonly cursor?: string;
+  /** `desc` (default: the newest first) or `asc`. */
+  readonly direction?: "asc" | "desc";
+}
+
+/**
+ * One counter increment (README §8.1), added to the stored row of its
+ * service, tier, bucket, metric and dimensions (an upsert that adds).
+ */
+export interface CounterRow {
+  /** The service counted. */
+  readonly service: string;
+  /** The tier written: `minute` (default) for an enforcement point's minutes, `day` for exact daily counts. */
+  readonly tier?: Tier;
+  /** A time in the bucket, epoch milliseconds; aligned down to the tier's bucket. */
+  readonly at: number;
+  /** What is counted (`requests`, `rules`, `top.refused`): 1 to 100 of `a-z 0-9 . _ -`. */
+  readonly metric: string;
+  /** What it is counted by (`{ action: "block" }`): at most 8, names of `a-z A-Z 0-9 _`, values at most 200 characters. */
+  readonly dims?: Readonly<Record<string, string>>;
+  /** How much to add: a non-negative whole number. */
+  readonly value: number;
+}
+
+/** A range of counters, for {@link SecurityStoreDriver.series} and {@link SecurityStoreDriver.topK}. */
+export interface CounterQuery {
+  /** One service's; every service's summed when absent. */
+  readonly service?: string;
+  /** The metric. */
+  readonly metric: string;
+  /** From this time, epoch milliseconds (aligned down to the tier's bucket). */
+  readonly from: number;
+  /** Before this time, epoch milliseconds, exclusive. */
+  readonly to: number;
+  /** The tier read. Default by the range: a minute up to 6 h, an hour up to 14 d, a day beyond (README §8.3). */
+  readonly tier?: Tier;
+  /** Only rows whose dimensions include these (a partial match). */
+  readonly dims?: Readonly<Record<string, string>>;
+}
+
+/** {@link SecurityStoreDriver.series}' query: a counter range, one point per bucket and dimension set. */
+export type SeriesQuery = CounterQuery;
+
+/** One point of a series. */
+export interface SeriesPoint {
+  /** The bucket's start, epoch milliseconds. */
+  readonly at: number;
+  /** The row's dimensions. */
+  readonly dims: Readonly<Record<string, string>>;
+  /** The sum over the services read. */
+  readonly value: number;
+}
+
+/** {@link SecurityStoreDriver.topK}'s query: a counter range summed per dimension set, the largest first. */
+export interface TopKQuery extends CounterQuery {
+  /** How many, 1 to {@link MAX_PAGE_LIMIT}. */
+  readonly limit: number;
+}
+
+/** One row of a top-K. */
+export interface TopKRow {
+  /** The dimensions (`{ kind: "ip", subject: "203.0.113.7" }`). */
+  readonly dims: Readonly<Record<string, string>>;
+  /** Their sum over the range. */
+  readonly value: number;
+}
+
+/** The most points {@link SecurityStoreDriver.series} answers; a wider query is refused (a `ConfigError`). */
+export const MAX_SERIES_POINTS = 10_000;
+
+/** The most events one {@link SecurityStoreDriver.appendEvents} takes. */
+export const MAX_BATCH_EVENTS = 1_000;
+
+/** The most counter rows one write takes. */
+export const MAX_BATCH_COUNTERS = 20_000;
+
 /**
  * A security store (storage.md §3.1). Every method rejects with the
  * backend's error when it is unreachable; a refused write is an answer
@@ -496,6 +668,46 @@ export interface SecurityStoreDriver {
     seq: bigint,
     limit: number,
   ) => Promise<{ readonly changes: readonly Change[]; readonly head: bigint }>;
+  /**
+   * Stores a batch of events, once: a `batchId` already stored answers
+   * `{ duplicate: true }` and writes nothing, so a resent batch is never
+   * counted twice. `counters`, when given, are added in the same
+   * transaction (an enforcement point's batch carries both). An event id
+   * already stored is skipped. Present when `capabilities.analytics`.
+   */
+  appendEvents?: (
+    batchId: string,
+    events: readonly SecurityEvent[],
+    counters?: readonly CounterRow[],
+  ) => Promise<{ readonly duplicate: boolean }>;
+  /**
+   * Adds counter rows (an upsert that adds, by service, tier, bucket,
+   * metric and dimensions). A row for a bucket already rolled up is added
+   * to the rolled-up tiers too, so a late batch is never lost from them.
+   */
+  addCounters?: (rows: readonly CounterRow[]) => Promise<void>;
+  /** A page of events matching the filter, by time and id (newest first by default). */
+  listEvents?: (query: EventListQuery) => Promise<Page<SecurityEvent>>;
+  /** A metric's points over a range, one per bucket and dimension set, oldest first. */
+  series?: (query: SeriesQuery) => Promise<readonly SeriesPoint[]>;
+  /** A metric summed per dimension set over a range, the largest first. */
+  topK?: (query: TopKQuery) => Promise<readonly TopKRow[]>;
+  /**
+   * Rolls `from` rows up into `to` buckets (`minute` to `hour`, `hour` to
+   * `day`) for every `to` bucket that ends by `until`, each bucket once
+   * (a watermark). Answers how many `to` rows it wrote.
+   */
+  rollup?: (from: Tier, to: Tier, until: number) => Promise<number>;
+  /**
+   * Deletes at most `limit` rows of `table` older than `before`; answers
+   * how many. Never a counter row not yet rolled up into the next tier.
+   */
+  deleteBefore?: (
+    table: RetainedTable,
+    before: number,
+    limit: number,
+  ) => Promise<number>;
+
   /**
    * Calls `listener` with the feed's head after changes land, where the
    * driver can push (`capabilities.changeFeed: "push"`); `onGap` when it

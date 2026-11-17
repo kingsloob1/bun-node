@@ -144,6 +144,16 @@ describe("package.json exports", () => {
     }
   });
 
+  it("checks the ./analytics subpath, events and analytics (PR-CP1)", () => {
+    for (const key of ["./analytics", "./lib/analytics"]) {
+      expect(manifest.exports[key]).toEqual({
+        "@kingsleyweb/source": "./lib/analytics/index.ts",
+        types: "./dts/analytics/index.d.ts",
+        default: "./lib/analytics/index.ts",
+      });
+    }
+  });
+
   it("checks the ./sealing subpath, the store's field sealing over bun-cache (PR-D3)", () => {
     for (const key of ["./sealing", "./lib/sealing"]) {
       expect(manifest.exports[key]).toEqual({

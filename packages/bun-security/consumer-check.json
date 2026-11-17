@@ -343,7 +343,9 @@
         "AuditSigning",
         "BreakGlassOptions",
         "CheckpointSink",
-        "WebhookCheckpointSinkOptions"
+        "WebhookCheckpointSinkOptions",
+        "AgentEventsOptions",
+        "AgentIdentity"
       ],
       "snippet": "import { memoryStore } from \"@kingsleyweb/bun-security/store\";\nconst api = m.createSecurityApi({ store: memoryStore(), authenticate: () => ({ id: \"op\" }), owners: [\"op\"], approvals: \"two-person\", signing: { keyId: \"k\", sign: (bytes: Uint8Array) => bytes }, audit: { signing: { keyId: \"ak\", sign: (bytes: Uint8Array) => bytes, publicKey: \"pem\" }, sinks: [m.fileCheckpointSink(\"./checkpoints.jsonl\")] } });\nexport const _verified: Promise<boolean> = api.verifyAudit().then((result) => result.ok);\nexport const _purged: Promise<number> = api.purgeAudit({ before: 0 });\nconst sink: t.CheckpointSink = m.callbackCheckpointSink({ write: () => {} });\nexport const _sinkName: string = sink.name;\nexport type _apiNotAny = Expect<IsAny<typeof api>>;\nexport const _base: string = api.basePath;\nconst merged = m.mergePolicies([{ scope: \"global\", policy: {} }]);\nexport const _locked: readonly t.LockedOverride[] = merged.locked;\nexport const _admin: Promise<t.AdminListener> = m.secureAdmin({ port: 0, api });"
     },
@@ -471,6 +473,57 @@
       "types": ["CacheStoreOptions"]
     },
     {
+      "$comment": "Events and analytics (README §8, PR-CP1): the enforcement point's recorder, event ring, redaction and batcher, and the control plane's ingestion and maintenance.",
+      "spelling": "@kingsleyweb/bun-security/analytics",
+      "values": [
+        "createAnalyticsRecorder",
+        "createEventRing",
+        "createRedactor",
+        "analyticsHook",
+        "analyticsMaintenance",
+        "decodeEventBatch",
+        "ingestEventBatch",
+        "looksLikeCredential",
+        "EventBatchError",
+        "SpaceSaving",
+        "ANALYTICS_METRICS",
+        "DEFAULT_EVENT_CAPS",
+        "DEFAULT_RETENTION",
+        "MAX_RETENTION",
+        "EVENT_BATCH_FORMAT",
+        "EVENT_BATCH_LIMITS",
+        "REDACTED",
+        "REDACTION_LIMITS",
+        "SENSITIVE_KEY_WORDS",
+        "SENSITIVE_PROFILES"
+      ],
+      "types": [
+        "AgentEventBatch",
+        "AnalyticsRecorder",
+        "AnalyticsRecorderOptions",
+        "AnalyticsRecord",
+        "EventRing",
+        "EventRingOptions",
+        "EventCap",
+        "OfferResult",
+        "Redactor",
+        "RequestSample",
+        "SampleInput",
+        "AnalyticsMaintenance",
+        "MaintenanceReport"
+      ],
+      "snippet": "import { createSecurity } from \"@kingsleyweb/bun-security\";\nimport { memoryStore } from \"@kingsleyweb/bun-security/store\";\nimport type { CounterRow, SecurityEvent } from \"@kingsleyweb/bun-security/store\";\nconst recorder = m.createAnalyticsRecorder({ service: \"api\", topK: 100 });\nconst ring = m.createEventRing({ service: \"api\", recorder, caps: { subject: 30 } });\nconst redactor = m.createRedactor({ keys: [\"pan\"] });\nconst security = createSecurity({ policy: {}, onDecision: m.analyticsHook({ recorder, ring, redactor }) });\nexport type _securityNotAny = Expect<IsAny<typeof security>>;\nconst rows: CounterRow[] = recorder.flush();\nexport const _rows = rows;\nconst events: SecurityEvent[] = ring.take(500);\nexport const _events = events;\nconst batch: t.AgentEventBatch = { format: m.EVENT_BATCH_FORMAT, batchId: \"b1\", service: \"api\", sentAt: 0, events, counters: rows };\nexport const _batch = batch;\nconst store = memoryStore();\nexport const _ingested: Promise<{ readonly duplicate: boolean }> = m.ingestEventBatch(store, m.decodeEventBatch(new Uint8Array(0), \"gzip\"), { service: \"api\" });\nconst maintenance = m.analyticsMaintenance(store, { retention: { events: \"14d\" }, grace: \"5m\" });\nexport const _report: Promise<t.MaintenanceReport> = maintenance.run();\nexport const _sample: t.RequestSample = redactor.sample({ method: \"GET\", path: \"/\" });\nexport type _offer = Equal<ReturnType<typeof ring.offer>, t.OfferResult>;\nexport const _caps: number = m.DEFAULT_EVENT_CAPS.rule;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-security/lib/analytics",
+      "values": [
+        "createAnalyticsRecorder",
+        "createEventRing",
+        "createRedactor"
+      ],
+      "types": ["AgentEventBatch"]
+    },
+    {
       "$comment": "Field sealing for the durable store (storage.md §8, PR-D3) on bun-cache's ./encryption: the second entry that needs the optional peer @kingsleyweb/bun-cache.",
       "spelling": "@kingsleyweb/bun-security/sealing",
       "peers": ["@kingsleyweb/bun-cache"],
@@ -515,7 +568,11 @@
         "DEFAULT_POLICY_RECONCILE_MS",
         "postgresStore",
         "AUDIT_GENESIS_HASH",
-        "MAX_AUDIT_SCOPES"
+        "MAX_AUDIT_SCOPES",
+        "TIER_MS",
+        "MAX_SERIES_POINTS",
+        "MAX_BATCH_EVENTS",
+        "MAX_BATCH_COUNTERS"
       ],
       "types": [
         "SecurityStoreDriver",
@@ -547,9 +604,21 @@
         "AuditInput",
         "AuditQuery",
         "AuditRecord",
-        "CounterValue"
+        "CounterValue",
+        "SecurityEvent",
+        "SecurityEventSubjects",
+        "EventFilter",
+        "EventListQuery",
+        "CounterRow",
+        "CounterQuery",
+        "SeriesQuery",
+        "SeriesPoint",
+        "TopKQuery",
+        "TopKRow",
+        "Tier",
+        "RetainedTable"
       ],
-      "snippet": "const store: t.SecurityStoreDriver = m.sqliteStore({ path: \"./security.sqlite\", syncSchema: { dryRun: true } });\nconst put: Promise<t.PutResult> = store.put(\"service\", \"checkout\", { owner: \"payments\" }, null);\nconst page: Promise<t.Page<t.StoredDoc>> = store.list(\"service\", { limit: 50, sort: \"updatedAt\", direction: \"desc\" });\nconst appended: Promise<t.AppendResult> = store.appendVersion(\"checkout\", { id: \"v2\", policy: {} }, \"v1\");\nconst feed = store.changesSince(0n, 100);\nexport type _feedNotAny = Expect<IsAny<Awaited<typeof feed>>>;\nconst _seq: bigint = 0n as t.Change[\"seq\"];\nconst source: t.PolicyFromStore = { store: m.policyFile(\"./security.json\", { debounceMs: 50 }), id: \"default\", lastKnownGood: \"./lkg.json\" };\nconst _isSource: boolean = m.isPolicyFromStore(source);\nconst _caps: boolean = m.memoryStore().capabilities.readOnly;\nexport const _all = [put, page, appended];\nconst pg: t.SecurityStoreDriver = m.postgresStore({ url: \"postgres://u:p@h:5432/db\", prefix: \"app_\", max: 4, pollIntervalMs: 500 });\nexport const _pgCaps: boolean = pg.capabilities.multiHost;"
+      "snippet": "const store: t.SecurityStoreDriver = m.sqliteStore({ path: \"./security.sqlite\", syncSchema: { dryRun: true } });\nconst put: Promise<t.PutResult> = store.put(\"service\", \"checkout\", { owner: \"payments\" }, null);\nconst page: Promise<t.Page<t.StoredDoc>> = store.list(\"service\", { limit: 50, sort: \"updatedAt\", direction: \"desc\" });\nconst appended: Promise<t.AppendResult> = store.appendVersion(\"checkout\", { id: \"v2\", policy: {} }, \"v1\");\nconst feed = store.changesSince(0n, 100);\nexport type _feedNotAny = Expect<IsAny<Awaited<typeof feed>>>;\nconst _seq: bigint = 0n as t.Change[\"seq\"];\nconst source: t.PolicyFromStore = { store: m.policyFile(\"./security.json\", { debounceMs: 50 }), id: \"default\", lastKnownGood: \"./lkg.json\" };\nconst _isSource: boolean = m.isPolicyFromStore(source);\nconst _caps: boolean = m.memoryStore().capabilities.readOnly;\nexport const _all = [put, page, appended];\nconst pg: t.SecurityStoreDriver = m.postgresStore({ url: \"postgres://u:p@h:5432/db\", prefix: \"app_\", max: 4, pollIntervalMs: 500 });\nexport const _pgCaps: boolean = pg.capabilities.multiHost;\nconst appendedEvents: Promise<{ readonly duplicate: boolean }> | undefined = store.appendEvents?.(\"b1\", [{ id: \"e1\", at: 0, service: \"api\", action: \"block\", subjects: { ip: \"203.0.113.7\" } } satisfies t.SecurityEvent], [{ service: \"api\", at: 0, metric: \"requests\", dims: { action: \"block\" }, value: 1 } satisfies t.CounterRow]);\nexport const _appended = appendedEvents;\nexport const _series: Promise<readonly t.SeriesPoint[]> | undefined = store.series?.({ metric: \"requests\", from: 0, to: 60_000, tier: \"minute\" });\nexport const _top: Promise<readonly t.TopKRow[]> | undefined = store.topK?.({ metric: \"top.refused\", from: 0, to: 60_000, dims: { kind: \"ip\" }, limit: 10 });\nexport const _events: Promise<t.Page<t.SecurityEvent>> | undefined = store.listEvents?.({ limit: 50, service: \"api\", action: \"block\" } satisfies t.EventListQuery);\nexport const _tier: t.Tier = \"hour\";\nexport const _hour: number = m.TIER_MS.hour;"
     },
     {
       "spelling": "@kingsleyweb/bun-security/lib/store",
