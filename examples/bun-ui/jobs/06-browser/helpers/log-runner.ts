@@ -1,7 +1,8 @@
 /**
  * The runner handler behind `06-browser/runner-and-job-tools.ts`: it writes
  * a known log, then either returns or stays in flight until the example
- * opens the gate it names.
+ * opens the gate it names. It can also wait on a gate before it writes, so
+ * the example starts the log once the page is following it.
  *
  * Its runs execute `in-process`, so the gates are shared through a global the
  * example installs ({@link LOG_RUNNER_GATES}); a run naming a gate that is
@@ -26,11 +27,33 @@ export interface LogRunnerArgs {
   secret?: string;
   /** A gate to wait on after logging, keeping the run in flight. */
   hold?: string;
+  /** A gate to wait on before the first line, so the log starts once the example says. */
+  start?: string;
+}
+
+/** Waits for the gate `name`, or for the run to be stopped; a run naming a gate that is not there fails. */
+async function waitOnGate(name: string, signal: AbortSignal): Promise<void> {
+  const gates = (globalThis as Record<symbol, unknown>)[LOG_RUNNER_GATES] as
+    Map<string, Promise<void>> | undefined;
+  const gate = gates?.get(name);
+  if (!gate) {
+    throw new Error(`no gate named ${name}`);
+  }
+  // A kill or a stop ends the run too, so shutdown never hangs on it.
+  await Promise.race([
+    gate,
+    new Promise<void>((resolve) => {
+      signal.addEventListener("abort", () => resolve(), { once: true });
+    }),
+  ]);
 }
 
 export default defineHandler<LogRunnerArgs, { logged: number }>(async (ctx) => {
   const lines = ctx.args?.lines ?? 0;
   const everyMs = ctx.args?.everyMs ?? 0;
+  if (ctx.args?.start !== undefined) {
+    await waitOnGate(ctx.args.start, ctx.signal);
+  }
   for (let index = 1; index <= lines; index++) {
     ctx.log(`step ${index}`, { level: index === lines ? "warn" : "info" });
     if (everyMs > 0) {
@@ -50,23 +73,8 @@ export default defineHandler<LogRunnerArgs, { logged: number }>(async (ctx) => {
   }
   await ctx.flushLogs();
 
-  const name = ctx.args?.hold;
-  if (name !== undefined) {
-    const gates = (globalThis as Record<symbol, unknown>)[LOG_RUNNER_GATES] as
-      Map<string, Promise<void>> | undefined;
-    const gate = gates?.get(name);
-    if (!gate) {
-      throw new Error(`no gate named ${name}`);
-    }
-    // A kill or a stop ends the run too, so shutdown never hangs on it.
-    await Promise.race([
-      gate,
-      new Promise<void>((resolve) => {
-        ctx.signal.addEventListener("abort", () => resolve(), {
-          once: true,
-        });
-      }),
-    ]);
+  if (ctx.args?.hold !== undefined) {
+    await waitOnGate(ctx.args.hold, ctx.signal);
   }
   return { logged: lines };
 });
