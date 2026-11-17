@@ -121,3 +121,19 @@ assert<
 void direct.count({ login: 7 });
 // @ts-expect-error -- the cost is a number, not a function of a request
 void direct.count("k", { cost: () => 1 });
+
+// memoryThrottleStore's evictions (bun-node#819): a read-only count and a
+// callback told the key and the reason.
+const evicting = memoryThrottleStore({
+  maxKeys: 10,
+  onEvict: (key, reason) => {
+    assert<Equal<typeof key, string>>();
+    assert<Equal<typeof reason, "cap" | "expired">>();
+    void [key, reason];
+  },
+});
+assert<Equal<typeof evicting.evictions, number>>();
+// @ts-expect-error -- the count is read-only
+evicting.evictions = 0;
+// @ts-expect-error -- the reason is one of two
+memoryThrottleStore({ onEvict: (_key, reason: "full") => void reason });

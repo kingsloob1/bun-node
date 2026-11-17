@@ -4069,7 +4069,24 @@ lifetime set only when the counter is created), `get(key)`, and optionally
 and `clear`. Each may answer synchronously or with a promise.
 `memoryThrottleStore({ maxKeys })` is bounded: past `maxKeys` (default
 `100_000`) it drops expired counters, then the oldest, so a client inventing
-keys cannot grow it.
+keys cannot grow it. Pushing out a live counter restarts its client at zero,
+so many of them in a short time are the sign of a key-rotation flood:
+`store.evictions` counts them (since the store was created; `clear()`
+resets it to 0), and
+`onEvict(key, reason)` reports each counter the store drops on its own as it
+happens, `"cap"` for a live one and `"expired"` for one whose window had
+passed (synchronous; a throw from it is ignored).
+
+```ts
+const store = memoryThrottleStore({
+  maxKeys: 50_000,
+  onEvict: (_key, reason) => {
+    if (reason === "cap") metrics.increment("throttle.evictions");
+  },
+});
+app.use(throttle({ limit: 100, store }));
+// later, on a status page: store.size, store.maxKeys, store.evictions
+```
 
 A store with `countWindow(base, { window, cost, previous, now })` counts a
 window step itself, in one call: it adds the cost to the current window's

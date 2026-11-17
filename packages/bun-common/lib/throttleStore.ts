@@ -187,6 +187,19 @@ export interface MemoryThrottleStoreOptions {
   readonly maxKeys?: number;
   /** The clock, epoch milliseconds. Default `Date.now`; tests pass a fake one. */
   readonly now?: () => number;
+  /**
+   * Called for each counter the store drops on its own, synchronously,
+   * after the drop: `"cap"` for a live counter pushed out at
+   * {@link maxKeys} (its client restarts at zero: many in a short time are
+   * the sign of a client rotating keys to flood the map), `"expired"` for
+   * one dropped because its window had passed (on an insert's sweep, or
+   * when a read finds it). Not called for `delete()` or `clear()`, which
+   * the caller asked for. A throw from it is caught and ignored, so it
+   * cannot break counting; it should not call the store itself. Default:
+   * none; {@link MemoryThrottleStore.evictions} counts the `"cap"` drops
+   * either way.
+   */
+  readonly onEvict?: (key: string, reason: "cap" | "expired") => void;
 }
 
 /** One counter (or, for GCRA, one theoretical arrival time) and when it ends. */
@@ -207,12 +220,20 @@ export interface MemoryThrottleStore extends ThrottleStore {
   get: (key: string) => number | undefined;
   /** Synchronous. */
   delete: (key: string) => void;
-  /** Synchronous. */
+  /** Synchronous. Forgets every counter and resets {@link evictions} to 0; reports nothing to `onEvict`. */
   clear: () => void;
   /** How many counters are held now (expired ones not yet dropped included). */
   readonly size: number;
   /** The `maxKeys` bound in force. */
   readonly maxKeys: number;
+  /**
+   * How many live counters the store has pushed out at `maxKeys` since it
+   * was created or last cleared (expired ones dropped are not counted;
+   * `clear()` resets it to 0): a status page's view of a key-rotation
+   * flood, where `size` only shows the store is full. `onEvict` reports each
+   * one as it happens.
+   */
+  readonly evictions: number;
 }
 
 /** The default {@link MemoryThrottleStoreOptions.maxKeys}. */
@@ -244,14 +265,32 @@ export function memoryThrottleStore(
     );
   }
   const now = options.now ?? Date.now;
+  const onEvict = options.onEvict;
+  if (onEvict !== undefined && typeof onEvict !== "function") {
+    throw new ConfigError("memoryThrottleStore: onEvict must be a function");
+  }
   const entries = new Map<string, MemoryEntry>();
+  /** The live counters pushed out at `maxKeys`; see `evictions`. */
+  let evictions = 0;
+
+  /** Drops `key`, the store's own decision, and tells `onEvict` (whose throw is ignored). */
+  const drop = (key: string, reason: "cap" | "expired"): void => {
+    entries.delete(key);
+    if (reason === "cap") evictions++;
+    if (onEvict === undefined) return;
+    try {
+      onEvict(key, reason);
+    } catch {
+      // A reporting callback must not break counting.
+    }
+  };
 
   /** The live entry at `key`, dropping it when it has expired. */
   const live = (key: string, at: number): MemoryEntry | undefined => {
     const entry = entries.get(key);
     if (entry === undefined) return undefined;
     if (entry.expiresAt <= at) {
-      entries.delete(key);
+      drop(key, "expired");
       return undefined;
     }
     return entry;
@@ -262,12 +301,12 @@ export function memoryThrottleStore(
     let checked = 0;
     for (const [key, entry] of entries) {
       if (checked++ >= SWEEP_PER_INSERT) break;
-      if (entry.expiresAt <= at) entries.delete(key);
+      if (entry.expiresAt <= at) drop(key, "expired");
     }
     while (entries.size >= maxKeys) {
       const oldest = entries.keys().next();
       if (oldest.done === true) break;
-      entries.delete(oldest.value);
+      drop(oldest.value, "cap");
     }
   };
 
@@ -276,6 +315,9 @@ export function memoryThrottleStore(
     maxKeys,
     get size() {
       return entries.size;
+    },
+    get evictions() {
+      return evictions;
     },
     increment(key, cost, ttl) {
       const at = now();
@@ -332,6 +374,7 @@ export function memoryThrottleStore(
     },
     clear() {
       entries.clear();
+      evictions = 0;
     },
   };
 }
