@@ -42,6 +42,10 @@ export const SECURITY_API_PERMISSIONS = /* @__PURE__ */ Object.freeze([
   "roles:write",
   "audit:read",
   "audit:export",
+  "agents:read",
+  "agents:write",
+  "bans:read",
+  "bans:write",
 ] as const);
 
 /** A permission's name. */
@@ -73,18 +77,24 @@ export const ROLE_PERMISSIONS: Readonly<
     "policy:read",
     "bundles:read",
     "approvals:read",
+    "bans:read",
   ] as const),
   analyst: /* @__PURE__ */ Object.freeze([
     "identities:read",
     "audit:read",
+    "agents:read",
   ] as const),
-  operator: /* @__PURE__ */ Object.freeze(["policy:draft"] as const),
+  operator: /* @__PURE__ */ Object.freeze([
+    "policy:draft",
+    "bans:write",
+  ] as const),
   admin: /* @__PURE__ */ Object.freeze([
     "services:write",
     "groups:write",
     "identities:write",
     "policy:publish",
     "audit:export",
+    "agents:write",
   ] as const),
   owner: /* @__PURE__ */ Object.freeze(["roles:read", "roles:write"] as const),
 });
@@ -123,6 +133,7 @@ export const SECURITY_LIVE_EVENTS = /* @__PURE__ */ Object.freeze([
   "approval.created",
   "approval.decided",
   "breakGlass.used",
+  "ban.changed",
 ] as const);
 
 /** The alerts the control plane raises through `onAlert` (README §9.3; channels come with PR-CP6). */
@@ -133,6 +144,7 @@ export const SECURITY_ALERT_KINDS = /* @__PURE__ */ Object.freeze([
   "approval.emergency",
   "policy.dangerous",
   "checkpoint.sinkFailed",
+  "agent.signatureFailing",
 ] as const);
 
 /** An alert's kind. */

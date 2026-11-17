@@ -38,7 +38,7 @@ export {
   MAX_SERIES_POINTS,
   TIER_MS,
 } from "./types";
-export { AUDIT_GENESIS_HASH } from "./shared";
+export { AUDIT_GENESIS_HASH, banId } from "./shared";
 export type {
   AppendAuditResult,
   AppendResult,
@@ -47,7 +47,11 @@ export type {
   AuditInput,
   AuditQuery,
   AuditRecord,
+  BanInputRecord,
+  BanQuery,
+  BanRecord,
   CounterValue,
+  StoredBanSubject,
   BundleInput,
   Change,
   ChangeKind,

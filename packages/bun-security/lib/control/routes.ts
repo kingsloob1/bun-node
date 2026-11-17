@@ -61,6 +61,7 @@ const LiveEvent: Schema<SecurityLiveEventDto> = s.object({
     "approval.created",
     "approval.decided",
     "breakGlass.used",
+    "ban.changed",
   ]),
   scope: s.string(),
   data: s.anyObject("what happened"),
@@ -74,6 +75,7 @@ export const LIVE_EVENTS = sse({
   "approval.created": LiveEvent,
   "approval.decided": LiveEvent,
   "breakGlass.used": LiveEvent,
+  "ban.changed": LiveEvent,
 });
 
 /** Every route. */
@@ -851,6 +853,172 @@ export function routes(options: ResolvedSecurityApiOptions): AnyRoute[] {
       },
     },
 
+    // ── Bans (storage.md §3.1, PR-CP4) ─────────────────────────────────────
+    {
+      method: "get",
+      path: "/bans",
+      summary:
+        "Bans, a page at a time, by scope (and what is under it) and state",
+      tag: "bans",
+      query: S.BansQuery,
+      responses: { 200: S.Bans },
+      handle: async ({ plane, require, query }) => {
+        const q = query as Infer<typeof S.BansQuery>;
+        await require("bans:read", q.scope ?? "global");
+        return pageOf(
+          await plane.listBans({
+            limit: q.limit ?? DEFAULT_API_PAGE_LIMIT,
+            ...(q.cursor === undefined ? {} : { cursor: q.cursor }),
+            ...(q.scope === undefined ? {} : { scope: q.scope }),
+            ...(q.active === undefined ? {} : { active: q.active }),
+          }),
+        );
+      },
+    },
+    {
+      method: "post",
+      path: "/bans",
+      summary:
+        "Bans an address, range, user or API key on a scope, merged with its ban there; pushed to the agents under it",
+      tag: "bans",
+      body: S.BanCreateBody,
+      responses: { 201: S.Ban },
+      problems: [404],
+      handle: async ({ plane, require, body, operator }) => {
+        const input = body as Infer<typeof S.BanCreateBody>;
+        await require("bans:write", input.scope ?? "global");
+        return { status: 201, body: await plane.createBan(input, operator) };
+      },
+    },
+    {
+      method: "post",
+      path: "/bans/:id/lift",
+      summary:
+        "Lifts a ban (its record is kept as history); pushed to the agents under it",
+      tag: "bans",
+      params: S.IdParams,
+      responses: { 200: S.Ban },
+      problems: [404, 409],
+      handle: async ({ plane, require, params, operator }) => {
+        const { id } = params as { id: string };
+        const ban = await plane.store.getBan(id);
+        if (ban === undefined)
+          throw new ApiProblem(404, "not_found", `ban "${id}" not found`);
+        await require("bans:write", ban.scope);
+        return { status: 200, body: await plane.liftBan(id, operator) };
+      },
+    },
+
+    // ── Agents (control-plane.md §7, PR-CP4) ───────────────────────────────
+    ...(options.agents === undefined
+      ? []
+      : ([
+          {
+            method: "get",
+            path: "/agents",
+            summary:
+              "Agents, a page at a time, with their health (late after 3 missed heartbeats, offline after 10)",
+            tag: "agents",
+            query: S.PageQuery,
+            responses: { 200: S.Agents },
+            handle: async ({ plane, require, query }) => {
+              await require("agents:read", "global");
+              const q = query as PageQueryOf;
+              return pageOf(
+                await plane.agents!.list(
+                  q.limit ?? DEFAULT_API_PAGE_LIMIT,
+                  q.cursor,
+                ),
+              );
+            },
+          },
+          {
+            method: "get",
+            path: "/agents/:id",
+            summary: "One agent and its health",
+            tag: "agents",
+            params: S.IdParams,
+            responses: { 200: S.Agent },
+            problems: [404],
+            handle: async ({ plane, require, params }) => {
+              await require("agents:read", "global");
+              return {
+                status: 200,
+                body: await plane.agents!.get((params as { id: string }).id),
+              };
+            },
+          },
+          {
+            method: "post",
+            path: "/agents",
+            summary:
+              "Makes an agent's key for a service (a step-up); its secret is shown this once",
+            tag: "agents",
+            body: S.AgentCreateBody,
+            responses: { 201: S.AgentSecret },
+            problems: [404, 409],
+            handle: async ({ plane, require, body, operator, stepUp }) => {
+              const input = body as Infer<typeof S.AgentCreateBody>;
+              await require("agents:write", serviceScope(input.service));
+              await agentStepUp(stepUp);
+              return {
+                status: 201,
+                body: await plane.agents!.create(input, operator),
+              };
+            },
+          },
+          {
+            method: "post",
+            path: "/agents/:id/rotate",
+            summary:
+              "A new secret for an agent (a step-up), shown once; the old one is accepted until the agent uses the new one, or 24 hours",
+            tag: "agents",
+            params: S.IdParams,
+            body: S.RevisionBody,
+            responses: { 200: S.AgentSecret },
+            problems: [404, 409],
+            handle: async ({ plane, require, params, body, stepUp }) => {
+              const agent = await plane.agents!.get(
+                (params as { id: string }).id,
+              );
+              await require("agents:write", serviceScope(agent.service));
+              await agentStepUp(stepUp);
+              return {
+                status: 200,
+                body: await plane.agents!.rotate(
+                  agent.id,
+                  (body as { revision: number }).revision,
+                ),
+              };
+            },
+          },
+          {
+            method: "post",
+            path: "/agents/:id/revoke",
+            summary:
+              "Revokes an agent's key at once (no step-up: it only takes access away)",
+            tag: "agents",
+            params: S.IdParams,
+            body: S.RevisionBody,
+            responses: { 200: S.Agent },
+            problems: [404, 409],
+            handle: async ({ plane, require, params, body, operator }) => {
+              const agent = await plane.agents!.get(
+                (params as { id: string }).id,
+              );
+              await require("agents:write", serviceScope(agent.service));
+              return {
+                status: 200,
+                body: await plane.agents!.revoke(
+                  agent.id,
+                  (body as { revision: number }).revision,
+                  operator,
+                ),
+              };
+            },
+          },
+        ] satisfies AnyRoute[])),
+
     // ── Audit (control-plane.md §6) ───────────────────────────────────────
     {
       method: "get",
@@ -1085,6 +1253,21 @@ export function routes(options: ResolvedSecurityApiOptions): AnyRoute[] {
       },
     },
   ];
+}
+
+/**
+ * Making or rotating an agent's key mints a secret: it needs a fresh second
+ * factor where a hook is configured. Under two-person approvals with no hook
+ * it is refused (an approval would have to show the secret to someone).
+ */
+async function agentStepUp(stepUp: () => Promise<boolean>): Promise<void> {
+  if (!(await stepUp())) {
+    throw new ApiProblem(
+      403,
+      "forbidden",
+      "making or rotating an agent key needs a step-up hook (stepUp); under approvals without one it is refused",
+    );
+  }
 }
 
 /** A draft write on a service flagged `requireStepUp` needs a step-up too, where a hook is configured. */

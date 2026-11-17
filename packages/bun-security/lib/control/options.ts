@@ -18,6 +18,9 @@ import { createPublicKey } from "node:crypto";
 import { DEFAULT_SECURITY_CSRF_HEADER } from "./contract/constants";
 import { resolveSigner } from "./signing";
 import { BreakGlass } from "./audit/breakglass";
+import type { ArtefactStore } from "./artefacts";
+import { directoryArtefacts } from "./artefacts";
+import { Keyring } from "../sensitive/keys";
 import { resolveAuditSigner } from "./audit/keys";
 
 /** Who is calling, as the host's `authenticate` says. */
@@ -101,6 +104,24 @@ export interface SecurityApiOptions {
   readonly breakGlass?: BreakGlassOptions;
   /** Called with each alert (break-glass login, a broken chain, an emergency, a failing sink); PR-CP6 routes them to channels. */
   readonly onAlert?: (alert: SecurityAlertDto) => void;
+  /**
+   * The agent routes (`/agent/*`, control-plane.md §7, PR-CP4): agents'
+   * keys, signed bundles and bans, artefacts, heartbeats and the nudge.
+   * Absent, no agent route is served.
+   */
+  readonly agents?: SecurityApiAgentsOptions;
+  /**
+   * Bans (PR-CP4). `secret` is the fleet's keying secret (the
+   * services' `createSecurity({ secret })`): an API-key ban's subject is
+   * stored and sent as `HMAC(secret, "apiKey|" + id)`, as the engines key
+   * it, never the id. Required unless `apiKeys: false` (no API-key bans).
+   */
+  readonly bans?: {
+    /** The fleet's keying secret, at least 32 bytes, from the environment. */
+    readonly secret?: string | Uint8Array;
+    /** Whether API-key bans are taken. Default `true` (and then `secret` is required). */
+    readonly apiKeys?: boolean;
+  };
   /** Where the API is mounted. Default `/security/api`. */
   readonly basePath?: string;
   /**
@@ -174,6 +195,10 @@ export interface ResolvedSecurityApiOptions {
   readonly breakGlass: BreakGlass | undefined;
   /** Raises an alert (logged as well). */
   readonly onAlert: (alert: SecurityAlertDto) => void;
+  /** The agent routes' settings, resolved; `undefined` without agents. */
+  readonly agents: ResolvedAgentsOptions | undefined;
+  /** Keys API-key ban subjects as the engines do; `undefined` when API-key bans are off. */
+  readonly banKeys: Keyring | undefined;
   /** Normalised: a leading slash, no trailing one. */
   readonly basePath: string;
   /** The CSRF settings, or `false`. */
@@ -311,7 +336,128 @@ export function resolveOptions(
         ? undefined
         : new BreakGlass(options.breakGlass, options.store, now),
     onAlert: options.onAlert ?? (() => {}),
+    agents: resolveAgents(options.agents, options.store),
+    banKeys: resolveBanKeys(options.bans),
   };
+}
+
+/** The ban subjects' keyring: required while API-key bans are on. */
+function resolveBanKeys(bans: SecurityApiOptions["bans"]): Keyring | undefined {
+  if (bans?.apiKeys === false) return undefined;
+  if (bans?.secret === undefined) {
+    throw new ConfigError(
+      "createSecurityApi(): bans.secret is required: the fleet's keying secret (createSecurity's secret), so an API-key ban is stored as its HMAC, never the id; or bans: { apiKeys: false } to take no API-key bans",
+    );
+  }
+  try {
+    return new Keyring(bans.secret);
+  } catch (error) {
+    throw new ConfigError(
+      `createSecurityApi(): bans.secret: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+/** Checks the agents' options. */
+function resolveAgents(
+  agents: SecurityApiAgentsOptions | undefined,
+  store: SecurityStoreDriver,
+): ResolvedAgentsOptions | undefined {
+  if (agents === undefined) return undefined;
+  if (typeof agents !== "object" || agents === null) {
+    throw new ConfigError("createSecurityApi(): agents must be an object");
+  }
+  if (
+    store.capabilities.durable !== true &&
+    agents.allowEphemeralStore !== true
+  ) {
+    throw new ConfigError(
+      `createSecurityApi(): agents need a durable store (agent keys, nonces and bans must outlive a restart); the store "${store.name}" is not (allowEphemeralStore: true for tests)`,
+    );
+  }
+  const whole = (
+    value: number | undefined,
+    fallback: number,
+    what: string,
+  ): number => {
+    const out = value ?? fallback;
+    if (!Number.isSafeInteger(out) || out < 1) {
+      throw new ConfigError(
+        `createSecurityApi(): agents.${what} must be a positive whole number`,
+      );
+    }
+    return out;
+  };
+  let artefacts: ArtefactStore | undefined;
+  if (agents.artefacts !== undefined) {
+    const given = agents.artefacts as Partial<ArtefactStore> & {
+      dir?: unknown;
+    };
+    if (typeof given.dir === "string")
+      artefacts = directoryArtefacts(given.dir);
+    else if (
+      typeof given.get === "function" &&
+      typeof given.put === "function"
+    ) {
+      artefacts = given as ArtefactStore;
+    } else {
+      throw new ConfigError(
+        "createSecurityApi(): agents.artefacts must be { dir } or { get, put }",
+      );
+    }
+  }
+  return {
+    rateLimit: whole(agents.rateLimit, 600, "rateLimit"),
+    heartbeatIntervalMs: toDurationMs(
+      agents.heartbeatInterval ?? "30s",
+      "createSecurityApi(): agents.heartbeatInterval",
+    ),
+    rotationGraceMs: toDurationMs(
+      agents.rotationGrace ?? "24h",
+      "createSecurityApi(): agents.rotationGrace",
+    ),
+    artefacts,
+    maxArtefactBytes: whole(
+      agents.maxArtefactBytes,
+      128 * 1024 * 1024,
+      "maxArtefactBytes",
+    ),
+    maxBodyBytes: whole(agents.maxBodyBytes, 1024 * 1024, "maxBodyBytes"),
+  };
+}
+
+/** `createSecurityApi`'s agent options (PR-CP4). */
+export interface SecurityApiAgentsOptions {
+  /** Serve agents over a store that does not survive a restart (tests). Default `false`. */
+  readonly allowEphemeralStore?: boolean;
+  /** Signed requests a minute per agent before `429`. Default 600. */
+  readonly rateLimit?: number;
+  /** How often agents beat; an agent is `late` after 3 missed and `offline` after 10. Default `"30s"`. */
+  readonly heartbeatInterval?: Duration;
+  /** How long a rotated-out secret is still accepted, unless the agent uses the new one first. Default `"24h"`. */
+  readonly rotationGrace?: Duration;
+  /** Where artefacts are kept: a content-addressed directory (`{ dir }`) or `{ get, put }`. Absent, none are served. */
+  readonly artefacts?: { readonly dir: string } | ArtefactStore;
+  /** The largest artefact served or added, bytes. Default 128 MiB. */
+  readonly maxArtefactBytes?: number;
+  /** The largest request body an agent route reads, bytes. Default 1 MiB. */
+  readonly maxBodyBytes?: number;
+}
+
+/** The agents' options, resolved. */
+export interface ResolvedAgentsOptions {
+  /** Requests a minute per agent. */
+  readonly rateLimit: number;
+  /** The heartbeat interval, ms. */
+  readonly heartbeatIntervalMs: number;
+  /** The rotation grace, ms. */
+  readonly rotationGraceMs: number;
+  /** The artefact store, when configured. */
+  readonly artefacts: ArtefactStore | undefined;
+  /** The largest artefact, bytes. */
+  readonly maxArtefactBytes: number;
+  /** The largest request body, bytes. */
+  readonly maxBodyBytes: number;
 }
 
 /** Checks the audit options. */

@@ -4,6 +4,10 @@
  * (storage.md §3.4, over bun-sql's `encodePageCursor`/`decodePageCursor`).
  */
 import type {
+  BanInputRecord,
+  BanQuery,
+  BanRecord,
+  StoredBanSubject,
   AuditCheckpoint,
   AuditInput,
   AuditQuery,
@@ -529,6 +533,13 @@ export function auditPosition(query: ResolvedAuditQuery): number | undefined {
   return n as number;
 }
 
+/**
+ * Document kinds written without a change row: an agent's health, which a
+ * heartbeat rewrites every 30 s and nothing follows through the feed (the
+ * user's decision, PR-CP4). Their writes answer `seq` 0.
+ */
+export const UNFED_KINDS: ReadonlySet<string> = new Set(["agentHealth"]);
+
 /** Checks a counter's key and lifetime. */
 export function checkCounter(key: string, ttlMs?: number): void {
   if (typeof key !== "string" || key.length === 0 || key.length > 200) {
@@ -541,6 +552,219 @@ export function checkCounter(key: string, ttlMs?: number): void {
       "security store: a counter's ttlMs must be a positive whole number",
     );
   }
+}
+
+/** A ban's id: one per scope and subject, the same on every store. */
+export function banId(scope: string, subject: StoredBanSubject): string {
+  return `ban_${new Bun.CryptoHasher("sha256")
+    .update(`${scope}\n${subject.type}\n${subject.value}`)
+    .digest("hex")
+    .slice(0, 40)}`;
+}
+
+/** Checks a ban to write; a `ConfigError` for a malformed one. */
+export function checkBanInput(ban: BanInputRecord): BanInputRecord {
+  const text = (value: unknown, max: number, optional = false): boolean =>
+    (optional && value === undefined) ||
+    (typeof value === "string" && value.length > 0 && value.length <= max);
+  const ok =
+    typeof ban === "object" &&
+    ban !== null &&
+    text(ban.scope, 200) &&
+    typeof ban.subject === "object" &&
+    ban.subject !== null &&
+    ["ip", "cidr", "user", "apiKey"].includes(ban.subject.type) &&
+    text(ban.subject.value, 512) &&
+    // An API key's subject is its HMAC (32 hex characters), never the id.
+    (ban.subject.type !== "apiKey" ||
+      /^[\da-f]{32}$/.test(ban.subject.value)) &&
+    (ban.action === "ban" || ban.action === "challenge") &&
+    text(ban.reason, 500) &&
+    (ban.source === "auto" || ban.source === "manual") &&
+    (ban.expiresAt === null || Number.isSafeInteger(ban.expiresAt)) &&
+    text(ban.createdBy, 200, true) &&
+    text(ban.rule, 200, true) &&
+    text(ban.code, 200, true) &&
+    text(ban.service, 200, true);
+  if (!ok) throw new ConfigError("security store: a malformed ban", { ban });
+  return Object.freeze({
+    scope: ban.scope,
+    subject: Object.freeze({
+      type: ban.subject.type,
+      value: ban.subject.value,
+    }),
+    action: ban.action,
+    reason: ban.reason,
+    source: ban.source,
+    expiresAt: ban.expiresAt,
+    ...(ban.createdBy === undefined ? {} : { createdBy: ban.createdBy }),
+    ...(ban.rule === undefined ? {} : { rule: ban.rule }),
+    ...(ban.code === undefined ? {} : { code: ban.code }),
+    ...(ban.service === undefined ? {} : { service: ban.service }),
+  });
+}
+
+/** Checks a lift's author and time. */
+export function checkLift(by: string, at: number): void {
+  if (
+    typeof by !== "string" ||
+    by.length === 0 ||
+    by.length > 200 ||
+    !Number.isSafeInteger(at)
+  ) {
+    throw new ConfigError(
+      "security store: a lift takes who (1 to 200 characters) and when (epoch ms)",
+    );
+  }
+}
+
+/** Whether `ban` is in force at `now`. */
+export function banActive(ban: BanRecord, now: number): boolean {
+  return (
+    ban.liftedAt === null && (ban.expiresAt === null || ban.expiresAt > now)
+  );
+}
+
+/** The text a merge orders descriptions by (the engine's `mergeBans` order). */
+function banDescription(ban: BanInputRecord): string {
+  return JSON.stringify([
+    ban.reason,
+    ban.rule ?? "",
+    ban.code ?? "",
+    ban.createdBy ?? "",
+    ban.service ?? "",
+  ]);
+}
+
+/**
+ * `input` written over `existing` (storage.md §3.1, the engine's merge): an
+ * active record merges, a lifted or expired one starts again.
+ */
+export function mergeStoredBan(
+  existing: BanRecord | undefined,
+  input: BanInputRecord,
+  now: number,
+): BanRecord {
+  const id = banId(input.scope, input.subject);
+  if (existing === undefined || !banActive(existing, now)) {
+    return Object.freeze({
+      ...input,
+      id,
+      createdAt: now,
+      updatedAt: now,
+      count: (existing?.count ?? 0) + 1,
+      revision: (existing?.revision ?? 0) + 1,
+      liftedAt: null,
+    });
+  }
+  // The description of a manual record wins over an automatic one, then the greater text.
+  const inputWins =
+    input.source !== existing.source
+      ? input.source === "manual"
+      : banDescription(input) > banDescription(existing);
+  const describing = inputWins ? input : existing;
+  return Object.freeze({
+    scope: existing.scope,
+    subject: existing.subject,
+    action:
+      input.action === "ban" || existing.action === "ban" ? "ban" : "challenge",
+    reason: describing.reason,
+    source: describing.source,
+    expiresAt:
+      input.expiresAt === null || existing.expiresAt === null
+        ? null
+        : Math.max(input.expiresAt, existing.expiresAt),
+    ...(describing.createdBy === undefined
+      ? {}
+      : { createdBy: describing.createdBy }),
+    ...(describing.rule === undefined ? {} : { rule: describing.rule }),
+    ...(describing.code === undefined ? {} : { code: describing.code }),
+    ...(describing.service === undefined
+      ? {}
+      : { service: describing.service }),
+    id,
+    createdAt: existing.createdAt,
+    updatedAt: now,
+    count: existing.count + 1,
+    revision: existing.revision + 1,
+    liftedAt: null,
+  });
+}
+
+/** A ban query, resolved. */
+export interface ResolvedBanQuery {
+  /** The page size. */
+  readonly limit: number;
+  /** The cursor, if any. */
+  readonly cursor: string | undefined;
+  /** The direction. */
+  readonly direction: "asc" | "desc";
+  /** The scopes, sorted and unique; `null` for any. */
+  readonly scopes: readonly string[] | null;
+  /** Active only, inactive only, or `null` for both. */
+  readonly active: boolean | null;
+}
+
+/** Checks a ban query. */
+export function resolveBanQuery(query: BanQuery): ResolvedBanQuery {
+  const base = resolveQuery({
+    limit: query.limit,
+    ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+    ...(query.direction === undefined ? {} : { direction: query.direction }),
+  });
+  let scopes: string[] | null = null;
+  if (query.scopes !== undefined) {
+    if (
+      !Array.isArray(query.scopes) ||
+      query.scopes.length === 0 ||
+      query.scopes.length > MAX_AUDIT_SCOPES ||
+      query.scopes.some((scope) => typeof scope !== "string" || scope === "")
+    ) {
+      throw new ConfigError(
+        `security store: a ban query's scopes must be 1 to ${MAX_AUDIT_SCOPES} scope names`,
+      );
+    }
+    scopes = [...new Set(query.scopes)].sort();
+  }
+  if (query.active !== undefined && typeof query.active !== "boolean") {
+    throw new ConfigError(
+      "security store: a ban query's active must be a boolean",
+    );
+  }
+  return {
+    limit: base.limit,
+    cursor: base.cursor,
+    direction: base.direction,
+    scopes,
+    active: query.active ?? null,
+  };
+}
+
+/** The walk a ban cursor is bound to. */
+function banWalk(query: ResolvedBanQuery): string[] {
+  return [
+    query.direction,
+    String(query.active),
+    query.scopes === null
+      ? ""
+      : new Bun.CryptoHasher("sha256")
+          .update(query.scopes.join("\n"))
+          .digest("hex"),
+  ];
+}
+
+/** The cursor after ban `id`. */
+export function banCursor(query: ResolvedBanQuery, id: string): string {
+  return encodePageCursor("sb1.", "bans", banWalk(query), [id]);
+}
+
+/** The ban id a cursor names, or a `ConfigError`. */
+export function banPosition(query: ResolvedBanQuery): string | undefined {
+  if (query.cursor === undefined) return undefined;
+  const [id] = decodePageCursor(query.cursor, "sb1.", "bans", banWalk(query), [
+    "string",
+  ]);
+  return id as string;
 }
 
 /** The cursor after checkpoint `n`. */

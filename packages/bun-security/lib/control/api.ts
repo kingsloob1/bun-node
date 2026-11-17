@@ -29,6 +29,8 @@ import { ControlPlane } from "./plane";
 import { ApiProblem } from "./problems";
 import { addRoute, sendProblem } from "./route";
 import { routes } from "./routes";
+import { addAgentEventsRoute, addAgentRoutes } from "./agentRoutes";
+import { sha256Of } from "./artefacts";
 
 /** What {@link createSecurityApi} returns. */
 export interface SecurityApi {
@@ -59,6 +61,16 @@ export interface SecurityApi {
   readonly purgeAudit: (options: {
     readonly before: number;
   }) => Promise<number>;
+  /**
+   * Adds an artefact (an IP-intelligence database) to the configured
+   * artefact store, for bundles to reference by its SHA-256 and agents to
+   * fetch; its hash and size. Publishing it in a bundle is a later PR.
+   * Throws a `ConfigError` without `agents.artefacts`, or past
+   * `agents.maxArtefactBytes`.
+   */
+  readonly addArtefact: (
+    bytes: Uint8Array,
+  ) => Promise<{ readonly sha256: string; readonly size: number }>;
 }
 
 /**
@@ -90,6 +102,11 @@ export function createSecurityApi(options: SecurityApiOptions): SecurityApi {
     resolved.csrf === false
       ? undefined
       : csrf({ origins: resolved.csrf.origins, onlyWithCookies: true });
+  if (options.agentEvents !== undefined && resolved.agents !== undefined) {
+    throw new ConfigError(
+      "createSecurityApi(): agents serves POST /agent/events on its own signed requests; leave agentEvents out",
+    );
+  }
   if (options.agentEvents !== undefined) {
     const agents = agentEventsRoute(
       resolved.store,
@@ -98,6 +115,20 @@ export function createSecurityApi(options: SecurityApiOptions): SecurityApi {
     );
     router.use("/agent/events", agents.guard);
     router.post("/agent/events", agents.handle);
+  }
+  // The agents' own routes first: agent authentication, never an operator's.
+  if (resolved.agents !== undefined && plane.agents !== undefined) {
+    const context = {
+      plane,
+      registry: plane.agents,
+      options: resolved.agents,
+      logger,
+    };
+    // PR-CP1's POST /agent/events on the agents' signed requests: the
+    // header checks in a guard (before a deferred body is read), the
+    // body's signature and its route in the handler.
+    addAgentEventsRoute(router, context);
+    addAgentRoutes(router, context);
   }
   for (const spec of routes(resolved))
     addRoute(router, spec, resolved, plane, guard);
@@ -160,6 +191,25 @@ export function createSecurityApi(options: SecurityApiOptions): SecurityApi {
     plane,
     ...documents,
     verifyAudit: async () => await plane.audit.verify(),
+    addArtefact: async (bytes: Uint8Array) => {
+      const store = resolved.agents?.artefacts;
+      if (store === undefined) {
+        throw new ConfigError(
+          "addArtefact(): configure agents.artefacts first",
+        );
+      }
+      if (
+        !(bytes instanceof Uint8Array) ||
+        bytes.byteLength > resolved.agents!.maxArtefactBytes
+      ) {
+        throw new ConfigError(
+          `addArtefact(): an artefact is bytes, at most ${resolved.agents!.maxArtefactBytes}`,
+        );
+      }
+      const sha256 = sha256Of(bytes);
+      await store.put(sha256, bytes);
+      return { sha256, size: bytes.byteLength };
+    },
     checkpointAudit: async () => await plane.audit.checkpointNow(),
     purgeAudit: async ({ before }: { readonly before: number }) => {
       if (!Number.isSafeInteger(before) || before < 0) {

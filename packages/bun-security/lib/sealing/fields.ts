@@ -69,7 +69,8 @@ export interface SealedFieldPaths {
  * store), and the control plane diffs and reviews them.
  *
  * - `agentKey.secret`: an agent's HMAC secret, when it signs with one rather
- *   than a key pair (control-plane.md §7);
+ *   than a key pair (control-plane.md §7), and `agentKey.previous.secret`,
+ *   the secret a rotation replaced while it is still accepted (PR-CP4);
  * - `serviceIdentity.secret`: a service identity's shared secret, should
  *   one ever be HMAC rather than a token's hash;
  * - `alertChannel.url` and `alertChannel.secret`: a webhook's URL (a
@@ -79,7 +80,7 @@ export interface SealedFieldPaths {
  */
 export const DEFAULT_SEALED_FIELDS: SealedFieldPaths = {
   doc: {
-    agentKey: ["secret"],
+    agentKey: ["secret", "previous.secret"],
     serviceIdentity: ["secret"],
     alertChannel: ["url", "secret"],
     operator: ["totpSeed"],

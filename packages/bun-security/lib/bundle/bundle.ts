@@ -145,8 +145,8 @@ export interface VerifyBundleOptions {
 /** A public key, as configured: a PEM string, a `KeyObject`, or raw 32 bytes. */
 export type BundlePublicKey = string | KeyObject | Uint8Array;
 
-/** `key` as a `KeyObject`. */
-function publicKeyOf(key: BundlePublicKey): KeyObject {
+/** `key` as a `KeyObject`. Internal: the ban batches' check shares it. */
+export function publicKeyOf(key: BundlePublicKey): KeyObject {
   if (typeof key === "string") return createPublicKey(key);
   if (key instanceof Uint8Array) {
     // A raw Ed25519 key: its 32 bytes behind the SPKI prefix.

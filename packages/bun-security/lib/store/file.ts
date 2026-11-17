@@ -225,6 +225,8 @@ export function policyFile(
     incrementCounter: async () => refuseReadOnly(name, "incrementCounter()"),
     resetCounter: async () => refuseReadOnly(name, "resetCounter()"),
     claimKey: async () => refuseReadOnly(name, "claimKey()"),
+    upsertBan: async () => refuseReadOnly(name, "upsertBan()"),
+    liftBan: async () => refuseReadOnly(name, "liftBan()"),
     // A policy file keeps no counters.
     getCounter: async () => undefined,
     // A policy file has no audit chain: these read the empty one.

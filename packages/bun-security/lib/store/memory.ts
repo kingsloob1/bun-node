@@ -12,6 +12,7 @@
  */
 import type { ResolvedCounter } from "./analytics";
 import type {
+  BanRecord,
   CounterValue,
   AppendAuditResult,
   AppendResult,
@@ -68,7 +69,16 @@ import {
   bundleEtag,
   checkAuditInput,
   checkCheckpoint,
+  banActive,
+  banCursor,
+  banId,
+  banPosition,
+  checkBanInput,
   checkCounter,
+  UNFED_KINDS,
+  checkLift,
+  mergeStoredBan,
+  resolveBanQuery,
   checkpointCursor,
   checkpointPosition,
   checkBundleInput,
@@ -142,6 +152,8 @@ function compareDocs(
 export function memoryStore(
   options: MemoryStoreOptions = {},
 ): SecurityStoreDriver {
+  /** Bans, by id. */
+  const bans = new Map<string, BanRecord>();
   /** Short-lived counters and claims, by key. */
   const counters = new Map<string, CounterValue>();
   const now = options.now ?? Date.now;
@@ -306,7 +318,7 @@ export function memoryStore(
       return Object.freeze({
         ok: true,
         revision,
-        seq: record(kind, id, revision, false),
+        seq: UNFED_KINDS.has(kind) ? 0n : record(kind, id, revision, false),
       });
     },
     delete: async (kind, id, ifRevision) => {
@@ -321,7 +333,7 @@ export function memoryStore(
         return false;
       }
       map.delete(id);
-      record(kind, id, current.revision, true);
+      if (!UNFED_KINDS.has(kind)) record(kind, id, current.revision, true);
       return true;
     },
     appendVersion: async (
@@ -540,6 +552,66 @@ export function memoryStore(
         deleted++;
       }
       return deleted;
+    },
+    upsertBan: async (input) => {
+      refuseClosed(name, closed);
+      const ban = checkBanInput(input);
+      const merged = mergeStoredBan(
+        bans.get(banId(ban.scope, ban.subject)),
+        ban,
+        now(),
+      );
+      bans.set(merged.id, merged);
+      record("ban", merged.id, merged.revision, false);
+      return copy(merged);
+    },
+    liftBan: async (id, by, at) => {
+      refuseClosed(name, closed);
+      checkId(id, "a ban id");
+      checkLift(by, at);
+      const current = bans.get(id);
+      if (current === undefined || !banActive(current, now())) return false;
+      const lifted: BanRecord = Object.freeze({
+        ...current,
+        liftedAt: at,
+        liftedBy: by,
+        updatedAt: now(),
+        revision: current.revision + 1,
+      });
+      bans.set(id, lifted);
+      record("ban", id, lifted.revision, false);
+      return true;
+    },
+    getBan: async (id) => {
+      refuseClosed(name, closed);
+      checkId(id, "a ban id");
+      const found = bans.get(id);
+      return found === undefined ? undefined : copy(found);
+    },
+    listBans: async (query) => {
+      refuseClosed(name, closed);
+      const resolved = resolveBanQuery(query);
+      const after = banPosition(resolved);
+      const at = now();
+      const desc = resolved.direction === "desc";
+      const matching = [...bans.values()]
+        .filter(
+          (ban) =>
+            (resolved.scopes === null || resolved.scopes.includes(ban.scope)) &&
+            (resolved.active === null ||
+              banActive(ban, at) === resolved.active) &&
+            (after === undefined || (desc ? ban.id < after : ban.id > after)),
+        )
+        .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      if (desc) matching.reverse();
+      const items = matching.slice(0, resolved.limit).map((ban) => copy(ban));
+      const last = items.at(-1);
+      return Object.freeze({
+        items,
+        ...(matching.length > resolved.limit && last !== undefined
+          ? { next: banCursor(resolved, last.id) }
+          : {}),
+      });
     },
     incrementCounter: async (key, ttlMs) => {
       refuseClosed(name, closed);

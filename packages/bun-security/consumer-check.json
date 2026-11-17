@@ -321,7 +321,15 @@
         "totpCode",
         "fileCheckpointSink",
         "webhookCheckpointSink",
-        "callbackCheckpointSink"
+        "callbackCheckpointSink",
+        "agentRequest",
+        "sendSigned",
+        "AgentRegistry",
+        "directoryArtefacts",
+        "sha256Of",
+        "agentGuard",
+        "checkAgentHeaders",
+        "verifyAgentBody"
       ],
       "types": [
         "SecurityApi",
@@ -345,7 +353,14 @@
         "CheckpointSink",
         "WebhookCheckpointSinkOptions",
         "AgentEventsOptions",
-        "AgentIdentity"
+        "AgentIdentity",
+        "AgentRequest",
+        "AgentRequestOutcome",
+        "AgentRouteContext",
+        "ArtefactStore",
+        "SecurityApiAgentsOptions",
+        "ResolvedAgentsOptions",
+        "HeaderState"
       ],
       "snippet": "import { memoryStore } from \"@kingsleyweb/bun-security/store\";\nconst api = m.createSecurityApi({ store: memoryStore(), authenticate: () => ({ id: \"op\" }), owners: [\"op\"], approvals: \"two-person\", signing: { keyId: \"k\", sign: (bytes: Uint8Array) => bytes }, audit: { signing: { keyId: \"ak\", sign: (bytes: Uint8Array) => bytes, publicKey: \"pem\" }, sinks: [m.fileCheckpointSink(\"./checkpoints.jsonl\")] } });\nexport const _verified: Promise<boolean> = api.verifyAudit().then((result) => result.ok);\nexport const _purged: Promise<number> = api.purgeAudit({ before: 0 });\nconst sink: t.CheckpointSink = m.callbackCheckpointSink({ write: () => {} });\nexport const _sinkName: string = sink.name;\nexport type _apiNotAny = Expect<IsAny<typeof api>>;\nexport const _base: string = api.basePath;\nconst merged = m.mergePolicies([{ scope: \"global\", policy: {} }]);\nexport const _locked: readonly t.LockedOverride[] = merged.locked;\nexport const _admin: Promise<t.AdminListener> = m.secureAdmin({ port: 0, api });"
     },
@@ -415,7 +430,13 @@
         "AuditVerifyDto",
         "BreakGlassLoginInput",
         "BreakGlassSessionDto",
-        "SecurityAlertDto"
+        "SecurityAlertDto",
+        "AgentDto",
+        "AgentCreateInput",
+        "AgentSecretDto",
+        "AgentStatus",
+        "BanDto",
+        "BanCreateInput"
       ],
       "snippet": "export const _perm: t.SecurityApiPermission = m.SECURITY_API_PERMISSIONS[0];\nexport const _roles: readonly t.SecurityRole[] = m.SECURITY_ROLES;\nexport type _scope = Equal<t.PolicyScopeId, string>;\nexport const _page: t.PageDto<t.ServiceDto> = { items: [] };"
     },
@@ -426,9 +447,65 @@
       "types": ["ServiceDto"]
     },
     {
+      "$comment": "The agent (control-plane.md §7, PR-CP4): connectAgent keeps an engine on the service's signed bundle and signed bans; never loads the control plane.",
+      "spelling": "@kingsleyweb/bun-security/agent",
+      "values": [
+        "connectAgent",
+        "createEventBatcher",
+        "AGENT_PROTOCOL_VERSION",
+        "AGENT_HEADER",
+        "AGENT_SIGNATURE_HEADER",
+        "AGENT_REQUEST_ID_HEADER",
+        "AGENT_ROUTES",
+        "AGENT_ID_PATTERN",
+        "AGENT_SIGNATURE_WINDOW_MS",
+        "agentRequestId",
+        "AGENT_STATE_FORMAT",
+        "EVENT_BATCH_FORMAT",
+        "MAX_BATCH_EVENTS",
+        "MAX_BATCH_COUNTERS",
+        "EVENT_BATCH_LIMITS"
+      ],
+      "types": [
+        "ConnectAgentOptions",
+        "SecurityAgent",
+        "AgentAlert",
+        "AgentArtefact",
+        "AgentEngine",
+        "AgentStatusReport",
+        "EventBatcher",
+        "EventBatcherOptions",
+        "BatchAnswer",
+        "AgentEventBatch",
+        "AgentEventSource",
+        "SecurityEvent",
+        "CounterRow",
+        "AgentHeartbeat",
+        "AgentHeartbeatAnswer",
+        "AgentNudge",
+        "AgentNudgeEvent",
+        "AgentReportedHealth",
+        "AgentRoute",
+        "AgentState"
+      ],
+      "snippet": "import { createSecurity } from \"@kingsleyweb/bun-security\";\nconst agent = m.connectAgent({ url: \"https://cp.internal/security/api\", agent: \"checkout-1\", secret: \"s\", service: \"checkout\", publicKeys: { sk_1: \"pem\" }, security: createSecurity({ policy: {} }), stateFile: \"./security-state.json\", start: false });\nexport type _agentNotAny = Expect<IsAny<typeof agent>>;\nexport const _ready: Promise<void> = agent.ready;\nexport const _health: \"ok\" | \"signature-failing\" = agent.status().health;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-security/lib/agent",
+      "values": ["connectAgent"],
+      "types": ["SecurityAgent"]
+    },
+    {
       "$comment": "Signed bundles (control-plane.md §3.1): what an enforcement point verifies.",
       "spelling": "@kingsleyweb/bun-security/bundle",
-      "values": ["verifyBundle", "canonicalJson", "bundleSigningBytes"],
+      "values": [
+        "verifyBundle",
+        "canonicalJson",
+        "bundleSigningBytes",
+        "verifyBanBatch",
+        "banBatchSigningBytes",
+        "BAN_BATCH_FORMAT"
+      ],
       "types": [
         "SecurityBundle",
         "BundleVerdict",
@@ -436,7 +513,11 @@
         "BundleSignature",
         "BundleArtefact",
         "BundlePublicKey",
-        "VerifyBundleOptions"
+        "VerifyBundleOptions",
+        "BanBatch",
+        "BanBatchRefusal",
+        "BanBatchVerdict",
+        "VerifyBanBatchOptions"
       ],
       "snippet": "const verdict = m.verifyBundle({}, { k: \"pem\" }, { after: 1 });\nexport type _verdictNotAny = Expect<IsAny<typeof verdict>>;\nexport const _ok: boolean = verdict.ok;"
     },
@@ -572,7 +653,8 @@
         "TIER_MS",
         "MAX_SERIES_POINTS",
         "MAX_BATCH_EVENTS",
-        "MAX_BATCH_COUNTERS"
+        "MAX_BATCH_COUNTERS",
+        "banId"
       ],
       "types": [
         "SecurityStoreDriver",
@@ -616,7 +698,11 @@
         "TopKQuery",
         "TopKRow",
         "Tier",
-        "RetainedTable"
+        "RetainedTable",
+        "BanInputRecord",
+        "BanQuery",
+        "BanRecord",
+        "StoredBanSubject"
       ],
       "snippet": "const store: t.SecurityStoreDriver = m.sqliteStore({ path: \"./security.sqlite\", syncSchema: { dryRun: true } });\nconst put: Promise<t.PutResult> = store.put(\"service\", \"checkout\", { owner: \"payments\" }, null);\nconst page: Promise<t.Page<t.StoredDoc>> = store.list(\"service\", { limit: 50, sort: \"updatedAt\", direction: \"desc\" });\nconst appended: Promise<t.AppendResult> = store.appendVersion(\"checkout\", { id: \"v2\", policy: {} }, \"v1\");\nconst feed = store.changesSince(0n, 100);\nexport type _feedNotAny = Expect<IsAny<Awaited<typeof feed>>>;\nconst _seq: bigint = 0n as t.Change[\"seq\"];\nconst source: t.PolicyFromStore = { store: m.policyFile(\"./security.json\", { debounceMs: 50 }), id: \"default\", lastKnownGood: \"./lkg.json\" };\nconst _isSource: boolean = m.isPolicyFromStore(source);\nconst _caps: boolean = m.memoryStore().capabilities.readOnly;\nexport const _all = [put, page, appended];\nconst pg: t.SecurityStoreDriver = m.postgresStore({ url: \"postgres://u:p@h:5432/db\", prefix: \"app_\", max: 4, pollIntervalMs: 500 });\nexport const _pgCaps: boolean = pg.capabilities.multiHost;\nconst appendedEvents: Promise<{ readonly duplicate: boolean }> | undefined = store.appendEvents?.(\"b1\", [{ id: \"e1\", at: 0, service: \"api\", action: \"block\", subjects: { ip: \"203.0.113.7\" } } satisfies t.SecurityEvent], [{ service: \"api\", at: 0, metric: \"requests\", dims: { action: \"block\" }, value: 1 } satisfies t.CounterRow]);\nexport const _appended = appendedEvents;\nexport const _series: Promise<readonly t.SeriesPoint[]> | undefined = store.series?.({ metric: \"requests\", from: 0, to: 60_000, tier: \"minute\" });\nexport const _top: Promise<readonly t.TopKRow[]> | undefined = store.topK?.({ metric: \"top.refused\", from: 0, to: 60_000, dims: { kind: \"ip\" }, limit: 10 });\nexport const _events: Promise<t.Page<t.SecurityEvent>> | undefined = store.listEvents?.({ limit: 50, service: \"api\", action: \"block\" } satisfies t.EventListQuery);\nexport const _tier: t.Tier = \"hour\";\nexport const _hour: number = m.TIER_MS.hour;"
     },

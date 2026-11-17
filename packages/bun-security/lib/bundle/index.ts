@@ -9,3 +9,10 @@ export type {
   SecurityBundle,
   VerifyBundleOptions,
 } from "./bundle";
+export { BAN_BATCH_FORMAT, banBatchSigningBytes, verifyBanBatch } from "./bans";
+export type {
+  BanBatch,
+  BanBatchRefusal,
+  BanBatchVerdict,
+  VerifyBanBatchOptions,
+} from "./bans";

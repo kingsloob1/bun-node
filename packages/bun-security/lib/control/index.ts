@@ -8,6 +8,22 @@ export { secureAdmin, isPrivateBind } from "./admin";
 export type { AgentEventsOptions, AgentIdentity } from "./agentEvents";
 export type { AdminListener, AdminMount, SecureAdminOptions } from "./admin";
 export { createSecurityApi } from "./api";
+export {
+  agentGuard,
+  agentRequest,
+  checkAgentHeaders,
+  sendSigned,
+  verifyAgentBody,
+} from "./agentRoutes";
+export type {
+  AgentRequest,
+  AgentRequestOutcome,
+  AgentRouteContext,
+  HeaderState,
+} from "./agentRoutes";
+export { AgentRegistry } from "./agents";
+export { directoryArtefacts, sha256Of } from "./artefacts";
+export type { ArtefactStore } from "./artefacts";
 export { auditHash } from "./audit/log";
 export { totpCode } from "./audit/breakglass";
 export type { BreakGlassOptions } from "./audit/breakglass";
@@ -33,6 +49,8 @@ export type {
 export type {
   Operator,
   PermissionTarget,
+  ResolvedAgentsOptions,
+  SecurityApiAgentsOptions,
   SecurityApiOptions,
   StepUpHook,
 } from "./options";

@@ -163,6 +163,16 @@
       "types": "./dts/bundle/index.d.ts",
       "default": "./lib/bundle/index.ts"
     },
+    "./agent": {
+      "@kingsleyweb/source": "./lib/agent/index.ts",
+      "types": "./dts/agent/index.d.ts",
+      "default": "./lib/agent/index.ts"
+    },
+    "./lib/agent": {
+      "@kingsleyweb/source": "./lib/agent/index.ts",
+      "types": "./dts/agent/index.d.ts",
+      "default": "./lib/agent/index.ts"
+    },
     "./lib/*.ts": {
       "@kingsleyweb/source": "./lib/*.ts",
       "types": "./dts/*.d.ts",

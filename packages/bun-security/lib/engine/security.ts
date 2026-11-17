@@ -587,6 +587,12 @@ export interface BanInput {
   readonly user?: string;
   /** An API key id, as `identify()` returns it. */
   readonly apiKey?: string;
+  /**
+   * An API key's key, already its HMAC under this engine's `secret` (32 hex
+   * characters, as the control plane stores and sends it): banned as it
+   * is, never keyed twice (PR-CP4).
+   */
+  readonly apiKeyHash?: string;
   /** `ban` (the default) or `challenge` (a `block` without a challenge flow). */
   readonly action?: "ban" | "challenge";
   /** How long, its unit written. Default `"24h"`; `null` until lifted. */
@@ -2196,13 +2202,13 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     if (typeof input !== "object" || input === null) {
       throw new TypeError("bun-security: ban() takes an object");
     }
-    const given = (["ip", "user", "apiKey"] as const).filter(
+    const given = (["ip", "user", "apiKey", "apiKeyHash"] as const).filter(
       (key) => input[key] !== undefined,
     );
     const only = given[0];
     if (given.length !== 1 || only === undefined) {
       throw new TypeError(
-        "bun-security: ban() takes exactly one of ip, user, apiKey",
+        "bun-security: ban() takes exactly one of ip, user, apiKey, apiKeyHash",
       );
     }
     const value = input[only];
@@ -2210,7 +2216,28 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       throw new TypeError(`bun-security: ban(): ${only} must be a string`);
     }
     let subject: BanSubject;
-    if (only === "ip") {
+    if (only === "apiKeyHash") {
+      if (!/^[\da-f]{32}$/.test(value)) {
+        throw new TypeError(
+          "bun-security: ban(): apiKeyHash must be an API key's key (32 hex characters)",
+        );
+      }
+      subject = {
+        type: "apiKey",
+        value:
+          keyOf(
+            keyOfType("apiKey"),
+            { apiKey: value },
+            {
+              method: "",
+              path: "",
+              routePath: undefined,
+              key: "",
+              profile: undefined,
+            },
+          ) ?? value,
+      };
+    } else if (only === "ip") {
       const address = parseAddress(value);
       const cidr = address === null ? parseCidr(value) : null;
       if (address === null && cidr === null) {

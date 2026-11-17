@@ -379,6 +379,17 @@ export class AuditLog {
         ? "not-applied"
         : "completed-unconfirmed";
     }
+    if (target.kind === "ban") {
+      // A ban is never deleted: a lift is its `liftedAt`.
+      const ban = await store.getBan(target.id).catch(() => undefined);
+      if (target.deleted === true)
+        return ban !== undefined && ban.liftedAt !== null
+          ? "completed-unconfirmed"
+          : "not-applied";
+      return ban !== undefined && ban.revision >= (target.revision ?? 1)
+        ? "completed-unconfirmed"
+        : "not-applied";
+    }
     const doc = await store
       .get(target.kind as never, target.id)
       .catch(() => undefined);
