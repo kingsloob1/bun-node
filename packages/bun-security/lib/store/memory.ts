@@ -12,18 +12,24 @@
  */
 import type {
   AppendResult,
+  BundleInput,
   Change,
+  ChangeKind,
   DocKind,
   ListQuery,
   Page,
   PolicyVersionInput,
   PolicyVersionRecord,
+  PutBundleResult,
   PutResult,
   SecurityStoreCapabilities,
   SecurityStoreDriver,
+  StoredBundle,
   StoredDoc,
 } from "./types";
 import {
+  bundleEtag,
+  checkBundleInput,
   checkFeedRead,
   checkId,
   checkKind,
@@ -82,6 +88,7 @@ export function memoryStore(
   const name = options.name ?? "memory";
   const docs = new Map<DocKind, Map<string, StoredDoc>>();
   const versions = new Map<string, PolicyVersionRecord[]>();
+  const bundles = new Map<string, StoredBundle>();
   const changes: Change[] = [];
   const listeners = new Set<(head: bigint) => void>();
   let seq = 0n;
@@ -100,7 +107,7 @@ export function memoryStore(
 
   /** Appends a change and schedules the subscribers. */
   const record = (
-    kind: DocKind,
+    kind: ChangeKind,
     id: string,
     revision: number,
     deleted: boolean,
@@ -285,6 +292,44 @@ export function memoryStore(
           : {}),
         totalEstimate: all.length,
       });
+    },
+    putBundle: async (
+      serviceId,
+      bundle: BundleInput,
+      expectedVersion,
+    ): Promise<PutBundleResult> => {
+      refuseClosed(name, closed);
+      checkId(serviceId, "a service id");
+      const input = checkBundleInput(bundle, expectedVersion);
+      const current = bundles.get(serviceId);
+      const stored = current?.version ?? null;
+      if (stored !== expectedVersion || input.version <= (stored ?? 0)) {
+        return Object.freeze({ ok: false, version: stored });
+      }
+      bundles.set(
+        serviceId,
+        Object.freeze({
+          serviceId,
+          version: input.version,
+          etag: bundleEtag(input.version),
+          bundle: input.bundle,
+          updatedAt: now(),
+        }),
+      );
+      return Object.freeze({
+        ok: true,
+        seq: record("bundle", serviceId, input.version, false),
+      });
+    },
+    getBundle: async (serviceId, ifNoneMatch) => {
+      refuseClosed(name, closed);
+      checkId(serviceId, "a service id");
+      const found = bundles.get(serviceId);
+      if (found === undefined) return undefined;
+      if (ifNoneMatch !== undefined && ifNoneMatch === found.etag) {
+        return "not-modified";
+      }
+      return Object.freeze({ ...found, bundle: copy(found.bundle) });
     },
     changesSince: async (since, limit) => {
       refuseClosed(name, closed);

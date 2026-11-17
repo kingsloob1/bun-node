@@ -188,3 +188,17 @@ export type {
   SubjectKeyPart,
   TrustCheckPolicy,
 } from "./policy/types";
+export {
+  bundleSigningBytes,
+  canonicalJson,
+  verifyBundle,
+} from "./bundle/index";
+export type {
+  BundleArtefact,
+  BundlePublicKey,
+  BundleRefusal,
+  BundleSignature,
+  BundleVerdict,
+  SecurityBundle,
+  VerifyBundleOptions,
+} from "./bundle/index";

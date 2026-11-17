@@ -113,6 +113,36 @@
       "types": "./dts/testing/index.d.ts",
       "default": "./lib/testing/index.ts"
     },
+    "./control": {
+      "@kingsleyweb/source": "./lib/control/index.ts",
+      "types": "./dts/control/index.d.ts",
+      "default": "./lib/control/index.ts"
+    },
+    "./lib/control": {
+      "@kingsleyweb/source": "./lib/control/index.ts",
+      "types": "./dts/control/index.d.ts",
+      "default": "./lib/control/index.ts"
+    },
+    "./control/contract": {
+      "@kingsleyweb/source": "./lib/control/contract/index.ts",
+      "types": "./dts/control/contract/index.d.ts",
+      "default": "./lib/control/contract/index.ts"
+    },
+    "./lib/control/contract": {
+      "@kingsleyweb/source": "./lib/control/contract/index.ts",
+      "types": "./dts/control/contract/index.d.ts",
+      "default": "./lib/control/contract/index.ts"
+    },
+    "./bundle": {
+      "@kingsleyweb/source": "./lib/bundle/index.ts",
+      "types": "./dts/bundle/index.d.ts",
+      "default": "./lib/bundle/index.ts"
+    },
+    "./lib/bundle": {
+      "@kingsleyweb/source": "./lib/bundle/index.ts",
+      "types": "./dts/bundle/index.d.ts",
+      "default": "./lib/bundle/index.ts"
+    },
     "./lib/*.ts": {
       "@kingsleyweb/source": "./lib/*.ts",
       "types": "./dts/*.d.ts",

@@ -16,6 +16,8 @@ export type StoreOperation =
   | "appendVersion"
   | "getVersion"
   | "listVersions"
+  | "putBundle"
+  | "getBundle"
   | "changesSince";
 
 /** Options for {@link faultyStore}. */
@@ -60,6 +62,8 @@ export function faultyStore(
     appendVersion: wrap("appendVersion", store.appendVersion),
     getVersion: wrap("getVersion", store.getVersion),
     listVersions: wrap("listVersions", store.listVersions),
+    putBundle: wrap("putBundle", store.putBundle),
+    getBundle: wrap("getBundle", store.getBundle),
     changesSince: wrap("changesSince", store.changesSince),
   });
 }

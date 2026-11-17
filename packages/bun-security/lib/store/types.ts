@@ -31,7 +31,8 @@ export type DocKind =
   | "roleBinding"
   | "alertChannel"
   | "listEntry"
-  | "approval";
+  | "approval"
+  | "policyDraft";
 
 /** Every {@link DocKind}, in a fixed order. */
 export const DOC_KINDS: readonly DocKind[] = Object.freeze([
@@ -45,6 +46,7 @@ export const DOC_KINDS: readonly DocKind[] = Object.freeze([
   "alertChannel",
   "listEntry",
   "approval",
+  "policyDraft",
 ] as const);
 
 /** What a driver can do (storage.md §3.3); the engine and the CP refuse a driver whose capabilities do not fit. */
@@ -153,12 +155,52 @@ export interface PolicyHead {
   readonly number: number;
 }
 
+/** A service's signed bundle, as given to {@link SecurityStoreDriver.putBundle}. */
+export interface BundleInput {
+  /** Its version: higher than every bundle the service had before (control-plane.md §3.3). */
+  readonly version: number;
+  /** The signed bundle, a JSON value (`bun-security.bundle/1`). The store never signs or checks it. */
+  readonly bundle: unknown;
+}
+
+/** A service's signed bundle, as stored. */
+export interface StoredBundle {
+  /** The service it was compiled for. */
+  readonly serviceId: string;
+  /** Its version, monotonic per service. */
+  readonly version: number;
+  /** Its entity tag, `"<version>"`, for a conditional read (`If-None-Match`). */
+  readonly etag: string;
+  /** The signed bundle, a JSON value. */
+  readonly bundle: unknown;
+  /** When it was stored, epoch milliseconds. */
+  readonly updatedAt: number;
+}
+
+/** What {@link SecurityStoreDriver.putBundle} answers. */
+export type PutBundleResult =
+  | {
+      /** Stored. */
+      readonly ok: true;
+      /** The change the write appended. */
+      readonly seq: bigint;
+    }
+  | {
+      /** Refused: the stored version is not the one named, or the new one is not higher. */
+      readonly ok: false;
+      /** The version stored now (`null`: none yet). */
+      readonly version: number | null;
+    };
+
+/** What a {@link Change} names: a document's kind, or `bundle` for a service's bundle. */
+export type ChangeKind = DocKind | "bundle";
+
 /** One entry of the change feed. */
 export interface Change {
   /** Its sequence number: strictly increasing, never reused. */
   readonly seq: bigint;
-  /** The kind of document changed. */
-  readonly kind: DocKind;
+  /** The kind of document changed, or `bundle` (its id is the service's, its revision the bundle's version). */
+  readonly kind: ChangeKind;
   /** The document's id. */
   readonly id: string;
   /** The document's revision after the change (its last one, for a delete). */
@@ -193,11 +235,11 @@ export interface Page<T> {
 
 /** Where a stored body sits, for a {@link StoreCodec}: what its sealing binds it to. */
 export interface StoreCodecContext {
-  /** The table's role: a document's body, or a policy version's policy. */
-  readonly field: "doc" | "policy";
-  /** The document's kind (`policy` for a version). */
-  readonly kind: DocKind;
-  /** The document's id, or the policy's id for a version. */
+  /** The table's role: a document's body, a policy version's policy, or a service's bundle. */
+  readonly field: "doc" | "policy" | "bundle";
+  /** The document's kind (`policy` for a version, `bundle` for a bundle). */
+  readonly kind: ChangeKind;
+  /** The document's id, the policy's id for a version, or the service's for a bundle. */
   readonly id: string;
   /** The version's id, for a version's policy. */
   readonly version?: string;
@@ -275,6 +317,25 @@ export interface SecurityStoreDriver {
     policyId: string,
     query: ListQuery,
   ) => Promise<Page<PolicyVersionRecord>>;
+
+  /**
+   * Stores a service's signed bundle only if the stored version is
+   * `expectedVersion` (`null`: none yet) and `bundle.version` is higher
+   * (storage.md §3.1). It appends a `bundle` change.
+   */
+  putBundle: (
+    serviceId: string,
+    bundle: BundleInput,
+    expectedVersion: number | null,
+  ) => Promise<PutBundleResult>;
+  /**
+   * A service's bundle; `"not-modified"` when `ifNoneMatch` is its
+   * entity tag; `undefined` when it has none.
+   */
+  getBundle: (
+    serviceId: string,
+    ifNoneMatch?: string,
+  ) => Promise<StoredBundle | "not-modified" | undefined>;
 
   /** The changes after `seq`, oldest first, at most `limit`, and the feed's head. */
   changesSince: (

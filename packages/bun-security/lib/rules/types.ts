@@ -160,6 +160,13 @@ export interface RequestRule {
    * as the managed probe set's always are).
    */
   readonly crawlers?: "apply" | "skip";
+  /**
+   * Set at a higher scope of the control plane (global or a group): lower
+   * scopes cannot override or disable it (control-plane.md §2.2). The
+   * engine reads it as data and enforces the rule as written. Default
+   * `false`.
+   */
+  readonly locked?: boolean;
 }
 
 /** The managed probe set's rules, by id (layers.md L7). */

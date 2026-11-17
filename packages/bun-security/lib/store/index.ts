@@ -30,17 +30,21 @@ export type { SqliteStoreOptions } from "./sqlite";
 export { DOC_KINDS, MAX_PAGE_LIMIT } from "./types";
 export type {
   AppendResult,
+  BundleInput,
   Change,
+  ChangeKind,
   DocKind,
   ListQuery,
   Page,
   PolicyHead,
   PolicyVersionInput,
   PolicyVersionRecord,
+  PutBundleResult,
   PutResult,
   SecurityStoreCapabilities,
   SecurityStoreDriver,
   StoreCodec,
   StoreCodecContext,
+  StoredBundle,
   StoredDoc,
 } from "./types";

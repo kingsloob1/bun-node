@@ -89,13 +89,17 @@ function copyPackage(sideEffects: unknown): string {
   return dir;
 }
 
-/** Bundles `code`, written in `dir`, minified for Bun. */
-async function bundle(dir: string, code: string): Promise<string> {
+/** Bundles `code`, written in `dir`, minified for `target` (Bun by default). */
+async function bundle(
+  dir: string,
+  code: string,
+  target: "bun" | "browser" = "bun",
+): Promise<string> {
   const entry = join(dir, `app-${apps++}.ts`);
   writeFileSync(entry, code);
   const result = await Bun.build({
     entrypoints: [entry],
-    target: "bun",
+    target,
     format: "esm",
     minify: true,
     throw: false,
@@ -149,5 +153,45 @@ describe("one export in a bundle", () => {
   it("negative control: without sideEffects the unrelated module stays", async () => {
     const code = await bundle(copyPackage(undefined), APP);
     expect(code).toContain(UNRELATED);
+  });
+});
+
+describe("the management API's browser-safe contract (./control/contract, PR-CP2)", () => {
+  /** A browser app using one constant of the contract. */
+  const CONTRACT_APP = `import { SECURITY_API_PERMISSIONS } from "${MANIFEST.name}/control/contract";\nexport const permissions = SECURITY_API_PERMISSIONS;\n`;
+  /**
+   * The most the one-export browser app may weigh, minified. Measured
+   * 2026-11-17 (Bun 1.4.5-canary.1+862278db7): 251 bytes; 599 with the
+   * roles' arrays not marked pure.
+   */
+  const CONTRACT_BOUND = 1024;
+
+  it("bundles for a browser with one constant, not the module's others", async () => {
+    const code = await bundle(
+      copyPackage(MANIFEST.sideEffects),
+      CONTRACT_APP,
+      "browser",
+    );
+    expect(code).toContain("policy:publish");
+    // The roles and the problem codes live in the same module, unused.
+    expect(code).not.toContain("approval_closed");
+    expect(code).not.toContain("viewer");
+    expect(code.length).toBeLessThanOrEqual(CONTRACT_BOUND);
+  });
+
+  it("negative control: without the pure marks, the unused frozen constants stay", async () => {
+    const dir = copyPackage(MANIFEST.sideEffects);
+    const constants = join(
+      dir,
+      "node_modules",
+      ...MANIFEST.name.split("/"),
+      "lib/control/contract/constants.ts",
+    );
+    writeFileSync(
+      constants,
+      readFileSync(constants, "utf8").replaceAll("/* @__PURE__ */", ""),
+    );
+    const code = await bundle(dir, CONTRACT_APP, "browser");
+    expect(code).toContain("viewer");
   });
 });

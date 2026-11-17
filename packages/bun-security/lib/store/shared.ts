@@ -286,3 +286,38 @@ export function checkFeedRead(seq: unknown, limit: unknown): void {
     );
   }
 }
+
+/** Throws a `ConfigError` unless `bundle` and `expectedVersion` are a usable {@link SecurityStoreDriver.putBundle}; the checked input. */
+export function checkBundleInput(
+  bundle: unknown,
+  expectedVersion: unknown,
+): { version: number; bundle: unknown } {
+  if (typeof bundle !== "object" || bundle === null) {
+    throw new ConfigError("security store: a bundle must be an object");
+  }
+  const input = bundle as Record<string, unknown>;
+  if (!Number.isSafeInteger(input.version) || (input.version as number) < 1) {
+    throw new ConfigError(
+      "security store: a bundle's version must be a positive whole number",
+      { version: input.version },
+    );
+  }
+  if (
+    expectedVersion !== null &&
+    (!Number.isSafeInteger(expectedVersion) || (expectedVersion as number) < 1)
+  ) {
+    throw new ConfigError(
+      "security store: expectedVersion must be a positive whole number, or null for a service with no bundle yet",
+      { expectedVersion },
+    );
+  }
+  return {
+    version: input.version as number,
+    bundle: jsonBody(input.bundle, "a bundle"),
+  };
+}
+
+/** A bundle's entity tag: its version, quoted, as an HTTP `ETag` is. */
+export function bundleEtag(version: number): string {
+  return `"${version}"`;
+}

@@ -231,6 +231,11 @@ export async function runSecurityStoreConformance(
               store.appendVersion("p", { id: "v", policy: {} }, null),
             ),
           ).toBe(true);
+          expect(
+            await rejects(() =>
+              store.putBundle("s", { version: 1, bundle: {} }, null),
+            ),
+          ).toBe(true);
         });
       });
       return;
@@ -632,6 +637,89 @@ export async function runSecurityStoreConformance(
       });
     });
 
+    describe("signed bundles (storage.md §3.1)", () => {
+      test("stored by compare-and-set on the version, each higher than the last", async () => {
+        await withStore(factory, async (store) => {
+          expect(await store.getBundle("svc")).toBeUndefined();
+          expect(
+            await store.putBundle(
+              "svc",
+              { version: 1, bundle: { v: 1 } },
+              null,
+            ),
+          ).toMatchObject({ ok: true });
+          // A stale expected version, a fresh service's null, and a version
+          // no higher than the stored one: refused, with the stored version.
+          expect(
+            await store.putBundle("svc", { version: 2, bundle: {} }, null),
+          ).toEqual({ ok: false, version: 1 });
+          expect(
+            await store.putBundle("svc", { version: 3, bundle: {} }, 2),
+          ).toEqual({ ok: false, version: 1 });
+          expect(
+            await store.putBundle("svc", { version: 1, bundle: {} }, 1),
+          ).toEqual({ ok: false, version: 1 });
+          expect(
+            await store.putBundle("svc", { version: 5, bundle: { v: 5 } }, 1),
+          ).toMatchObject({ ok: true });
+          expect(await store.getBundle("svc")).toMatchObject({
+            serviceId: "svc",
+            version: 5,
+            etag: '"5"',
+            bundle: { v: 5 },
+          });
+          // Services are apart.
+          expect(await store.getBundle("other")).toBeUndefined();
+          expect(
+            await rejects(() =>
+              store.putBundle("svc", { version: 0, bundle: {} }, 5),
+            ),
+          ).toBe(true);
+          expect(
+            await rejects(() =>
+              store.putBundle("svc", { version: 6, bundle: undefined }, 5),
+            ),
+          ).toBe(true);
+        });
+      });
+
+      test("a conditional read answers not-modified for its own entity tag", async () => {
+        await withStore(factory, async (store) => {
+          await store.putBundle("svc", { version: 7, bundle: { a: 1 } }, null);
+          expect(await store.getBundle("svc", '"7"')).toBe("not-modified");
+          expect(await store.getBundle("svc", '"6"')).toMatchObject({
+            version: 7,
+          });
+          expect(await store.getBundle("none", '"7"')).toBeUndefined();
+        });
+      });
+
+      test(`racing compilers never both win (${raceSize} rounds)`, async () => {
+        await withStore(factory, async (store) => {
+          let version: number | null = null;
+          for (let round = 1; round <= raceSize; round++) {
+            const results = await Promise.all(
+              Array.from(
+                { length: 4 },
+                async (_, side) =>
+                  await store.putBundle(
+                    "race",
+                    { version: round * 10 + side, bundle: { side } },
+                    version,
+                  ),
+              ),
+            );
+            expect(results.filter((result) => result.ok)).toHaveLength(1);
+            const stored = await store.getBundle("race");
+            version =
+              stored === undefined || stored === "not-modified"
+                ? null
+                : stored.version;
+          }
+        });
+      });
+    });
+
     describe("the change feed", () => {
       test("every write, and only writes, in order and complete", async () => {
         await withStore(factory, async (store) => {
@@ -642,6 +730,8 @@ export async function runSecurityStoreConformance(
           await store.delete("service", "a", 9); // refused: no change
           await store.appendVersion("p", { id: "v1", policy: {} }, null);
           await store.appendVersion("p", { id: "v2", policy: {} }, "v0"); // refused
+          await store.putBundle("s", { version: 3, bundle: {} }, null);
+          await store.putBundle("s", { version: 4, bundle: {} }, null); // refused
           await store.delete("service", "a", 2);
           const { changes, head } = await store.changesSince(start, 100);
           expect(
@@ -650,6 +740,7 @@ export async function runSecurityStoreConformance(
             ["service", "a", 1, false],
             ["service", "a", 2, false],
             ["policy", "p", 1, false],
+            ["bundle", "s", 3, false],
             ["service", "a", 2, true],
           ]);
           const seqs = changes.map((c) => c.seq);
