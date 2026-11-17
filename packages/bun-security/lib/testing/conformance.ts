@@ -262,6 +262,13 @@ export async function runSecurityStoreConformance(
               store.appendAudit(auditInput(AUDIT_GENESIS_HASH, 1), null),
             ),
           ).toBe(true);
+          expect(
+            await rejects(() =>
+              store.appendAuditAtHead((head) =>
+                auditInput(head?.hash ?? AUDIT_GENESIS_HASH, 1),
+              ),
+            ),
+          ).toBe(true);
           expect(await rejects(() => store.incrementCounter("c", 1_000))).toBe(
             true,
           );
@@ -1063,6 +1070,76 @@ export async function runSecurityStoreConformance(
               (entry, at) => at === 0 || entry.prevHash === items[at - 1]!.hash,
             ),
           ).toBe(true);
+        });
+      });
+
+      test(`appending at the head never loses: ${raceSize} rounds of 4 racing appends all land, in one line (#846)`, async () => {
+        await withStore(factory, async (store) => {
+          const seen: (string | null)[] = [];
+          let k = 0;
+          const append = async () =>
+            await store.appendAuditAtHead((head) => {
+              seen.push(head?.hash ?? null);
+              return auditInput(head?.hash ?? AUDIT_GENESIS_HASH, ++k);
+            });
+          for (let round = 0; round < raceSize; round++) {
+            const results = await Promise.all(
+              Array.from({ length: 4 }, async () => await append()),
+            );
+            // Every one landed, each on the head its transaction read.
+            expect(results).toHaveLength(4);
+            for (const result of results) {
+              expect(result.entry.prevHash).not.toBe(result.entry.hash);
+            }
+          }
+          const total = raceSize * 4;
+          const { items } = await store.listAudit({ limit: total + 10 });
+          expect(items.map((entry) => entry.n)).toEqual(
+            Array.from({ length: total }, (_, at) => at + 1),
+          );
+          expect(
+            items.every(
+              (entry, at) =>
+                entry.prevHash ===
+                (at === 0 ? AUDIT_GENESIS_HASH : items[at - 1]!.hash),
+            ),
+          ).toBe(true);
+          expect(await store.getAuditHead()).toEqual({
+            n: total,
+            hash: items.at(-1)!.hash,
+          });
+          // `make` ran once per append (no retry needed, none made).
+          expect(seen).toHaveLength(total);
+        });
+      });
+
+      test("appending at the head refuses an entry not built on the head it was given, and writes nothing", async () => {
+        await withStore(factory, async (store) => {
+          const first = await store.appendAuditAtHead((head) =>
+            auditInput(head?.hash ?? AUDIT_GENESIS_HASH, 1),
+          );
+          expect(first.n).toBe(1);
+          expect(
+            await rejects(() =>
+              store.appendAuditAtHead(() => auditInput(AUDIT_GENESIS_HASH, 2)),
+            ),
+          ).toBe(true);
+          expect(await store.getAuditHead()).toEqual({
+            n: 1,
+            hash: first.entry.hash,
+          });
+          // And it mixes with the compare-and-set append.
+          const third = auditInput(first.entry.hash, 3);
+          expect(
+            await store.appendAudit(third, first.entry.hash),
+          ).toMatchObject({ ok: true, n: 2 });
+          const fourth = await store.appendAuditAtHead((head) =>
+            auditInput(head!.hash, 4),
+          );
+          expect([fourth.n, fourth.entry.prevHash]).toEqual([
+            2 + 1,
+            third.hash,
+          ]);
         });
       });
 

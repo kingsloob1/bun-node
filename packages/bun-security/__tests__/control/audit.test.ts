@@ -180,7 +180,7 @@ describe("every change is recorded, intent first", () => {
     let failAfter = Number.POSITIVE_INFINITY;
     const store = faultyStore(memoryStore(), {
       fail: (operation) =>
-        operation === "appendAudit" && ++calls > failAfter
+        operation === "appendAuditAtHead" && ++calls > failAfter
           ? new Error("audit down")
           : undefined,
     });
@@ -208,7 +208,7 @@ describe("every change is recorded, intent first", () => {
     let auditDown = false;
     const store = faultyStore(memoryStore(), {
       fail: (operation) =>
-        operation === "appendAudit" && auditDown
+        operation === "appendAuditAtHead" && auditDown
           ? new Error("audit down")
           : undefined,
     });
@@ -229,7 +229,7 @@ describe("every change is recorded, intent first", () => {
     let failAfter = Number.POSITIVE_INFINITY;
     const store = faultyStore(memoryStore(), {
       fail: (operation) =>
-        operation === "appendAudit" && ++calls > failAfter
+        operation === "appendAuditAtHead" && ++calls > failAfter
           ? new Error("audit down")
           : undefined,
     });
@@ -272,7 +272,7 @@ describe("every change is recorded, intent first", () => {
     let putDown = false;
     const store = faultyStore(memoryStore(), {
       fail: (operation) =>
-        (operation === "appendAudit" && ++calls > failAfter) ||
+        (operation === "appendAuditAtHead" && ++calls > failAfter) ||
         (operation === "put" && putDown)
           ? new Error("down")
           : undefined,

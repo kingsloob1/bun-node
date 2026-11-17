@@ -15,6 +15,7 @@ import type {
   BanRecord,
   CounterValue,
   AppendAuditResult,
+  AuditAppended,
   AppendResult,
   AuditCheckpoint,
   AuditHead,
@@ -468,6 +469,20 @@ export function memoryStore(
         ok: true,
         n,
         seq: record("audit", String(n), n, false),
+      });
+    },
+    appendAuditAtHead: async (make): Promise<AuditAppended> => {
+      refuseClosed(name, closed);
+      // One synchronous step: nothing else runs between the read and the write.
+      const head = auditHead;
+      const entry = checkAuditInput(make(head), head?.hash ?? null);
+      const n = (head?.n ?? 0) + 1;
+      audit.push(Object.freeze({ ...entry, n }));
+      auditHead = Object.freeze({ n, hash: entry.hash });
+      return Object.freeze({
+        n,
+        seq: record("audit", String(n), n, false),
+        entry,
       });
     },
     getAuditHead: async () => {

@@ -4,7 +4,7 @@
  * inheritance, bundles, approvals and role bindings, over a security
  * store. The routes (`./routes`) call it; nothing here reads a request.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   BanInputRecord,
   BanRecord,
@@ -64,6 +64,22 @@ import { breakGlassOperators } from "./audit/context";
 import type { AuditIntentInput } from "./audit/log";
 import { ENTITY_ID, groupScope, parseScope, serviceScope } from "./scopes";
 import { signBundle } from "./signing";
+
+/** How long after a head moved the repair pass leaves its bundles to the publish (#847). */
+const REPAIR_GRACE_MS = 30_000;
+
+/** The most bundles one repair pass compiles. */
+const REPAIR_LIMIT = 100;
+
+/** How long a repair's claim holds before another instance may take it. */
+const CLAIM_TTL_MS = 60_000;
+
+/** Whether a bundle's `policyVersions` are `wanted`, in any order. */
+function sameVersions(have: unknown, wanted: readonly string[]): boolean {
+  if (!Array.isArray(have) || have.length !== wanted.length) return false;
+  const set = new Set(wanted);
+  return have.every((id) => typeof id === "string" && set.has(id));
+}
 
 /** A JSON object. */
 type JsonObject = Record<string, unknown>;
@@ -1087,6 +1103,79 @@ export class ControlPlane {
       "conflict",
       `the bundle of service "${serviceId}" kept changing; try again`,
     );
+  }
+
+  /**
+   * The repair pass (#847): recompiles each service bundle whose policy
+   * versions are behind the heads of its scopes, as a publish cut off
+   * between appending its version and writing its bundles leaves it.
+   * - A head moved less than `graceMs` ago is left alone: its publish may
+   *   still be compiling, on this instance or another.
+   * - Safe with several instances at once: each repair is claimed in the
+   *   store (`claimKey`, per service and head) by one of them; a claimer
+   *   that dies leaves the claim to lapse after `CLAIM_TTL_MS`, and the
+   *   next pass repairs it.
+   * - Bounded: at most `limit` bundles a pass; the rest wait for the next.
+   * - Each repair is audited as a system action, `bundle.repair`.
+   * A service whose effective policy does not compile, or that has no
+   * bundle yet, is skipped. Answers the bundles compiled.
+   */
+  async repairBundles(
+    options: { readonly graceMs?: number; readonly limit?: number } = {},
+  ): Promise<CompiledBundleDto[]> {
+    const graceMs = options.graceMs ?? REPAIR_GRACE_MS;
+    const limit = options.limit ?? REPAIR_LIMIT;
+    const out: CompiledBundleDto[] = [];
+    for (const doc of await this.#all("service")) {
+      if (out.length >= limit) break;
+      const serviceId = doc.id;
+      const current = await this.store.getBundle(serviceId);
+      if (current === undefined || current === "not-modified") continue;
+      let wanted: readonly string[];
+      try {
+        wanted = (await this.effective(serviceId)).policyVersions;
+      } catch {
+        continue;
+      }
+      const have = (current.bundle as { policyVersions?: unknown })
+        .policyVersions;
+      if (sameVersions(have, wanted)) continue;
+      // A head that moved just now may belong to a publish still compiling.
+      const scopes: PolicyScopeId[] = [
+        "global",
+        ...(await this.#groupScopesOf(serviceId)),
+        serviceScope(serviceId),
+      ];
+      let moved = 0;
+      for (const scope of scopes) {
+        const head = await this.store.get("policy", scope);
+        if (head !== undefined) moved = Math.max(moved, head.updatedAt);
+      }
+      if (this.options.now() - moved < graceMs) continue;
+      const claim = `bundle-repair:${serviceId}:${createHash("sha256")
+        .update([...wanted].sort().join("\n"))
+        .digest("hex")
+        .slice(0, 32)}`;
+      if (!(await this.store.claimKey(claim, CLAIM_TTL_MS))) continue;
+      out.push(
+        await this.#audited(
+          {
+            action: "bundle.repair",
+            scope: serviceScope(serviceId),
+            target: {
+              kind: "bundle",
+              id: serviceId,
+              revision: current.version + 1,
+            },
+            before: { version: current.version, policyVersions: have },
+            after: { policyVersions: wanted },
+          },
+          async () => await this.compileBundle(serviceId),
+          (compiled) => ({ version: compiled.version }),
+        ),
+      );
+    }
+    return out;
   }
 
   /** Recompiles every service under `scope`. */

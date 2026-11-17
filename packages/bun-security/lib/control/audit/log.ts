@@ -92,7 +92,7 @@ export interface AuditLogOptions {
   readonly logger: Logger;
 }
 
-/** How many times an append is tried (a raced head, a store blip). */
+/** How many times an append is tried (a store blip; the head is never raced, #846). */
 const APPEND_ATTEMPTS = 3;
 
 /** The most checkpoints a sink keeps waiting for a retry. */
@@ -127,7 +127,13 @@ export class AuditLog {
     return run;
   }
 
-  /** Appends `entry` (the hashed body) on the head, retrying a raced head; the record. */
+  /**
+   * Appends `entry` (the hashed body) on the head, retrying a store blip;
+   * the record. The head is read and the entry written in one serialised
+   * transaction of the store (`appendAuditAtHead`), so another instance's
+   * append can never make this one lose (#846): the entry's hash links to
+   * the head that transaction read.
+   */
   async #append(
     action: string,
     scope: string,
@@ -137,39 +143,36 @@ export class AuditLog {
       let lastError: unknown;
       for (let attempt = 0; attempt < APPEND_ATTEMPTS; attempt++) {
         try {
-          const head = await this.options.store.getAuditHead();
-          const prevHash = head?.hash ?? AUDIT_GENESIS_HASH;
-          const at = this.options.now();
-          // The indexed columns are in the hashed body too, so none can be edited unseen.
-          const body = { ...entry, action, scope, at };
-          const hash = auditHash(prevHash, body);
           const actor =
             (entry.actor as AuditActorDto | undefined)?.id ?? "system";
-          const input = {
-            hash,
-            prevHash,
-            at,
-            actor,
-            action,
-            scope,
-            entry: body,
-          };
-          const result = await this.options.store.appendAudit(
-            input,
-            head?.hash ?? null,
+          const appended = await this.options.store.appendAuditAtHead(
+            (head) => {
+              const prevHash = head?.hash ?? AUDIT_GENESIS_HASH;
+              const at = this.options.now();
+              // The indexed columns are in the hashed body too, so none can be edited unseen.
+              const body = { ...entry, action, scope, at };
+              return {
+                hash: auditHash(prevHash, body),
+                prevHash,
+                at,
+                actor,
+                action,
+                scope,
+                entry: body,
+              };
+            },
           );
-          if (result.ok) {
-            const record: AuditRecord = { ...input, n: result.n };
-            await this.#maybeCheckpoint({ n: result.n, hash }).catch(
-              (error: unknown) =>
-                this.options.logger.error(
-                  "bun-security audit: a checkpoint failed",
-                  { error },
-                ),
-            );
-            return record;
-          }
-          lastError = new Error("the audit head moved");
+          const record: AuditRecord = { ...appended.entry, n: appended.n };
+          await this.#maybeCheckpoint({
+            n: appended.n,
+            hash: appended.entry.hash,
+          }).catch((error: unknown) =>
+            this.options.logger.error(
+              "bun-security audit: a checkpoint failed",
+              { error },
+            ),
+          );
+          return record;
         } catch (error) {
           lastError = error;
         }
@@ -378,6 +381,15 @@ export class AuditLog {
         undefined
         ? "not-applied"
         : "completed-unconfirmed";
+    }
+    if (target.kind === "bundle") {
+      // A repair (#847): the service's bundle reached the version named.
+      const bundle = await store.getBundle(target.id).catch(() => undefined);
+      return bundle !== undefined &&
+        bundle !== "not-modified" &&
+        bundle.version >= (target.revision ?? 1)
+        ? "completed-unconfirmed"
+        : "not-applied";
     }
     if (target.kind === "ban") {
       // A ban is never deleted: a lift is its `liftedAt`.

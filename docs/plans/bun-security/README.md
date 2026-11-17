@@ -1884,6 +1884,29 @@ Migration (no release has shipped, so this matters only for data written by deve
 - A control-plane store refuses to write a raw user subject, but rows already there are read as they are.
 - Per-user limit counters restart under the new keys.
 
+### 17.32 Added with T1's two control-plane findings (#846, #847, approved by the user, 2026-11-17)
+
+| Names | Where |
+|---|---|
+| `SecurityStoreDriver.appendAuditAtHead(make)` and its answer `AuditAppended` (`n`, `seq`, `entry`); `faultyStore`'s operation `"appendAuditAtHead"` | `./store`, `./testing` |
+| `SecurityApiOptions.bundleRepair` (`{ interval }` from 1 s to 1 h, default `"1m"`, or `false`) | `./control` |
+| `SecurityApi.repairBundles()`, `SecurityApi.close()`; `ControlPlane.repairBundles({ graceMs, limit })` | `./control` |
+| the audit action `bundle.repair` (actor `system`), target kind `bundle` (reconciled by the bundle's version) | the audit log |
+
+What changes:
+- **#846.** The audit log no longer reads the head and then compare-and-sets.
+  - `appendAuditAtHead` reads the head and appends in one serialised transaction: Postgres's advisory lock (D2's), SQLite's `BEGIN IMMEDIATE`, and one synchronous step on memory.
+  - The entry is built by `make(head)` inside it, so its hash links to the head that transaction read. Another instance's append can never make it lose.
+  - The three tries now cover store failures only.
+  - `appendAudit` (the compare-and-set) stays in the store contract, and the kit checks the two mixed.
+  - Every store must implement the new operation (a third-party store too). The conformance kit runs racing at-head appends and refuses an entry not built on the head it was given.
+- **#847.** The bundle repair pass recompiles each service bundle whose `policyVersions` differ from its scopes' heads.
+  - It runs at start and every interval, on every instance.
+  - It leaves a head that moved within half the interval (at most 30 s) to its publish.
+  - Each repair is claimed through `claimKey`, per service and head set, for 60 s, so one instance makes it.
+  - At most 100 repairs a pass. Each is audited as a system action.
+  - A service with no bundle yet, or whose effective policy does not compile, is skipped.
+
 ## 18. Findings outside this plan
 
 Found while surveying; each is reported, none fixed here.

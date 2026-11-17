@@ -126,6 +126,14 @@ export interface SecurityApiOptions {
     /** Whether user bans are taken. Default `true` (and then `secret` is required). */
     readonly users?: boolean;
   };
+  /**
+   * The bundle repair pass (#847): how often it runs, and at start, to
+   * recompile a service bundle left behind its policy heads (a publish cut
+   * off before its bundles). Default `"1m"`; `false` turns it off (the host
+   * then runs `repairBundles()` itself). A head that moved within half the
+   * interval (at most 30 s) is left to its publish.
+   */
+  readonly bundleRepair?: { readonly interval?: Duration } | false;
   /** Where the API is mounted. Default `/security/api`. */
   readonly basePath?: string;
   /**
@@ -182,6 +190,8 @@ export interface ResolvedSecurityApiOptions {
   readonly signer: ResolvedSigner;
   /** In milliseconds. */
   readonly bundleTtlMs: number;
+  /** The bundle repair pass's interval, ms; `undefined` when off. */
+  readonly bundleRepairMs: number | undefined;
   /** The audit log's settings, resolved. */
   readonly audit: {
     /** The audit key. */
@@ -329,6 +339,7 @@ export function resolveOptions(
       options.bundleTtl ?? "7d",
       "createSecurityApi(): bundleTtl",
     ),
+    bundleRepairMs: resolveBundleRepair(options.bundleRepair),
     basePath,
     csrf,
     docs: {
@@ -349,6 +360,28 @@ export function resolveOptions(
       user: options.bans?.users !== false,
     }),
   };
+}
+
+/** The bundle repair pass's interval in ms (1 s to 1 h), or `undefined` when off. */
+function resolveBundleRepair(
+  repair: SecurityApiOptions["bundleRepair"],
+): number | undefined {
+  if (repair === false) return undefined;
+  if (repair !== undefined && (typeof repair !== "object" || repair === null)) {
+    throw new ConfigError(
+      "createSecurityApi(): bundleRepair is an object ({ interval }) or false",
+    );
+  }
+  const ms = toDurationMs(
+    repair?.interval ?? "1m",
+    "createSecurityApi(): bundleRepair.interval",
+  );
+  if (ms < 1_000 || ms > 3_600_000) {
+    throw new ConfigError(
+      `createSecurityApi(): bundleRepair.interval must be from 1 s to 1 h; got ${ms} ms`,
+    );
+  }
+  return ms;
 }
 
 /** The ban subjects' keyring: required while API-key or user bans are on. */

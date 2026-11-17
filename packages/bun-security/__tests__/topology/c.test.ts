@@ -410,9 +410,9 @@ if (POSTGRES_URL === undefined) {
         expect(verify.problems).toEqual([]);
         expect(verify.ok).toBe(true);
       }
-      // Each change that landed has its intent in the one chain, and its done or, where the done
-      // lost the race too (the finding below), a reconciliation as completed-unconfirmed; a
-      // refused one (503) wrote nothing at all.
+      // Each change that landed has its intent in the one chain, and its done or, should a done
+      // ever fail to be written, a reconciliation as completed-unconfirmed (before #846 a done
+      // could lose the race to the other instance); a refused one (503) wrote nothing at all.
       const landed = answers.filter((answer) => answer.status === 201).length;
       expect(
         answers.every(
@@ -451,22 +451,15 @@ if (POSTGRES_URL === undefined) {
       ).toBe(true);
     }, 60_000);
 
-    // FINDING (T1): with two instances writing at once, some changes are refused with 503
-    // audit_unavailable: the audit intent's compare-and-set on the chain's head loses three
-    // times running to the other instance (AuditLog reads the head outside the store's write
-    // lock and tries three times). The chain never forks (above), but changes that should land
-    // are refused. Marked failing until it is fixed: it then passes, and `failing` makes it fail,
-    // so the mark is removed with the fix.
-    it.failing(
-      "every change lands while both instances write at once",
-      async () => {
-        const answers = await race(150);
-        expect(answers.map((answer) => answer.status)).toEqual(
-          Array.from({ length: 12 }, () => 201),
-        );
-      },
-      60_000,
-    );
+    // Found by T1 (#846): the audit log read the head outside the store's write lock and lost
+    // its compare-and-set three times running to the other instance, refusing changes with 503
+    // audit_unavailable. It now appends at the head inside the store's serialised transaction.
+    it("every change lands while both instances write at once", async () => {
+      const answers = await race(150);
+      expect(answers.map((answer) => answer.status)).toEqual(
+        Array.from({ length: 12 }, () => 201),
+      );
+    }, 60_000);
 
     it("the break-glass lockout is shared by both instances", async () => {
       const login = async (base: string, password: string) =>
@@ -653,52 +646,47 @@ if (POSTGRES_URL === undefined) {
       }
     }, 60_000);
 
-    // FINDING (T1): a crash between appending a version and compiling its bundles leaves every
-    // service on the previous bundle until the next change: nothing recompiles a bundle whose
-    // policy versions are behind the head (no fork, but the publish does not reach the agents).
-    // Marked failing until a repair exists: it then passes, and `failing` makes it fail.
-    it.failing(
-      "a publish cut off before its bundles is repaired: the bundle catches up with the head",
-      async () => {
-        const c = await controlPlane();
-        const urlC = c.ready.url as string;
-        try {
-          const head =
-            (await call(urlB, "GET", "/policies/global")).body.head?.id ?? null;
-          await c.ask({ op: "die", on: "putBundle" });
-          await call(urlC, "PUT", "/policies/global/draft", {
-            policy: { lists: [{ ip: "198.51.100.77", action: "block" }] },
-            revision: null,
-          });
-          await fetch(`${urlC}/policies/global/publish`, {
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-              "x-bun-security-csrf": "1",
-              "x-op": "alice",
-            },
-            body: JSON.stringify({ expectedHead: head, confirm: "global" }),
-          }).catch(() => undefined);
-          expect(await c.exited).toBe(70);
-          const newHead = (await call(urlB, "GET", "/policies/global")).body
-            .head.id as string;
-          expect(newHead).not.toBe(head);
-          await until(
-            "the bundle compiled from the new head",
-            async () => {
-              const bundle = (
-                await call(urlB, "GET", "/services/checkout/bundle")
-              ).body as { policyVersions?: string[] };
-              return bundle.policyVersions?.includes(newHead) === true;
-            },
-            5_000,
-          );
-        } finally {
-          await c.close();
-        }
-      },
-      60_000,
-    );
+    // Found by T1 (#847): a crash between appending a version and compiling its bundles left
+    // every service on the previous bundle until the next change. The other instances' repair
+    // pass (here every second) now recompiles a bundle whose policy versions are behind the head.
+    it("a publish cut off before its bundles is repaired: the bundle catches up with the head", async () => {
+      const c = await controlPlane();
+      const urlC = c.ready.url as string;
+      try {
+        const head =
+          (await call(urlB, "GET", "/policies/global")).body.head?.id ?? null;
+        await c.ask({ op: "die", on: "putBundle" });
+        await call(urlC, "PUT", "/policies/global/draft", {
+          policy: { lists: [{ ip: "198.51.100.77", action: "block" }] },
+          revision: null,
+        });
+        await fetch(`${urlC}/policies/global/publish`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-bun-security-csrf": "1",
+            "x-op": "alice",
+          },
+          body: JSON.stringify({ expectedHead: head, confirm: "global" }),
+        }).catch(() => undefined);
+        expect(await c.exited).toBe(70);
+        const newHead = (await call(urlB, "GET", "/policies/global")).body.head
+          .id as string;
+        expect(newHead).not.toBe(head);
+        await until(
+          "the bundle compiled from the new head",
+          async () => {
+            const bundle = (
+              await call(urlB, "GET", "/services/checkout/bundle")
+            ).body as { policyVersions?: string[] };
+            return bundle.policyVersions?.includes(newHead) === true;
+          },
+          5_000,
+        );
+      } finally {
+        await c.close();
+      }
+    }, 60_000);
 
     it("an agent restarted while every instance it knows is down enforces its last known good", async () => {
       // An instance (D) and an agent (ag5) of their own, so the other cases keep A, B and theirs.
