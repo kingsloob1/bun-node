@@ -203,15 +203,40 @@ describe("handlerTarget", () => {
   });
 });
 
+/**
+ * Checks `count` addresses from `address(i)` in one pass, answering a
+ * summary to assert on with one `expect`: how many are distinct, and the
+ * indices of any that do not parse or fall in an internal range (the ranges
+ * parsed once). One `expect` per address made the full 64,516 a few seconds
+ * of bookkeeping, past bun:test's 5 s on a loaded machine.
+ */
+function addressSummary(
+  count: number,
+  address: (i: number) => string,
+): { distinct: number; invalid: number[]; internal: number[] } {
+  const ranges = INTERNAL_RANGES.map((range) => parseCidr(range)!);
+  const seen = new Set<string>();
+  const invalid: number[] = [];
+  const internal: number[] = [];
+  for (let i = 0; i < count; i++) {
+    const text = address(i);
+    seen.add(text);
+    const parsed = parseAddress(text);
+    if (parsed === null) invalid.push(i);
+    else if (ranges.some((range) => cidrContains(range, parsed)))
+      internal.push(i);
+  }
+  return { distinct: seen.size, invalid, internal };
+}
+
 describe("addresses", () => {
   it("nthAddress gives distinct, valid, public addresses", () => {
-    const seen = new Set<string>();
-    for (let i = 0; i < 64_516; i++) {
-      const address = nthAddress(i);
-      expect(parseAddress(address)).not.toBeNull();
-      seen.add(address);
-    }
-    expect(seen.size).toBe(64_516);
+    // Every one of the base's 64,516, checked in bulk.
+    expect(addressSummary(64_516, (i) => nthAddress(i))).toEqual({
+      distinct: 64_516,
+      invalid: [],
+      internal: [],
+    });
     // Past the base's capacity it throws rather than repeating an address.
     expect(() => nthAddress(64_516)).toThrow(RangeError);
     expect(() => nthAddress(254, "203.0.113")).toThrow(RangeError);
@@ -223,12 +248,19 @@ describe("addresses", () => {
     ]);
     expect(nthAddress(5, "203.0.113")).toBe("203.0.113.6");
     expect(nthAddress(0, "10")).toBe("10.0.0.1");
-    expect([...seen].some(isInternal)).toBe(false);
     expect(
       keyCardinalityFlood({ count: 3000 }).requests.some((request) =>
         isInternal(request.client),
       ),
     ).toBe(false);
+  });
+
+  it("negative control: the bulk check catches a repeat, a malformed address and an internal one", () => {
+    expect(
+      addressSummary(1_000, (i) =>
+        i === 3 ? "not-an-address" : i === 7 ? "10.0.0.1" : nthAddress(i % 999),
+      ),
+    ).toEqual({ distinct: 999, invalid: [3], internal: [7] });
   });
 
   it("ipv6InPrefix gives distinct addresses inside one /64", () => {
