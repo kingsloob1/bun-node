@@ -23,6 +23,7 @@ import type {
 import type { ResolvedCounter, ResolvedCounterQuery } from "./analytics";
 import type {
   AppendAuditResult,
+  BanRecord,
   AppendResult,
   AuditCheckpoint,
   AuditHead,
@@ -83,7 +84,16 @@ import {
   bundleEtag,
   checkAuditInput,
   checkCheckpoint,
+  banActive,
+  banCursor,
+  banId,
+  banPosition,
+  checkBanInput,
   checkCounter,
+  UNFED_KINDS,
+  checkLift,
+  mergeStoredBan,
+  resolveBanQuery,
   checkpointCursor,
   checkpointPosition,
   checkBundleInput,
@@ -136,6 +146,8 @@ export function storeTables(prefix: string): {
   analyticsCounters: string;
   /** The analytics state: each rollup's watermark. */
   analyticsState: string;
+  /** Bans (storage.md §3.1), lifted ones kept. */
+  bans: string;
 } {
   return {
     docs: `${prefix}docs`,
@@ -150,6 +162,7 @@ export function storeTables(prefix: string): {
     eventBatches: `${prefix}event_batches`,
     analyticsCounters: `${prefix}analytics_counters`,
     analyticsState: `${prefix}analytics_state`,
+    bans: `${prefix}bans`,
   };
 }
 
@@ -171,6 +184,7 @@ export function storeSchema(
     eventBatches,
     analyticsCounters,
     analyticsState,
+    bans,
   } = storeTables(prefix);
   const { idType, nameType, jsonType, timeType, serialType, longTextType } =
     dialect;
@@ -248,6 +262,19 @@ export function storeSchema(
           { name: "at", type: timeType, suffix: "NOT NULL" },
           { name: "key_id", type: idType, suffix: "NOT NULL" },
           { name: "signature", type: longTextType, suffix: "NOT NULL" },
+        ],
+      },
+      {
+        name: bans,
+        primaryKey: ["id"],
+        columns: [
+          { name: "id", type: idType, suffix: "NOT NULL" },
+          { name: "scope", type: idType, suffix: "NOT NULL" },
+          { name: "expires_at", type: timeType },
+          { name: "lifted_at", type: timeType },
+          { name: "revision", type: "INTEGER", suffix: "NOT NULL" },
+          { name: "updated_at", type: timeType, suffix: "NOT NULL" },
+          { name: "ban", type: jsonType, suffix: "NOT NULL" },
         ],
       },
       {
@@ -350,6 +377,11 @@ export function storeSchema(
         name: `ix_${prefix}audit_at`,
         table: audit,
         columns: ["at", "n"],
+      },
+      {
+        name: `ix_${prefix}bans_scope`,
+        table: bans,
+        columns: ["scope", "id"],
       },
       {
         name: `ix_${prefix}audit_actor`,
@@ -818,6 +850,29 @@ export function sqlSecurityStore(
     return seq;
   };
 
+  /** A stored ban's body, opened. */
+  const openBan = (id: string, body: unknown): BanRecord =>
+    Object.freeze(
+      codec.open(dialect.jsonOut(body, null), {
+        field: "doc",
+        kind: "ban",
+        id,
+      }) as BanRecord,
+    );
+
+  /** The ban `id`, read with `sql`. */
+  const readBan = async (
+    sql: SQL,
+    id: string,
+  ): Promise<BanRecord | undefined> => {
+    const p = new Params(dialect);
+    const rows = (await sql.unsafe(
+      `SELECT ban FROM ${tables.bans} WHERE id = ${p.bind(id)}`,
+      p.values,
+    )) as { ban: unknown }[];
+    return rows[0] === undefined ? undefined : openBan(id, rows[0].ban);
+  };
+
   /** Writes a document's new body and revision with `sql`. */
   const write = async (
     sql: SQL,
@@ -941,7 +996,9 @@ export function sqlSecurityStore(
         return Object.freeze({
           ok: true as const,
           revision,
-          seq: await record(tx, kind, id, revision, false),
+          seq: UNFED_KINDS.has(kind)
+            ? 0n
+            : await record(tx, kind, id, revision, false),
         });
       });
     },
@@ -961,7 +1018,8 @@ export function sqlSecurityStore(
           p.values,
         );
         if ((await dialect.affectedRows(result, tx)) !== 1) return false;
-        await record(tx, kind, id, ifRevision, true);
+        if (!UNFED_KINDS.has(kind))
+          await record(tx, kind, id, ifRevision, true);
         return true;
       });
     },
@@ -1583,6 +1641,106 @@ export function sqlSecurityStore(
           q.values,
         );
         return await dialect.affectedRows(result, tx);
+      });
+    },
+    upsertBan: async (input) => {
+      const ban = checkBanInput(input);
+      const id = banId(ban.scope, ban.subject);
+      const sql = await connection();
+      return await dialect.transaction(sql, async (tx) => {
+        await init.serialize?.(tx);
+        const existing = await readBan(tx, id);
+        const merged = mergeStoredBan(existing, ban, now());
+        const p = new Params(dialect);
+        const values = [
+          p.bind(merged.id),
+          p.bind(merged.scope),
+          p.bind(merged.expiresAt),
+          p.bind(merged.liftedAt),
+          p.bind(merged.revision),
+          p.bind(merged.updatedAt),
+          p.bind(
+            dialect.jsonIn(
+              codec.seal(merged, { field: "doc", kind: "ban", id }),
+            ),
+          ),
+        ];
+        await tx.unsafe(
+          `INSERT INTO ${tables.bans} (id, scope, expires_at, lifted_at, revision, updated_at, ban)
+            VALUES (${values.join(", ")})
+            ON CONFLICT (id) DO UPDATE SET expires_at = excluded.expires_at, lifted_at = excluded.lifted_at,
+              revision = excluded.revision, updated_at = excluded.updated_at, ban = excluded.ban`,
+          p.values,
+        );
+        await record(tx, "ban", id, merged.revision, false);
+        return merged;
+      });
+    },
+    liftBan: async (id, by, at) => {
+      checkId(id, "a ban id");
+      checkLift(by, at);
+      const sql = await connection();
+      return await dialect.transaction(sql, async (tx) => {
+        await init.serialize?.(tx);
+        const current = await readBan(tx, id);
+        if (current === undefined || !banActive(current, now())) return false;
+        const lifted: BanRecord = Object.freeze({
+          ...current,
+          liftedAt: at,
+          liftedBy: by,
+          updatedAt: now(),
+          revision: current.revision + 1,
+        });
+        const p = new Params(dialect);
+        await tx.unsafe(
+          `UPDATE ${tables.bans} SET lifted_at = ${p.bind(at)}, revision = ${p.bind(lifted.revision)},
+            updated_at = ${p.bind(lifted.updatedAt)},
+            ban = ${p.bind(dialect.jsonIn(codec.seal(lifted, { field: "doc", kind: "ban", id })))}
+            WHERE id = ${p.bind(id)}`,
+          p.values,
+        );
+        await record(tx, "ban", id, lifted.revision, false);
+        return true;
+      });
+    },
+    getBan: async (id) => {
+      checkId(id, "a ban id");
+      return await readBan(await connection(), id);
+    },
+    listBans: async (query) => {
+      const resolved = resolveBanQuery(query);
+      const after = banPosition(resolved);
+      const desc = resolved.direction === "desc";
+      const sql = await connection();
+      const p = new Params(dialect);
+      const where: string[] = [];
+      if (resolved.scopes !== null) {
+        where.push(
+          `scope IN (${resolved.scopes.map((scope) => p.bind(scope)).join(", ")})`,
+        );
+      }
+      if (resolved.active !== null) {
+        const at = p.bind(now());
+        const active = `(lifted_at IS NULL AND (expires_at IS NULL OR expires_at > ${at}))`;
+        where.push(resolved.active ? active : `NOT ${active}`);
+      }
+      if (after !== undefined)
+        where.push(`id ${desc ? "<" : ">"} ${p.bind(after)}`);
+      const rows = (await sql.unsafe(
+        `SELECT id, ban FROM ${tables.bans}
+          ${where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`}
+          ORDER BY id ${desc ? "DESC" : "ASC"} LIMIT ${resolved.limit + 1}`,
+        p.values,
+      )) as { id: string; ban: unknown }[];
+      const items = rows
+        .slice(0, resolved.limit)
+        .map((row) => openBan(row.id, row.ban));
+      const last = items.at(-1);
+      return Object.freeze({
+        items: Object.freeze(items),
+        ...(rows.length > resolved.limit && last !== undefined
+          ? { next: banCursor(resolved, last.id) }
+          : {}),
       });
     },
     // Counters and claims: one upsert each (RETURNING, on SQLite and

@@ -27,6 +27,7 @@ export type DocKind =
   | "policy"
   | "serviceIdentity"
   | "agentKey"
+  | "agentHealth"
   | "operator"
   | "roleBinding"
   | "alertChannel"
@@ -41,6 +42,7 @@ export const DOC_KINDS: readonly DocKind[] = Object.freeze([
   "policy",
   "serviceIdentity",
   "agentKey",
+  "agentHealth",
   "operator",
   "roleBinding",
   "alertChannel",
@@ -90,7 +92,7 @@ export type PutResult =
       readonly ok: true;
       /** The document's new revision. */
       readonly revision: number;
-      /** The change the write appended. */
+      /** The change the write appended; `0n` for a kind kept out of the feed (`agentHealth`). */
       readonly seq: bigint;
     }
   | {
@@ -193,7 +195,7 @@ export type PutBundleResult =
     };
 
 /** What a {@link Change} names: a document's kind, `bundle` for a service's bundle, `audit` for an audit entry. */
-export type ChangeKind = DocKind | "bundle" | "audit";
+export type ChangeKind = DocKind | "bundle" | "audit" | "ban";
 
 /**
  * An audit entry to append (control-plane.md §6): the control plane
@@ -272,6 +274,70 @@ export interface AuditQuery {
   readonly fromN?: number;
   /** Only entries numbered at most this. */
   readonly toN?: number;
+}
+
+/** What a ban refuses, as the control plane keeps it: the subject an EP's `ban()` takes. */
+export interface StoredBanSubject {
+  /** `ip` (an address), `cidr` (a range), `user` or `apiKey` (as `identify()` returns them). */
+  readonly type: "ip" | "cidr" | "user" | "apiKey";
+  /** The address, range or user id (1 to 512 characters), or an API key's HMAC under the fleet's secret (32 hex characters; never the id). */
+  readonly value: string;
+}
+
+/** A ban to write (storage.md §3.1). */
+export interface BanInputRecord {
+  /** Where it applies: `global`, `group:<id>` or `service:<id>`. */
+  readonly scope: string;
+  /** What it refuses. */
+  readonly subject: StoredBanSubject;
+  /** `ban` refuses; `challenge` challenges. */
+  readonly action: "ban" | "challenge";
+  /** Why, for operators (1 to 500 characters); never sent to a client. */
+  readonly reason: string;
+  /** `manual` (an operator) or `auto` (a rule on an EP). */
+  readonly source: "auto" | "manual";
+  /** When it ends, epoch ms; `null` until lifted. */
+  readonly expiresAt: number | null;
+  /** Who wrote it (an operator id, or the reporting service). */
+  readonly createdBy?: string;
+  /** The rule that wrote an automatic ban. */
+  readonly rule?: string;
+  /** The problem code it answers with. */
+  readonly code?: string;
+  /** The service that reported an automatic ban. */
+  readonly service?: string;
+}
+
+/** A stored ban. */
+export interface BanRecord extends BanInputRecord {
+  /** Its id: one per scope and subject ({@link banId}). */
+  readonly id: string;
+  /** When it (last) started, epoch ms. */
+  readonly createdAt: number;
+  /** When it was last written. */
+  readonly updatedAt: number;
+  /** How many times it was written, merges and restarts included. */
+  readonly count: number;
+  /** Its revision, one more per write or lift. */
+  readonly revision: number;
+  /** When it was lifted; `null` while not. */
+  readonly liftedAt: number | null;
+  /** Who lifted it. */
+  readonly liftedBy?: string;
+}
+
+/** A ban list's query. */
+export interface BanQuery {
+  /** The most bans a page holds, 1 to {@link MAX_PAGE_LIMIT}. */
+  readonly limit: number;
+  /** The previous page's `next`, bound to the same filter and direction. */
+  readonly cursor?: string;
+  /** By id, `asc` (the default) or `desc`. */
+  readonly direction?: "asc" | "desc";
+  /** Only bans on one of these scopes, 1 to {@link MAX_AUDIT_SCOPES}. */
+  readonly scopes?: readonly string[];
+  /** `true`: only bans in force now (not lifted, not expired); `false`: only the others (history). */
+  readonly active?: boolean;
 }
 
 /** A short-lived counter's value. */
@@ -662,6 +728,21 @@ export interface SecurityStoreDriver {
    * every client (single-use codes).
    */
   claimKey: (key: string, ttlMs: number) => Promise<boolean>;
+
+  /**
+   * Writes a ban, merged with the record its scope and subject already have
+   * (storage.md §3.1): an active one merges (a manual ban's description
+   * replaces an automatic one's, `ban` beats `challenge`, the later expiry
+   * wins and "until lifted" beats a date, the count grows); a lifted or
+   * expired one starts again, its count kept. The stored record.
+   */
+  upsertBan: (ban: BanInputRecord) => Promise<BanRecord>;
+  /** Lifts the ban `id` (its record is kept, as history); `false` when there is none or it is not active. */
+  liftBan: (id: string, by: string, at: number) => Promise<boolean>;
+  /** One ban by id, active or not. */
+  getBan: (id: string) => Promise<BanRecord | undefined>;
+  /** A page of bans by id, filtered by scope and by whether they are active now. */
+  listBans: (query: BanQuery) => Promise<Page<BanRecord>>;
 
   /** The changes after `seq`, oldest first, at most `limit`, and the feed's head. */
   changesSince: (

@@ -713,7 +713,7 @@ describe("validation", () => {
   it("names the defaults storage.md §8 asks for, and seals no policy or bundle", () => {
     expect(DEFAULT_SEALED_FIELDS).toEqual({
       doc: {
-        agentKey: ["secret"],
+        agentKey: ["secret", "previous.secret"],
         serviceIdentity: ["secret"],
         alertChannel: ["url", "secret"],
         operator: ["totpSeed"],

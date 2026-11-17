@@ -37,7 +37,7 @@ rule: no benchmarks or speed comparisons without the user's yes).
 |---|---|
 | This plan and its sub-plans | **approved** by the user on 2026-11-07 (above) |
 | M1, the engine | **started 2026-11-15** at the user's go-ahead. **PR-S1 merged** (#789, 2026-11-16): `packages/bun-security` with the packaging recipe, the policy format (`compilePolicy`, `securityPolicySchema`, explicit units), the engine (`createSecurity`: `evaluate`, `explain`, `load`, `status`, `close`), L2 on the trust-proxy foundation with service identity and the L2.5 trust check, L3 lists (CIDR trie, the `internal` list, allow guards), memory state, and `./serve` (`withSecurity`, `hardenServe`). **PR-S2 merged** (#793, 2026-11-16): the policy format's `version`, L9 limits on the throttle foundation (policy-driven, composite keys, several per route, `throttled` events, dry run), counted rules, L1 per-IP concurrency and the in-flight cap, L14 outcome signals (`complete`, `signal`). **PR-S3 merged** (#796, 2026-11-16): L4 bans (manual `ban`/`unban`/`bans`, merge rules, the `maxActive` bound with /24 and /48 widening), the offence score and escalation ladder, L6 (the canonical path in `facts.path`, the shape refusals, the duplicate-`Host` refusal), L8 (honeypot routes, canary credentials, trap fields), and the `policy.newer` issue code. **PR-S5 built** on `feat/bun-security-s5` (2026-11-16), not yet merged: `./http` (`installSecurity` on P2's hooks with the boot self-test, the route stage `securityMiddleware`, `securityProfile`, router-not-found marking, L13 `securityHeaders`, `csrf` and stack-trace scrubbing) and two-stage evaluation (`evaluate(facts, { stage })`) across S2's and S3's layers. **PR-S6 built** on `feat/bun-security-s6` (2026-11-16), not yet merged: bun-nest's `./security` (`SecurityModule.forRoot`/`forRootAsync`, `SecurityGuard` as `APP_GUARD` with declared dependencies, `@SecurityProfile`, `@SkipSecurity`, `@InjectSecurity`, the boot self-test, a cold-boot test) on a new `addBeforeReadHook` on bun-nest's adapter. **PR-S8 built** on `feat/bun-security-s8` (2026-11-16), not yet merged: L7 request rules (`requestRules`: the rule language, safe matchers, the glob matcher, the regex validator with T-L7-1's step-count proof, the managed probe set, staged early or route, hits feeding `pattern.hit`/`probe.hit` (since PR-T2 `rule.hit`/`probe.hit`) and the ladder, a verified-crawler hook for PR-S12). **PR-S4 built** on `feat/bun-security-s4` (2026-11-16), not merged: `./stores` over bun-cache (`cacheStore`, `hybridThrottleStore`), limits' and counted rules' `state` (`local`/`shared`/`hybrid`) and `onStoreError` (`local` at the local share, `open`, `closed`), the ban stream (a log over the store, the bus's nudge, a 5 s poll, the 60 s reconcile, a snapshot), offence scores and the ladder's history synced, distinct counts over `pfAdd`/`pfCount` (for PR-S7), WebSocket message limits (`messages`, `socket()`, `./http`'s `securityWebSocket`), and the limits counted through the throttle's `count()`/`peekCount()` (#791). **PR-S9 built** on `feat/bun-security-s9` (2026-11-16), not yet merged: L10 challenges (`./challenge`: `challenges()` with clearance cookies and header tokens, the ALTCHA-compatible `powChallenge`, `turnstile`, `hcaptcha`, the challenge page under a strict CSP), every `challenge` action made real in its own stage with the fall-back to `block` kept for an engine without a flow, and L10.1 bot signals (`botSignals`). **PR-S7 built** on `feat/bun-security-s7` (2026-11-16), not merged: L11's sensitive endpoints (route profiles `login`, `mfa`, `otp`, `reset`, `signup` scoping rules; the attempted `username` and `destination` keyed by HMAC under `createSecurity`'s `secret`; the login defences: progressive delay, challenge, soft lock, device cookies, distinct usernames per address and addresses per username over the S4 distinct counts, `risky-success`, outcome inference; `uniformAuthResponse()`; identifier patterns and `security.check()` with the breached-password hook) and the **presets** (`per-ip` and `per-user` on, enforced; the profiles' rules on, on their routes; `not_found_per_minute` off), overridable by id. **PR-S10 built** on `feat/bun-security-s10` (2026-11-16), not yet merged: L5 IP intelligence (`./intel`: our own MMDB reader `openMmdb`, `ipIntel` with country and ASN from operator-supplied databases, range feeds as classes with the refresh job, minimum entry counts and the last good copy kept), `country`/`asn` list entries, `country`/`asn`/`class` request-rule conditions and `botSignals.classes`. **PR-S12 built** on `feat/bun-security-s12` (2026-11-16), not yet merged: L3.2 verified crawlers (the registry, `ranges` and forward-confirmed `rdns` verification with its cache and bounds, the `crawlers` option and its nine exemptions, the crawler limit, `crawler.spoofed`, the conflict check, `crawlerFeeds()` in `./intel`), S8's crawler hook filled, and the managed probe set and `not_found_per_minute` on by default in dry run. **PR-S11 built** on `feat/bun-security-s11` (2026-11-16), not yet merged: L12 v1 (API keys keyed by HMAC, per-key and per-plan limits, the new-ASN and many-addresses anomalies on S4's shared state and S10's intel, `onKeyCompromised`, `revokeApiKey()`). **PR-T2 built** on `feat/bun-security-t2` (2026-11-16), not yet merged: `./testing`'s attack simulators (§11.2) and the runner, and end-to-end attack tests (`__tests__/attacks/`) against ConcaveHR's request path (§12) on `installSecurity`, closing T-L13-1 and T-INT-1 end to end. **The global failure-rate rule merged** (#824, 2026-11-17): layers.md L11.2's global failure ratio, which T2's attack suite showed missing (a spray from a fresh address per attempt answered 60 of 60), as the `login.failure-rate` preset, on in dry run (§17.20). **The eviction wiring built** on `feat/bun-security-evictions` (2026-11-17), not yet merged: the default throttle store's drops at `maxKeys` (bun-common's `onEvict`, #821, `"cap"` only) counted in `status().state.evictions` and the `state.evictions` warning, and the failure-rate rule's example (§17.21). Every other PR of M1 not started |
-| M2, the control plane | **started 2026-11-17** (the user: M2 and M3 finished before anything is published). **PR-CP2 merged** (#828, 2026-11-17): `./control` (`createSecurityApi`, `secureAdmin`) with services, groups, service identities, drafts, versions and inheritance with locked items, Ed25519-signed bundles (`verifyBundle` in `.`), dangerous-change confirmation and two-person approvals, step-up, the built-in RBAC, CSRF, the live stream and the OpenAPI and AsyncAPI documents; `./control/contract`, browser-safe; bundles in the store (§17.22). **PR-CP3 built** on `feat/bun-security-cp3` (2026-11-17), not yet merged: the audit log (a hash chain over every change, recorded intent first; Ed25519 checkpoints under a key of its own, in the store and in file, webhook or callback sinks; `verifyAudit()` naming where the chain broke, and reconciling an intent with no done; `/audit` routes, export, `purgeAudit`), its records in the store (memory, SQLite, Postgres under D2's lock), break-glass (Q11) and `onAlert` (§17.24) **PR-CP1 built** on `feat/bun-security-cp1` (2026-11-17), not yet merged: the store's analytics operations on memory, SQLite and Postgres (events, counters, series, top-K, rollups with watermarks and carried-up late rows, bounded retention deletes), `./analytics` (the recorder's minute counters, exact refusals and top-K; the event ring with the user's caps; the redaction module; `analyticsHook`; rollups and retention), and `POST /agent/events` on `createSecurityApi` (§17.26); the agent's batcher is PR-CP4's |
+| M2, the control plane | **started 2026-11-17** (the user: M2 and M3 finished before anything is published). **PR-CP2 merged** (#828, 2026-11-17): `./control` (`createSecurityApi`, `secureAdmin`) with services, groups, service identities, drafts, versions and inheritance with locked items, Ed25519-signed bundles (`verifyBundle` in `.`), dangerous-change confirmation and two-person approvals, step-up, the built-in RBAC, CSRF, the live stream and the OpenAPI and AsyncAPI documents; `./control/contract`, browser-safe; bundles in the store (§17.22). **PR-CP3 built** on `feat/bun-security-cp3` (2026-11-17), not yet merged: the audit log (a hash chain over every change, recorded intent first; Ed25519 checkpoints under a key of its own, in the store and in file, webhook or callback sinks; `verifyAudit()` naming where the chain broke, and reconciling an intent with no done; `/audit` routes, export, `purgeAudit`), its records in the store (memory, SQLite, Postgres under D2's lock), break-glass (Q11) and `onAlert` (§17.24) **PR-CP1 merged** (#837, 2026-11-17): the store's analytics operations on memory, SQLite and Postgres (events, counters, series, top-K, rollups with watermarks and carried-up late rows, bounded retention deletes), `./analytics` (the recorder's minute counters, exact refusals and top-K; the event ring with the user's caps; the redaction module; `analyticsHook`; rollups and retention), and `POST /agent/events` on `createSecurityApi` (§17.26); the agent's batcher is PR-CP4's **PR-CP4 built** on `feat/bun-security-cp4` (2026-11-17), not yet merged: the agent (`./agent`: `connectAgent`, the last known good, signed pulls of bundles and ban batches, artefacts, heartbeats, the nudge, the event batcher behind CP1's contract), agent keys with rotation and revocation, the `/agent/*` routes, bans in the store and their routes (§17.27) |
 | ConcaveHR's write-up of its defence | **folded in** (§12, received 2026-11-07): every layer mapped, its lessons carried into the design and §14 |
 | Foundations built beside this plan (§2.6) | the **trust-proxy client IP**, merged 2026-11-07, #653, and the **throttle plugin**, merged 2026-11-08 as T1 #654, T2 #655 and T3 #656 (follow-ups #669, #670, #672, #673, #675, #703), both requested by the user. bun-security builds on them (§20 lists what it needs from them) |
 | Storage drivers for durable state ([`storage.md`](storage.md)) | added 2026-11-07 at the user's request. **PR-D0a merged** (#816, 2026-11-16): `@kingsleyweb/bun-sql`; D0 split into D0a, D0b and D0c (§15.1a, §17.16), D0b and D0c deferred. **PR-D1 merged** (#818, 2026-11-16): `./store` (the driver interface with revisions, policy versions and the change feed; `memoryStore`, `sqliteStore` on bun-sql, the read-only `policyFile`), `./testing` (`runSecurityStoreConformance`, `faultyStore`), and `createSecurity({ policy: { store } })` following a stored policy with a last known good (§17.18). **PR-D2 merged** (#829, 2026-11-17): `postgresStore` on D1's SQL core, its feed pushed by `LISTEN`/`NOTIFY` (polling while `LISTEN` cannot be set up), writers serialised by a transaction-scoped advisory lock so the change sequence commits in order (§17.23). **PR-D3 built** on `feat/bun-security-d3` (2026-11-17), not yet merged: bun-cache's `./encryption` (its envelope for one value: `sealField`, `openField`, `fieldKeyRing`, `fieldKeyId`, under labels of its own), and bun-security's `./sealing` (`sealedFields`, a `StoreCodec` sealing named fields bound to their table, kind, id, version and path, with key rotation, and `resealStore`), with the default sealed fields of §17.25 |
@@ -1691,6 +1691,135 @@ Decisions recorded (the user's answers of 2026-11-17 to CP1's six questions, and
 6. **Scope**: the ban log and the heartbeats are PR-CP4's, as is the agent's batcher; CP1 ships the batch's shape, the control plane's ingestion and its route.
 
 Also decided in the build: subjects are the engine's keys (the address, the API key's HMAC, the username's HMAC); a raw user id is never kept, only an app-supplied key of it (`userKey`); a list entry's default id that names an API key or a user (`apiKey:<id>`, `user:<id>`, `ban:user:<id>`) is rewritten to the request's key (or `[redacted]`) in events and counters. `secureAdmin`'s adapter now defers bodies (`request: { deferBody: true }`), and the route authenticates in a `use` middleware, which runs before the router reads a deferred body (the router reads it just before the first *route* callback, `BunRouter.ts` near line 6699, so a check inside a route handler is too late). Measured on a real socket: at authentication the request's body stream is unused and unlocked; on an adapter without `deferBody` it has already been read (the test's negative control). What this does not cover: bytes the runtime has already received into its socket buffers, and the caps of an adapter that reads first. A check before any read at all would sit in bun-common's before-read hook (PR-P2's `addBeforeReadHook`), which sees headers only; whether to move the agent's header checks there is a follow-up. A signature over the decoded body (PR-CP4) can only be verified after the read, so the pre-read step can check the key, the timestamp and the rate, not the signature. A counter added for an hour already rolled up is added to the rolled-up tiers too (the watermarks), and retention never deletes a counter not yet rolled up.
+
+### 17.27 Added with PR-CP4 (approved by the user, 2026-11-17)
+
+| Names | Where |
+|---|---|
+| subpaths `./agent`, `./lib/agent`; `connectAgent(options)` → `SecurityAgent` (`ready`, `status()`, `sync()`, `reconcile()`, `heartbeat()`, `events`, `close()`); options `url`, `agent`, `secret` (or a list, the new first), `service`, `publicKeys`, `security`, `stateFile`, `artefactDir`, `onArtefacts`, `pollInterval` (`"30s"`), `banPollInterval` (`"5s"`), `reconcileInterval` (`"60s"`), `heartbeatInterval` (`"30s"`), `nudge` (`true`), `start` (`true`), `events`, `fetch`, `logger`, `onAlert`, `now`; types `ConnectAgentOptions`, `AgentEngine`, `AgentAlert` (kinds `state.invalid`, `bundle.refused`, `bundle.replayed`, `bundle.expired`, `bundle.unloadable`, `bans.refused`, `bans.replayed`, `artefact.mismatch`), `AgentArtefact`, `AgentStatusReport`; `AGENT_PROTOCOL_VERSION` (`bun-security-agent/1`) | `./agent` |
+| the protocol: `AGENT_HEADER` (`x-bun-security-agent`), `AGENT_SIGNATURE_HEADER` (`x-bun-security-signature`), `AGENT_REQUEST_ID_HEADER` (`x-bun-security-id`), `AGENT_SIGNATURE_WINDOW_MS` (60,000), `AGENT_ROUTES` (`bundle`, `bans`, `artefact`, `heartbeat`, `nudge`, `events`), `AGENT_ID_PATTERN`, `agentRequestId(route, ...parts)` (`<tag>.<parts>.<random>`); a 304's signature over `{"notModified":"<request id>"}`, an artefact's over `{"artefact":"<sha256>"}`; types `AgentRoute`, `AgentHeartbeat` (`route`, `sentAt`, `agentVersion`, `bundle`, `bans`, `health`, `lastError`), `AgentHeartbeatAnswer`, `AgentNudge` (`route`, `reason` `bundle`/`bans`, `at`), `AgentNudgeEvent` (`body`, `signature`), `AgentReportedHealth`; the state file `AGENT_STATE_FORMAT` (`bun-security.agent-state/1`), `AgentState` | `./agent` |
+| the batcher: `createEventBatcher(options)` → `EventBatcher` (`flush`, `queued`, `dropped`, `rejected`, `close`), `EventBatcherOptions`, `BatchAnswer`; on CP1's types (re-exported by one file, `lib/agent/events.ts`): `AgentEventBatch` (CP1's, plus `route: "events"`), `AgentEventSource` (`ring`: CP1's `EventRing`'s `take` and `size`; `recorder`: its recorder's `flush`), `SecurityEvent`, `CounterRow`, `EVENT_BATCH_FORMAT`, `EVENT_BATCH_LIMITS`, `MAX_BATCH_EVENTS` (CP1's 500), `MAX_BATCH_COUNTERS` | `./agent` |
+| `createSecurityApi`'s `agents` (`allowEphemeralStore`, `rateLimit` (600), `heartbeatInterval` (`"30s"`), `rotationGrace` (`"24h"`), `artefacts` (`{ dir }` or `{ get, put }`), `maxArtefactBytes` (128 MiB), `maxBodyBytes` (1 MiB)); `SecurityApi.addArtefact(bytes)`; `ControlPlane.agents` (`AgentRegistry`), `createBan`, `liftBan`, `listBans`, `banDto`, `audited`, `scopesAbove`, `now()`, `signer`; `agentRequest(req, res, route, context)` and `sendSigned(...)` (CP1's `/agent/events` builds on them), `AgentRegistry`, `directoryArtefacts(dir)`, `sha256Of`; types `SecurityApiAgentsOptions`, `ResolvedAgentsOptions`, `ArtefactStore`, `AgentRequest`, `AgentRequestOutcome`, `AgentRouteContext` | `./control` |
+| routes `GET /agents`, `GET /agents/:id`, `POST /agents`, `POST /agents/:id/rotate`, `POST /agents/:id/revoke`, `GET /bans?scope=&active=`, `POST /bans`, `POST /bans/:id/lift`; agent routes `GET /agent/bundle`, `GET /agent/bans?since=&full=`, `GET /agent/artefacts/:sha256`, `POST /agent/heartbeat`, `GET /agent/nudge` | the API |
+| permissions `agents:read` (analyst up), `agents:write` (admin up), `bans:read` (viewer up), `bans:write` (operator up); problem codes `rate_limited`, `too_large`; the live event `ban.changed`; the alert kind `agent.signatureFailing`; the audit actor kind `agent`; audit actions `agent.create`, `agent.rotate`, `agent.revoke`, `agent.firstContact`, `agent.keyRotated`, `agent.signatureFailing`, `agent.signatureRecovered`, `agent.refused`, `ban.create`, `ban.lift`; types `AgentDto` (statuses `never-seen`, `ok`, `late`, `offline`, `signature-failing`, `revoked`), `AgentStatus`, `AgentCreateInput`, `AgentSecretDto`, `BanDto`, `BanCreateInput` | `./control/contract`, values |
+| signed ban batches: `BAN_BATCH_FORMAT` (`bun-security.bans/1`), `BanBatch` (`format`, `service`, `request`, `since`, `seq`, `full`, `issuedAt`, `bans`, `signature`), `verifyBanBatch(batch, keys, { service, since, request })` (refusals `malformed`, `format`, `unknown-key`, `signature`, `wrong-service`, `replayed`), `banBatchSigningBytes` | `./bundle` |
+| the store's `upsertBan(ban)`, `liftBan(id, by, at)`, `getBan(id)`, `listBans({ limit, cursor, direction, scopes, active })`; `banId(scope, subject)` (`ban_<40 hex>`); types `BanInputRecord`, `BanRecord`, `BanQuery`, `StoredBanSubject` (`ip`, `cidr`, `user`, `apiKey`); the change kind `ban`; the document kind `agentHealth`; the table `<prefix>bans`, index `ix_<prefix>bans_scope`, cursor prefix `sb1.`; store keys `agentNonce:<mac>`, `agentRate:<agent>:<minute>`, `agentRefusedAudit:<agent>`; `faultyStore` operations `upsertBan`, `liftBan`, `getBan`, `listBans`; the default sealed field `agentKey.previous.secret` | `./store`, `./testing`, `./sealing` |
+
+Decided by the user (2026-11-17), from the coordinator's relay:
+
+- **Settled by the docs**: a ±60 s window, each signature's nonce claimed
+  in the store (`claimKey`); a failed or replayed bundle keeps the last
+  good one, with an alert; past `expiresAt`, a warning, still enforced;
+  the last known good written atomically, `0600`, loaded before the
+  control plane is asked; bootstrap on the host's own policy.
+- **Rotation**: `POST /agents/:id/rotate` with a step-up, the new secret
+  shown once, the old one sealed in `agentKey.previous` and accepted until
+  the agent's first request with the new one or 24 hours, whichever first;
+  revoke is immediate.
+- **Route binding**: a route tag in each bodyless request's id and a
+  `route` in each body, both checked; no bun-common change.
+- **Every answer to an agent is signed** (the envelope's `response`).
+- **Last known good**: re-verified at start like a pulled bundle; a bad one
+  ignored with a critical alert; the highest accepted version a floor
+  across restarts; trusted indefinitely after that, with the expiry
+  warning.
+- **Every signature failing**: keep enforcing; one critical alert per
+  distinct version or `ETag`; `signature-failing` in the agent's health.
+- **Ban batches are also signed with the bundle key** (changed by the
+  user from the proposal): the agent verifies each with the deploy-time
+  keys and refuses and alerts on a bad one, so a forged row in the control
+  plane's database cannot inject a ban. Changes every 5 s, a nudge on
+  change, the whole set every 60 s, scoped global ← groups ← service.
+  Tested: a forged batch, one signed with another key and a replayed older
+  batch are each refused; negative controls accept each when the check
+  that caught it is left out.
+- **Audit**: operator create, rotate and revoke go intent-first; agent
+  state changes (first contact, the switch to a rotated key, signature
+  failing starting and stopping, a known agent's refused request) are
+  events; heartbeats update health only.
+- **mTLS** is a later follow-up. **Artefacts**: an `artefacts` option, a
+  content-addressed directory or `{ get, put }`, `GET
+  /agent/artefacts/:sha256` capped at 128 MiB, hash-checked and written
+  atomically by the agent; publishing them in bundles is a later PR
+  (`addArtefact` only).
+- **With agents, a non-durable store is refused** unless
+  `allowEphemeralStore: true`; the README states the multi-host need.
+- **600 agent requests a minute per agent**; `late` after 3 missed
+  heartbeats and `offline` after 10 (30 s apart); nudge backoff 1 s to
+  60 s. The `./agent` subpath; the store's bans with the merge rules,
+  history, a `ban` change kind, conformance on memory, SQLite and Postgres,
+  writes under D2's lock.
+
+Built on these choices, for review: a ban batch is bound to the signed
+request it answers (`request`), not only to `since`, because a full
+reconcile asked from an unchanged `since` could otherwise be answered with
+an older full set that still holds a lifted ban. The last known good keeps
+the last **full** ban batch as signed, re-verified at start (its request
+binding was checked when it arrived); deltas after it are re-fetched. A
+known agent's refusals reach the audit chain at most once a minute per
+agent (the rest are logged), so garbage sent under an agent's id cannot
+grow the chain. The agent signs a gzip body's decoded content (gzip is
+only how it travels), because bun-common's router reads and decodes a body
+before any route runs, even under the adapter's `deferBody` (measured): the
+agent routes check the key, the time and the rate before looking at the
+body, then the kept bytes (`req.buffer`, which needs `retainBuffer`, on by
+default); this is also what CP1's `/agent/events` gets through
+`agentRequest`. Answers without a body (a 304) are signed over a text
+naming their request, and an artefact's over a text naming its SHA-256 (the
+envelope refuses to sign a bodyless response, or a body made only of id
+characters). Making or rotating a key under two-person approvals with no
+step-up hook is refused (an approval would have to show the secret to
+someone). An agent's CP bans are applied with the engine's `ban()` (its
+raw subject, its remaining duration); two scopes' bans of one subject are
+one engine ban, re-applied when one of them is lifted. Bans are listed by
+id; `GET /bans?scope=` includes what is under the scope, as `/audit` does.
+
+The user approved these names and choices (2026-11-17) and decided two
+changes, made in the same PR:
+
+- **The control plane keys ban subjects.** An API-key ban's subject is
+  stored and sent as `HMAC(secret, "apiKey|" + id)`, the keying S11 and
+  the engine use, never the raw id; `createSecurityApi` takes the fleet's
+  keying secret (`bans.secret`) and refuses to start without it unless
+  API-key bans are off (`bans.apiKeys: false`). What the operator typed is
+  shown only in the answer to `POST /bans` (`entered`). The store refuses
+  an API-key subject that is not 32 hex characters. The agent applies the
+  keyed subject as it is (the engine's `ban({ apiKeyHash })`), never keying
+  it twice. A user subject follows the engine (in clear today; a separate
+  decision on user ids is with the user). Tested: no raw id in the SQLite
+  file's bytes (database, WAL and shared memory), the audit log or the
+  list; the agent's engine holds the same key an engine on the fleet's
+  secret makes from the raw id; negative controls: keyed twice, or on
+  another secret, it would miss.
+- **No change row for an agent's health.** `agentHealth` is written
+  without a change row (`seq` 0); its status (`late`, `offline`) is
+  computed when read. Tested: ten heartbeats in a steady state add no row;
+  the negative control, a key rotation, does.
+
+Wired after PR-CP1 merged (2026-11-17, the coordinator's relay): CP1's
+`POST /agent/events` runs on the agents' signed requests when `agents` is
+set, split as CP1 measured: the header checks (`checkAgentHeaders`: the
+agent, its key not revoked, the ±60 s window, the per-agent rate) in a
+`use` guard that runs before the router reads a deferred body and leaves it
+unread; the body's signature (`verifyAgentBody`), its `route: "events"`, the
+store's `ingestEventBatch` and a signed answer in the handler. `agents` and
+CP1's `agentEvents` together are refused (one route, one authentication).
+The batcher flushes the recorder with `{ all: true }` on every batch, the
+open minute too, so the live overview (CP5) is not a minute behind: the
+recorder forgets what it flushed and the store adds, so a minute sent in
+parts counts once (tested). After a batch is stored, and after every ban
+written or lifted, an internal live-hub hook is called (`setLiveHooks`,
+not exported; a no-op until CP5 sets it; a hook that throws is logged). A
+CP ban by key and #836's keyed list entry name the same `apiKey:<HMAC>` in
+a decision (tested).
+
+Added with those changes (approved by the user, 2026-11-17):
+
+| Names | Where |
+|---|---|
+| `createSecurityApi`'s `bans` (`secret`, `apiKeys` (default `true`)); `BanDto.entered` (`{ apiKey }`, the create answer only); the engine's `ban({ apiKeyHash })`; the store's kinds kept out of the feed (`agentHealth`; a write answers `seq` `0n`) | `./control`, `.`, `./store` |
+| `HeaderState` (what the agent header check, `agentGuard`/`checkAgentHeaders`, hands to the body check, `verifyAgentBody`), approved by the user, 2026-11-17 | `./control` |
+
 ### 17.28 Added with the distinct counts' deadline (approved by the user, 2026-11-17)
 
 | Names | Where |

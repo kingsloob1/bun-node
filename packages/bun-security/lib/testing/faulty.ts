@@ -28,6 +28,10 @@ export type StoreOperation =
   | "getCounter"
   | "resetCounter"
   | "claimKey"
+  | "upsertBan"
+  | "liftBan"
+  | "getBan"
+  | "listBans"
   | "changesSince"
   | "appendEvents"
   | "addCounters"
@@ -91,6 +95,10 @@ export function faultyStore(
     getCounter: wrap("getCounter", store.getCounter),
     resetCounter: wrap("resetCounter", store.resetCounter),
     claimKey: wrap("claimKey", store.claimKey),
+    upsertBan: wrap("upsertBan", store.upsertBan),
+    liftBan: wrap("liftBan", store.liftBan),
+    getBan: wrap("getBan", store.getBan),
+    listBans: wrap("listBans", store.listBans),
     changesSince: wrap("changesSince", store.changesSince),
     // The analytics operations, where the store has them.
     ...(store.appendEvents === undefined

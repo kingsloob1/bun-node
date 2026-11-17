@@ -6,6 +6,11 @@
  */
 import type { Schema } from "./schema";
 import type {
+  AgentCreateInput,
+  AgentDto,
+  AgentSecretDto,
+  BanCreateInput,
+  BanDto,
   ApprovalDecisionInput,
   AuditCheckpointDto,
   AuditEntryDto,
@@ -562,4 +567,132 @@ export const BreakGlassSession: Schema<BreakGlassSessionDto> = s.object({
   }),
   expiresAt: s.int({ min: 0 }),
   header: s.string(),
+});
+
+// ── Agents and bans (PR-CP4) ────────────────────────────────────────────────
+
+/** An agent id. */
+const AgentId = s.string({
+  min: 1,
+  max: 64,
+  pattern: /^[\w-]{1,64}$/,
+  description: "an agent id",
+});
+
+/** `POST /agents`'s body. */
+export const AgentCreateBody: Schema<AgentCreateInput> = s.object({
+  id: s.optional(AgentId),
+  service: Id,
+  name: s.optional(s.string({ min: 1, max: 200 })),
+});
+
+/** An agent. */
+export const Agent: Schema<AgentDto> = s.object({
+  id: s.string(),
+  service: s.string(),
+  name: s.string(),
+  createdAt: s.int({ min: 0 }),
+  createdBy: s.string(),
+  rotatedAt: s.nullable(s.int({ min: 0 })),
+  previousAcceptedUntil: s.nullable(s.int({ min: 0 })),
+  revokedAt: s.nullable(s.int({ min: 0 })),
+  status: s.enum([
+    "never-seen",
+    "ok",
+    "late",
+    "offline",
+    "signature-failing",
+    "revoked",
+  ]),
+  lastSeen: s.nullable(s.int({ min: 0 })),
+  reported: s.nullable(
+    s.object({
+      agentVersion: s.string(),
+      bundleVersion: s.nullable(s.int({ min: 0 })),
+      bundleKeyId: s.nullable(s.string()),
+      bundleExpired: s.boolean(),
+      banSeq: s.string(),
+      banCount: s.int({ min: 0 }),
+      health: s.enum(["ok", "signature-failing"]),
+      lastError: s.optional(s.string()),
+    }),
+  ),
+  revision: s.int({ min: 1 }),
+});
+
+/** A page of agents. */
+export const Agents = page(Agent);
+
+/** An agent and its secret, shown once. */
+export const AgentSecret: Schema<AgentSecretDto> = s.object({
+  agent: Agent,
+  secret: s.string({ description: "the agent's HMAC secret: shown this once" }),
+});
+
+/** A rotation's or revocation's body: the revision read. */
+export const RevisionBody = s.object({
+  revision: s.int({ min: 1, description: "the revision read" }),
+});
+
+/** A ban. */
+export const Ban: Schema<BanDto> = s.object({
+  id: s.string(),
+  scope: s.string(),
+  subject: s.object({
+    type: s.enum(["ip", "cidr", "user", "apiKey"]),
+    value: s.string(),
+  }),
+  action: s.enum(["ban", "challenge"]),
+  reason: s.string(),
+  source: s.enum(["auto", "manual"]),
+  createdAt: s.int({ min: 0 }),
+  expiresAt: s.nullable(s.int({ min: 0 })),
+  createdBy: s.optional(s.string()),
+  rule: s.optional(s.string()),
+  count: s.int({ min: 1 }),
+  liftedAt: s.nullable(s.int({ min: 0 })),
+  liftedBy: s.optional(s.string()),
+  active: s.boolean(),
+  revision: s.int({ min: 1 }),
+  entered: s.optional(s.object({ apiKey: s.string() })),
+});
+
+/** A page of bans. */
+export const Bans = page(Ban);
+
+/** `POST /bans`'s body. */
+export const BanCreateBody: Schema<BanCreateInput> = s.object({
+  scope: s.optional(Scope),
+  ip: s.optional(
+    s.string({ min: 1, max: 64, description: "an address or CIDR range" }),
+  ),
+  user: s.optional(s.string({ min: 1, max: 512 })),
+  apiKey: s.optional(s.string({ min: 1, max: 512 })),
+  action: s.optional(s.enum(["ban", "challenge"])),
+  reason: s.string({ min: 1, max: 500 }),
+  duration: s.optional(
+    s.nullable(
+      s.string({
+        min: 1,
+        max: 20,
+        description: 'a duration with its unit ("24h"), or null until lifted',
+      }),
+    ),
+  ),
+});
+
+/** `GET /bans`'s query. */
+export const BansQuery = s.query({
+  limit: s.optional(
+    s.int({
+      min: 1,
+      max: MAX_API_PAGE_LIMIT,
+      description: "the page size (default 50)",
+    }),
+  ),
+  cursor: s.optional(
+    s.string({ max: 2_000, description: "the previous page's next" }),
+  ),
+  scope: s.optional(Scope),
+  active: s.optional(s.boolean("true: in force now; false: lifted or expired")),
 });

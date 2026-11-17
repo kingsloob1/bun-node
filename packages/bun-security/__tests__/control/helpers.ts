@@ -13,6 +13,9 @@ import type { SecurityStoreDriver } from "../../lib/store/index";
 import { fakeClock } from "../helpers";
 import type { FakeClock } from "../helpers";
 
+/** The fleet's keying secret in the tests (createSecurity's `secret`). */
+export const FLEET_SECRET = "fleet-keying-secret-for-tests-0123456789";
+
 /** A test API and how to call it. */
 export interface TestApi {
   /** The API. */
@@ -25,6 +28,8 @@ export interface TestApi {
   readonly publicKey: KeyObject;
   /** The audit key's public half. */
   readonly auditPublicKey: KeyObject;
+  /** The adapter the API is mounted on (socket-free `fetch`). */
+  readonly app: BunHttpAdapter;
   /** Sends a request as `op`; the status, the parsed body and the headers. */
   readonly call: (
     method: string,
@@ -54,6 +59,7 @@ export function testApi(options: Partial<SecurityApiOptions> = {}): TestApi {
       signing: { keyId: "ak_test", privateKey: audit.privateKey },
       allowNoExternalCheckpoints: true,
     },
+    bans: { secret: FLEET_SECRET },
     now: clock.now,
     logger: () => {},
     ...options,
@@ -92,6 +98,7 @@ export function testApi(options: Partial<SecurityApiOptions> = {}): TestApi {
     clock,
     publicKey,
     auditPublicKey: audit.publicKey,
+    app,
     call,
   };
 }

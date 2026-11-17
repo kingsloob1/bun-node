@@ -190,7 +190,7 @@ if (await postgresAvailable()) {
     };
 
     for (const serialize of [true, false]) {
-      it(`${serialize ? "with" : "negative control: without"} the lock, an audit append, a checkpoint, a counter and a claim ${serialize ? "wait for" : "pass"} a change held in its transaction`, async () => {
+      it(`${serialize ? "with" : "negative control: without"} the lock, an audit append, a checkpoint, a counter, a claim and a ban ${serialize ? "wait for" : "pass"} a change held in its transaction`, async () => {
         const { store, release, recorded } = gated(serialize);
         await store.connect();
         const slow = store.put("service", "a", {}, null);
@@ -215,11 +215,26 @@ if (await postgresAvailable()) {
         const claim = store.claimKey("bg:code:1", 60_000).then(() => {
           claimed = true;
         });
+        // And a ban's.
+        let banned = false;
+        const ban = store
+          .upsertBan({
+            scope: "global",
+            subject: { type: "ip", value: "203.0.113.7" },
+            action: "ban",
+            reason: "test",
+            source: "manual",
+            expiresAt: null,
+          })
+          .then(() => {
+            banned = true;
+          });
         try {
           if (serialize) {
             // Held at the lock for as long as the change is held.
             await Bun.sleep(300);
-            expect([appended, checkpointed, counted, claimed]).toEqual([
+            expect([appended, checkpointed, counted, claimed, banned]).toEqual([
+              false,
               false,
               false,
               false,
@@ -229,10 +244,11 @@ if (await postgresAvailable()) {
             // Through while the change is still held (however long a new
             // connection takes on a busy machine).
             await Promise.race([
-              Promise.all([append, stored, counter, claim]),
+              Promise.all([append, stored, counter, claim, ban]),
               Bun.sleep(5_000),
             ]);
-            expect([appended, checkpointed, counted, claimed]).toEqual([
+            expect([appended, checkpointed, counted, claimed, banned]).toEqual([
+              true,
               true,
               true,
               true,
@@ -249,6 +265,7 @@ if (await postgresAvailable()) {
           stored,
           counter,
           claim,
+          ban,
         ]);
         expect(put.ok && audit.ok).toBe(true);
         // With the lock, the feed numbers the audit change after the held one.

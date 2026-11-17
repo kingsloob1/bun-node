@@ -27,13 +27,14 @@
  * processes.
  */
 import type {
+  BanInputRecord,
   AuditInput,
   SecurityStoreDriver,
   StoredDoc,
 } from "../store/types";
 import process from "node:process";
 import { describe, expect, test } from "bun:test";
-import { AUDIT_GENESIS_HASH } from "../store/shared";
+import { AUDIT_GENESIS_HASH, banId } from "../store/shared";
 import { analyticsConformance } from "./analyticsConformance";
 import { raceStore } from "./race";
 import type { StoreCrossProcessResult } from "./race";
@@ -265,6 +266,9 @@ export async function runSecurityStoreConformance(
             true,
           );
           expect(await rejects(() => store.claimKey("c", 1_000))).toBe(true);
+          expect(
+            await rejects(() => store.upsertBan(banInput("203.0.113.1"))),
+          ).toBe(true);
         });
       });
       return;
@@ -749,6 +753,175 @@ export async function runSecurityStoreConformance(
       });
     });
 
+    describe("bans (storage.md §3.1)", () => {
+      test("writes one record per scope and subject, merging an active one", async () => {
+        await withStore(factory, async (store) => {
+          const later = Date.now() + 3_600_000;
+          const first = await store.upsertBan(
+            banInput("203.0.113.1", { expiresAt: later }),
+          );
+          expect(first).toMatchObject({
+            id: banId("global", { type: "ip", value: "203.0.113.1" }),
+            count: 1,
+            revision: 1,
+            liftedAt: null,
+            source: "auto",
+          });
+          expect(await store.getBan(first.id)).toEqual(first);
+          // A manual record's description wins; the later expiry, "until lifted" and ban win.
+          const merged = await store.upsertBan(
+            banInput("203.0.113.1", {
+              source: "manual",
+              reason: "operator",
+              createdBy: "alice",
+              action: "challenge",
+              expiresAt: later - 1_000,
+            }),
+          );
+          expect(merged).toMatchObject({
+            id: first.id,
+            count: 2,
+            revision: 2,
+            source: "manual",
+            reason: "operator",
+            createdBy: "alice",
+            action: "ban",
+            expiresAt: later,
+            createdAt: first.createdAt,
+          });
+          const forever = await store.upsertBan(
+            banInput("203.0.113.1", { reason: "zzz", expiresAt: null }),
+          );
+          expect(forever).toMatchObject({
+            expiresAt: null,
+            source: "manual",
+            reason: "operator",
+            count: 3,
+          });
+          // Another scope is another ban.
+          const group = await store.upsertBan(
+            banInput("203.0.113.1", { scope: "group:payments" }),
+          );
+          expect(group.id).not.toBe(first.id);
+          expect(group.count).toBe(1);
+          expect(
+            await rejects(() =>
+              store.upsertBan({ ...banInput("x"), action: "drop" } as never),
+            ),
+          ).toBe(true);
+          expect(
+            await rejects(() =>
+              store.upsertBan({ ...banInput(""), reason: "r" }),
+            ),
+          ).toBe(true);
+        });
+      });
+
+      test("a lift keeps the record as history; a ban written again starts over", async () => {
+        await withStore(factory, async (store) => {
+          const ban = await store.upsertBan(banInput("203.0.113.2"));
+          expect(await store.liftBan(ban.id, "alice", 1_000)).toBe(true);
+          expect(await store.liftBan(ban.id, "alice", 1_000)).toBe(false);
+          expect(await store.liftBan("ban_none", "alice", 1_000)).toBe(false);
+          const lifted = await store.getBan(ban.id);
+          expect(lifted).toMatchObject({
+            liftedAt: 1_000,
+            liftedBy: "alice",
+            revision: 2,
+          });
+          expect(
+            (await store.listBans({ limit: 10, active: true })).items,
+          ).toEqual([]);
+          expect(
+            (await store.listBans({ limit: 10, active: false })).items.map(
+              (b) => b.id,
+            ),
+          ).toEqual([ban.id]);
+          const again = await store.upsertBan(banInput("203.0.113.2"));
+          expect(again).toMatchObject({
+            liftedAt: null,
+            count: 2,
+            revision: 3,
+          });
+          // An expired ban is history too, and a write over it starts over.
+          const gone = await store.upsertBan(
+            banInput("203.0.113.3", { expiresAt: Date.now() - 1 }),
+          );
+          expect(
+            (await store.listBans({ limit: 10, active: false })).items.map(
+              (b) => b.id,
+            ),
+          ).toEqual([gone.id]);
+          expect(await store.liftBan(gone.id, "alice", 1)).toBe(false);
+          expect((await store.upsertBan(banInput("203.0.113.3"))).count).toBe(
+            2,
+          );
+          expect(await rejects(() => store.liftBan(ban.id, "", 1))).toBe(true);
+        });
+      });
+
+      test("lists by id a page at a time, by scope, the cursor bound to its filter; every write is a change", async () => {
+        await withStore(factory, async (store) => {
+          const { head } = await store.changesSince(0n, 1);
+          const ids: string[] = [];
+          for (let i = 1; i <= 5; i++) {
+            ids.push(
+              (
+                await store.upsertBan(
+                  banInput(`198.51.100.${i}`, {
+                    scope: i % 2 === 0 ? "service:a" : "global",
+                  }),
+                )
+              ).id,
+            );
+          }
+          ids.sort();
+          const first = await store.listBans({ limit: 2 });
+          expect(first.items.map((b) => b.id)).toEqual(ids.slice(0, 2));
+          const second = await store.listBans({
+            limit: 2,
+            cursor: first.next!,
+          });
+          expect(second.items.map((b) => b.id)).toEqual(ids.slice(2, 4));
+          expect(
+            await rejects(() =>
+              store.listBans({ limit: 2, cursor: first.next!, active: true }),
+            ),
+          ).toBe(true);
+          expect(
+            (await store.listBans({ limit: 10, direction: "desc" })).items.map(
+              (b) => b.id,
+            ),
+          ).toEqual([...ids].reverse());
+          const scoped = await store.listBans({
+            limit: 10,
+            scopes: ["service:a"],
+          });
+          expect(scoped.items).toHaveLength(2);
+          expect(scoped.items.every((b) => b.scope === "service:a")).toBe(true);
+          await store.liftBan(ids[0]!, "alice", 5);
+          const { changes } = await store.changesSince(head, 100);
+          const bans = changes.filter((change) => change.kind === "ban");
+          expect(bans).toHaveLength(6);
+          expect(bans.at(-1)).toMatchObject({ id: ids[0], deleted: false });
+        });
+      });
+
+      test(`racing writers of one ban lose no write (${raceSize} at once)`, async () => {
+        await withStore(factory, async (store) => {
+          const written = await Promise.all(
+            Array.from({ length: raceSize }, () =>
+              store.upsertBan(banInput("192.0.2.9")),
+            ),
+          );
+          expect(
+            written.map((ban) => ban.revision).sort((a, b) => a - b),
+          ).toEqual(Array.from({ length: raceSize }, (_, at) => at + 1));
+          expect((await store.getBan(written[0]!.id))?.count).toBe(raceSize);
+        });
+      });
+    });
+
     describe("counters and claims (control-plane state shared by instances)", () => {
       test("counts up to an expiry, starts again after it, and resets", async () => {
         await withStore(factory, async (store) => {
@@ -1039,6 +1212,19 @@ export async function runSecurityStoreConformance(
           await store.putBundle("s", { version: 4, bundle: {} }, null); // refused
           await store.appendAudit(auditInput(AUDIT_GENESIS_HASH, 1), null);
           await store.appendAudit(auditInput(AUDIT_GENESIS_HASH, 1), null); // refused
+          // An agent's health is kept out of the feed: no row, however often written.
+          let health = await store.put("agentHealth", "ag", { beats: 0 }, null);
+          expect(health).toMatchObject({ ok: true, seq: 0n });
+          for (let beat = 1; beat <= 10; beat++) {
+            health = await store.put(
+              "agentHealth",
+              "ag",
+              { beats: beat },
+              beat,
+            );
+            expect(health.ok).toBe(true);
+          }
+          expect(await store.delete("agentHealth", "ag", 11)).toBe(true);
           await store.delete("service", "a", 2);
           const { changes, head } = await store.changesSince(start, 100);
           expect(
@@ -1167,6 +1353,23 @@ export async function runSecurityStoreConformance(
 }
 
 /** An audit entry on `prevHash`, its hash derived from it and `k`, by `actor`, at `k` seconds. */
+/** A ban to write on `ip`, `global` and automatic unless `over` says otherwise. */
+function banInput(
+  ip: string,
+  over: Partial<BanInputRecord> = {},
+): BanInputRecord {
+  return {
+    scope: "global",
+    subject: { type: "ip", value: ip },
+    action: "ban",
+    reason: "too many sign-in failures",
+    source: "auto",
+    expiresAt: Date.now() + 600_000,
+    rule: "counted:login",
+    ...over,
+  };
+}
+
 function auditInput(
   prevHash: string,
   k: number,

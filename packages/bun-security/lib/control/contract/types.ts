@@ -411,10 +411,10 @@ export interface SecurityLiveEventDto {
 
 /** Who an audit entry names (control-plane.md §6.1). */
 export interface AuditActorDto {
-  /** The operator's id, `break-glass`, or `system` (a host's own call, a purge). */
+  /** The operator's id, `break-glass`, an agent's id, or `system` (a host's own call, a purge). */
   readonly id: string;
   /** What kind of actor. */
-  readonly kind: "operator" | "break-glass" | "system";
+  readonly kind: "operator" | "break-glass" | "agent" | "system";
 }
 
 /** Where an intent's change was to land, so a missing "done" can be reconciled. */
@@ -560,4 +560,120 @@ export interface BreakGlassSessionDto {
   readonly expiresAt: number;
   /** The header to send it in. */
   readonly header: string;
+}
+
+/** An agent's state, as the control plane computes it (PR-CP4). */
+export type AgentStatus =
+  "never-seen" | "ok" | "late" | "offline" | "signature-failing" | "revoked";
+
+/** An agent (control-plane.md §7): its key's record and its health. Never its secret. */
+export interface AgentDto {
+  /** Its id, sent in `x-bun-security-agent`. */
+  readonly id: string;
+  /** The service it serves. */
+  readonly service: string;
+  /** Its display name. */
+  readonly name: string;
+  /** When its key was made, and by whom. */
+  readonly createdAt: number;
+  /** The operator who made it. */
+  readonly createdBy: string;
+  /** When its key was last rotated. */
+  readonly rotatedAt: number | null;
+  /** Until when the replaced secret is still accepted (the agent's first request with the new one ends it). */
+  readonly previousAcceptedUntil: number | null;
+  /** When it was revoked. */
+  readonly revokedAt: number | null;
+  /** Its state now: `late` after 3 missed heartbeats, `offline` after 10. */
+  readonly status: AgentStatus;
+  /** Its last heartbeat, epoch ms. */
+  readonly lastSeen: number | null;
+  /** What its last heartbeat said. */
+  readonly reported: {
+    readonly agentVersion: string;
+    readonly bundleVersion: number | null;
+    readonly bundleKeyId: string | null;
+    readonly bundleExpired: boolean;
+    readonly banSeq: string;
+    readonly banCount: number;
+    readonly health: "ok" | "signature-failing";
+    readonly lastError?: string;
+  } | null;
+  /** The record's revision, for rotate and revoke. */
+  readonly revision: number;
+}
+
+/** `POST /agents`'s body. */
+export interface AgentCreateInput {
+  /** Its id (`[\w-]{1,64}`); made up when absent. */
+  readonly id?: string;
+  /** The service it serves. */
+  readonly service: string;
+  /** A display name. Default its id. */
+  readonly name?: string;
+}
+
+/** What creating or rotating answers: the agent and its secret, shown this once. */
+export interface AgentSecretDto {
+  /** The agent. */
+  readonly agent: AgentDto;
+  /** Its HMAC secret: configure the agent with it; it is never shown again. */
+  readonly secret: string;
+}
+
+/** A ban (storage.md §3.1), as the API answers it. */
+export interface BanDto {
+  /** Its id. */
+  readonly id: string;
+  /** Where it applies. */
+  readonly scope: PolicyScopeId;
+  /** What it refuses; an API key's `value` is its HMAC under the fleet's secret, never the id. */
+  readonly subject: {
+    readonly type: "ip" | "cidr" | "user" | "apiKey";
+    readonly value: string;
+  };
+  /** `ban` or `challenge`. */
+  readonly action: "ban" | "challenge";
+  /** Why. */
+  readonly reason: string;
+  /** `manual` or `auto`. */
+  readonly source: "auto" | "manual";
+  /** When it (last) started. */
+  readonly createdAt: number;
+  /** When it ends; `null` until lifted. */
+  readonly expiresAt: number | null;
+  /** Who wrote it. */
+  readonly createdBy?: string;
+  /** The rule of an automatic ban. */
+  readonly rule?: string;
+  /** How many times it was written. */
+  readonly count: number;
+  /** When it was lifted. */
+  readonly liftedAt: number | null;
+  /** Who lifted it. */
+  readonly liftedBy?: string;
+  /** Whether it is in force now. */
+  readonly active: boolean;
+  /** Its revision. */
+  readonly revision: number;
+  /** What the operator typed, in the answer to `POST /bans` only (an API key's subject is its HMAC, never the id). */
+  readonly entered?: { readonly apiKey: string };
+}
+
+/** `POST /bans`'s body. */
+export interface BanCreateInput {
+  /** Where it applies. Default `global`. */
+  readonly scope?: PolicyScopeId;
+  /** An address or CIDR range. Exactly one of `ip`, `user`, `apiKey`. */
+  readonly ip?: string;
+  /** A user id, as the services' `identify()` returns it. */
+  readonly user?: string;
+  /** An API key id. */
+  readonly apiKey?: string;
+  /** `ban` (the default) or `challenge`. */
+  readonly action?: "ban" | "challenge";
+  /** Why (shown to operators only). */
+  readonly reason: string;
+  /** How long (`"24h"`, the default), or `null` until lifted. */
+  readonly duration?: string | null;
 }

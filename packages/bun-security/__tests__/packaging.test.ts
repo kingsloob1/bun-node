@@ -208,6 +208,16 @@ describe("package.json exports", () => {
     }
   });
 
+  it("gives the agent ./agent (PR-CP4)", () => {
+    for (const key of ["./agent", "./lib/agent"]) {
+      expect(manifest.exports[key]).toEqual({
+        "@kingsleyweb/source": "./lib/agent/index.ts",
+        types: "./dts/agent/index.d.ts",
+        default: "./lib/agent/index.ts",
+      });
+    }
+  });
+
   it("checks every literal subpath in the consumer check", () => {
     const spellings = new Set(
       checkConfig.entries?.map((entry) => entry.spelling),

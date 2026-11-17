@@ -195,3 +195,27 @@ describe("the management API's browser-safe contract (./control/contract, PR-CP2
     expect(code).toContain("viewer");
   });
 });
+
+describe("the agent (./agent, PR-CP4)", () => {
+  /** A service's app connecting its agent. */
+  const AGENT_APP = `import { connectAgent } from "${MANIFEST.name}/agent";\nexport const connect = connectAgent;\n`;
+  /** Text only the control plane's code carries. */
+  const CONTROL_MARKER = "the control plane never runs unaudited";
+  /** Text only the engine's code carries. */
+  const ENGINE_MARKER = "ban() takes exactly one of ip, user, apiKey";
+
+  it("bundles connectAgent without the control plane or the engine", async () => {
+    const code = await bundle(copyPackage(MANIFEST.sideEffects), AGENT_APP);
+    expect(code).toContain("bun-security-agent/1");
+    expect(code).not.toContain(CONTROL_MARKER);
+    expect(code).not.toContain(ENGINE_MARKER);
+  });
+
+  it("negative control: the control plane's entry carries its marker", async () => {
+    const code = await bundle(
+      copyPackage(MANIFEST.sideEffects),
+      `import { createSecurityApi } from "${MANIFEST.name}/control";\nexport const api = createSecurityApi;\n`,
+    );
+    expect(code).toContain(CONTROL_MARKER);
+  });
+});

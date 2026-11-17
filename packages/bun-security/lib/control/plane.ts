@@ -6,18 +6,26 @@
  */
 import { randomUUID } from "node:crypto";
 import type {
+  BanInputRecord,
+  BanRecord,
   ListQuery,
   Page,
+  StoredBanSubject,
   PolicyVersionRecord,
   StoredDoc,
   AuditQuery,
 } from "../store/types";
 import { MAX_AUDIT_SCOPES } from "../store/types";
+import { banId } from "../store/shared";
+import { isWholeFamilyRange, parseAddress, parseCidr } from "../ip/address";
+import { boundKey } from "../engine/identity";
 import type { Logger } from "@kingsleyweb/bun-common";
-import { ConfigError, noopLogger } from "@kingsleyweb/bun-common";
+import { ConfigError, noopLogger, toDurationMs } from "@kingsleyweb/bun-common";
 import type { SecurityApiPermission, SecurityRole } from "./contract/constants";
 import type {
   ApprovalDto,
+  BanCreateInput,
+  BanDto,
   CompiledBundleDto,
   EffectivePolicyDto,
   GroupDto,
@@ -50,6 +58,8 @@ import { dangerousChanges } from "./dangerous";
 import { diffPolicies, mergePolicies } from "./merge";
 import { ApiProblem, conflict, notFound } from "./problems";
 import { AuditLog } from "./audit/log";
+import { AgentRegistry } from "./agents";
+import { liveHooksOf } from "./liveHooks";
 import { breakGlassOperators } from "./audit/context";
 import type { AuditIntentInput } from "./audit/log";
 import { ENTITY_ID, groupScope, parseScope, serviceScope } from "./scopes";
@@ -183,6 +193,8 @@ export class ControlPlane {
    */
   /** The audit log. */
   readonly audit: AuditLog;
+  /** The agents' keys and health, when agents are served (PR-CP4). */
+  readonly agents: AgentRegistry | undefined;
   /** Where failures are logged. */
   readonly #logger: Logger;
 
@@ -206,6 +218,10 @@ export class ControlPlane {
       alert: (alert) => this.#alert(alert),
       logger,
     });
+    this.agents =
+      options.agents === undefined
+        ? undefined
+        : new AgentRegistry(this, options.agents);
   }
 
   /** Raises an alert: the host's `onAlert`, and the log. */
@@ -220,6 +236,16 @@ export class ControlPlane {
     } catch (error) {
       this.#logger.error("bun-security: onAlert threw", { error });
     }
+  }
+
+  /** The control plane's clock, epoch ms. */
+  now(): number {
+    return this.options.now();
+  }
+
+  /** The bundle signer (bundles, and ban batches since PR-CP4). */
+  get signer(): ResolvedSecurityApiOptions["signer"] {
+    return this.options.signer;
   }
 
   /** Where the control plane logs. */
@@ -1568,6 +1594,209 @@ export class ControlPlane {
       }
     }
     return false;
+  }
+
+  // ── For the control plane's own modules (agents, bans: PR-CP4) ────────────
+
+  /** Runs a change between its audit intent and done (see `#audited`). */
+  async audited<T>(
+    intent: AuditIntentInput,
+    run: () => Promise<T>,
+    done: (result: T) => JsonObject = () => ({}),
+  ): Promise<T> {
+    return await this.#audited(intent, run, done);
+  }
+
+  /** The scopes whose bans and policies reach a service: `global`, its groups (each with its ancestors), itself. */
+  async scopesAbove(serviceId: string): Promise<PolicyScopeId[]> {
+    return [
+      "global",
+      ...(await this.#groupScopesOf(serviceId)),
+      serviceScope(serviceId),
+    ];
+  }
+
+  // ── Bans (storage.md §3.1, PR-CP4) ───────────────────────────────────────
+
+  /** Tells the live hub (CP5) of a ban written or lifted; a hook that throws is logged. */
+  #publishBan(ban: BanRecord): void {
+    try {
+      liveHooksOf(this).publishBan(ban);
+    } catch (error) {
+      this.#logger.error("bun-security: the live hub's ban hook threw", {
+        error,
+      });
+    }
+  }
+
+  /** A ban as the API answers it. */
+  banDto(ban: BanRecord): BanDto {
+    return {
+      id: ban.id,
+      scope: ban.scope,
+      subject: ban.subject,
+      action: ban.action,
+      reason: ban.reason,
+      source: ban.source,
+      createdAt: ban.createdAt,
+      expiresAt: ban.expiresAt,
+      ...(ban.createdBy === undefined ? {} : { createdBy: ban.createdBy }),
+      ...(ban.rule === undefined ? {} : { rule: ban.rule }),
+      count: ban.count,
+      liftedAt: ban.liftedAt,
+      ...(ban.liftedBy === undefined ? {} : { liftedBy: ban.liftedBy }),
+      active:
+        ban.liftedAt === null &&
+        (ban.expiresAt === null || ban.expiresAt > this.options.now()),
+      revision: ban.revision,
+    };
+  }
+
+  /** Writes a manual ban (merged with the scope's record of the subject). Audited. */
+  async createBan(input: BanCreateInput, operator: Operator): Promise<BanDto> {
+    const scope = input.scope ?? "global";
+    await this.checkScope(scope);
+    const given = (["ip", "user", "apiKey"] as const).filter(
+      (key) => input[key] !== undefined,
+    );
+    const only = given[0];
+    if (given.length !== 1 || only === undefined) {
+      throw new ApiProblem(
+        400,
+        "invalid_request",
+        "a ban names exactly one of ip, user, apiKey",
+      );
+    }
+    const value = input[only]!;
+    let subject: StoredBanSubject;
+    if (only === "ip") {
+      if (parseAddress(value) !== null) subject = { type: "ip", value };
+      else if (parseCidr(value) !== null && !isWholeFamilyRange(value)) {
+        subject = { type: "cidr", value: parseCidr(value)!.text };
+      } else {
+        throw new ApiProblem(
+          400,
+          "invalid_request",
+          `"${value}" is not an address or a CIDR range narrower than a whole family`,
+        );
+      }
+    } else if (only === "apiKey") {
+      // Keyed as the engines key it: the id itself is never stored or sent.
+      if (this.options.banKeys === undefined) {
+        throw new ApiProblem(
+          400,
+          "invalid_request",
+          "this control plane takes no API-key bans (bans.apiKeys: false)",
+        );
+      }
+      subject = {
+        type: "apiKey",
+        value: this.options.banKeys.apiKey(boundKey(value)),
+      };
+    } else {
+      subject = { type: only, value };
+    }
+    let expiresAt: number | null = null;
+    if (input.duration !== null) {
+      try {
+        expiresAt =
+          this.options.now() +
+          toDurationMs(input.duration ?? "24h", "a ban's duration");
+      } catch (error) {
+        throw new ApiProblem(
+          400,
+          "invalid_request",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
+    const record: BanInputRecord = {
+      scope,
+      subject,
+      action: input.action ?? "ban",
+      reason: input.reason,
+      source: "manual",
+      expiresAt,
+      createdBy: operator.id,
+    };
+    const id = banId(scope, subject);
+    const before = await this.store.getBan(id);
+    const ban = await this.#audited(
+      {
+        action: "ban.create",
+        scope,
+        target: { kind: "ban", id, revision: (before?.revision ?? 0) + 1 },
+        ...(before === undefined ? {} : { before: this.banDto(before) }),
+        after: {
+          subject,
+          action: record.action,
+          reason: record.reason,
+          expiresAt,
+        },
+      },
+      async () => await this.store.upsertBan(record),
+      (written) => ({ revision: written.revision, count: written.count }),
+    );
+    this.#emit("ban.changed", scope, { id, op: "ban" });
+    this.#publishBan(ban);
+    // What the operator typed is shown in this answer only, never stored.
+    return {
+      ...this.banDto(ban),
+      ...(only === "apiKey" ? { entered: { apiKey: value } } : {}),
+    };
+  }
+
+  /** Lifts a ban. Audited. */
+  async liftBan(id: string, operator: Operator): Promise<BanDto> {
+    const before = await this.store.getBan(id);
+    if (before === undefined) throw notFound(`ban "${id}"`);
+    await this.#audited(
+      {
+        action: "ban.lift",
+        scope: before.scope,
+        target: { kind: "ban", id, deleted: true },
+        before: this.banDto(before),
+      },
+      async () => {
+        if (!(await this.store.liftBan(id, operator.id, this.options.now()))) {
+          throw new ApiProblem(409, "conflict", `ban "${id}" is not in force`);
+        }
+      },
+    );
+    this.#emit("ban.changed", before.scope, { id, op: "lift" });
+    const lifted = (await this.store.getBan(id))!;
+    this.#publishBan(lifted);
+    return this.banDto(lifted);
+  }
+
+  /** A page of bans, by scope (and what is under it) and state. */
+  async listBans(query: {
+    limit: number;
+    cursor?: string;
+    scope?: PolicyScopeId;
+    active?: boolean;
+  }): Promise<{ items: BanDto[]; next?: string }> {
+    const scopes =
+      query.scope === undefined
+        ? undefined
+        : await this.auditScopesUnder(query.scope);
+    let page;
+    try {
+      page = await this.store.listBans({
+        limit: query.limit,
+        ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
+        ...(scopes === undefined ? {} : { scopes }),
+        ...(query.active === undefined ? {} : { active: query.active }),
+      });
+    } catch (error) {
+      if (error instanceof ConfigError)
+        throw new ApiProblem(400, "invalid_request", error.message);
+      throw error;
+    }
+    return {
+      items: page.items.map((ban) => this.banDto(ban)),
+      ...(page.next === undefined ? {} : { next: page.next }),
+    };
   }
 
   // ── The audit log (PR-CP3) ───────────────────────────────────────────────

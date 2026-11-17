@@ -1247,7 +1247,10 @@ const security = createSecurity({
   real socket; what the runtime has already buffered is not covered, and an
   adapter that reads bodies before routing has read it first), each agent
   is rate limited, the body is at most 1 MiB as sent and 8 MiB unpacked,
-  and a batch is stored once by its id (`ingestEventBatch`).
+  and a batch is stored once by its id (`ingestEventBatch`). With `agents`
+  set (below), the route runs on the agents' own signed requests instead,
+  the same way round: the headers in the guard, the body's signature in the
+  handler; `agentEvents` is then left out.
   `analyticsMaintenance(store).start()` rolls minutes into hours and hours
   into days, and deletes by retention (events 14 days, minutes 7, hours 90,
   days 400; at most 90, 30, 400 days and 5 years), on a timer or from a
@@ -1412,6 +1415,91 @@ every control-plane instance on it shares the lock and refuses a code
 another used. Attempts while locked are logged, not audited. Every login and failure is audited; a login also alerts
 (`breakGlass.login`), goes out on `/live` (`breakGlass.used`) and is logged
 at error level. A login whose audit entry cannot be written is refused.
+
+### Agents: the control plane on other hosts
+
+A service on another host (topologies b and c) runs an **agent** that keeps
+its engine on the control plane's signed bundle and signed bans. The
+control plane serves them with `agents` set:
+
+```ts
+const api = createSecurityApi({
+  // ...
+  store: postgresStore({ url: process.env.SECURITY_DB_URL! }), // durable, shared by every CP instance
+  agents: { artefacts: { dir: "/var/lib/security/artefacts" } },
+});
+```
+
+`POST /agents` (`agents:write` and a step-up) makes an agent's key for one
+service and shows its secret **once**. In the service, from the
+environment:
+
+```ts
+import { createSecurity } from "@kingsleyweb/bun-security";
+import { connectAgent } from "@kingsleyweb/bun-security/agent";
+
+const security = createSecurity({ policy: baselinePolicy }); // in force until a bundle arrives
+const agent = connectAgent({
+  url: "https://cp.internal/security/api",
+  agent: "checkout-1",
+  secret: process.env.SECURITY_AGENT_SECRET!,
+  service: "checkout",
+  publicKeys: { sk_2026_11: process.env.SECURITY_BUNDLE_PUBLIC_KEY! }, // from deployment, never from the CP
+  security,
+  stateFile: "/var/lib/checkout/security-state.json",
+  artefactDir: "/var/lib/checkout/security-artefacts",
+  onAlert: (alert) => pager.send(alert),
+});
+await agent.ready; // the last known good is in, before the control plane is asked
+```
+
+- **Signed both ways.** Every request is signed with the agent's key (P4's
+  envelope: `x-bun-security-agent`, `x-bun-security-signature`), within
+  ±60 s, each signature once (its nonce claimed in the store), and bound to
+  its route (a bodyless request's id starts with the route's tag, a body
+  carries `route`). Every answer is signed with the same key, and the agent
+  checks it before reading it.
+- **Bundles** are pulled every 30 s with `If-None-Match`, and at once on a
+  nudge (server-sent events from `/agent/nudge`, reconnected from 1 s to
+  60 s). Each is verified with the deployed public keys, newer than the
+  highest version ever accepted (kept across restarts), before its
+  artefacts are fetched (by SHA-256, checked, written `0600`) and it is
+  loaded. A refused one keeps the last good bundle in force, with one
+  critical alert per version or `ETag`, and the agent reports
+  `signature-failing`; past `expiresAt` it warns and keeps enforcing.
+- **The last known good** (`stateFile`, written atomically, `0600`) holds
+  the last bundle, the version floor and the last full ban set, and is
+  verified again at start; a bad one is ignored with a critical alert.
+- **Bans** (`POST /bans`, `POST /bans/:id/lift`, `GET /bans`; `bans:write`
+  from operator, `bans:read` from viewer) reach every agent whose service
+  they cover (`global`, its groups, itself): changes every 5 s and on a
+  nudge, the whole set every 60 s. Each batch is **signed with the bundle
+  key** and bound to the request it answers, so a ban forged into the
+  control plane's database, or a batch replayed, is refused and alerted.
+- **Events**: given CP1's ring and recorder (`events: { ring, recorder }`),
+  the agent posts a batch a second (or at 500 events) to `/agent/events`,
+  gzip, signed like every request, flushing the recorder's open minute too;
+  with `agents` set the control plane serves that route on the agents' own
+  keys (leave `agentEvents` out). A batch it could not deliver is retried
+  with its id; past 60 batches or 8 MiB the oldest is dropped and counted
+  (`events.dropped`, `{ reason: "agent-queue" }`).
+- **Heartbeats** every 30 s say what the agent enforces; `GET /agents`
+  shows each agent `ok`, `late` (3 missed), `offline` (10 missed),
+  `signature-failing`, `revoked` or `never-seen`.
+- **Rotation**: `POST /agents/:id/rotate` (a step-up) shows a new secret
+  once; the old one is accepted until the agent first signs with the new
+  one, or 24 hours. `POST /agents/:id/revoke` refuses the key at once.
+  Configure the agent with both secrets during a rotation, the new first.
+- **Refusals**: an unknown agent is a 401 and a log line; a known agent's
+  refused request is an audit event, at most one a minute per agent; 600
+  requests a minute per agent, then 429.
+- The agent's secret (`agentKey.secret`, and the replaced one) is sealed
+  at rest by `sealedFields`. The agent routes need the request's bytes:
+  leave bun-common's `retainBuffer` on.
+- **Several hosts** need a store every control-plane instance shares
+  (`postgresStore`): agent keys, nonces, rate counts and bans live there.
+  With `agents`, a store that does not survive a restart is refused
+  (`allowEphemeralStore: true` for tests).
 
 ## Deciding and explaining
 
