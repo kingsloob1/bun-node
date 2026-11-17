@@ -12,6 +12,11 @@
  *   PR-S12, now that a verified crawler's route-not-found answers are not
  *   counted): it records the bans it would make.
  *
+ * - **On, in dry run**: `login.failure-rate`, the global failure-rate rule
+ *   (layers.md L11.2): a detector rather than a limit or counted rule, so it
+ *   is listed in {@link DETECTOR_PRESETS}; its figures are
+ *   `profiles.login.failureRate`.
+ *
  * Each preset's switch in `presets` is `true` (on, as it ships), `"enforce"`
  * (on, enforced) or `false` (off). So `true` changes nothing for a preset
  * that ships enforced, and `{ not_found_per_minute: "enforce" }` enforces
@@ -192,6 +197,25 @@ export const PRESETS: Readonly<Record<string, Preset>> = Object.freeze({
     mode: "dryRun",
   }),
 });
+
+/**
+ * The presets that are detectors rather than a limit or counted rule:
+ * switched like the others (`true`, `"enforce"`, `false`), and compiled by
+ * the part of the engine they belong to.
+ */
+export const DETECTOR_PRESETS: Readonly<
+  Record<string, { readonly on: boolean; readonly mode: "enforce" | "dryRun" }>
+> = Object.freeze({
+  // The global failure-rate rule (layers.md L11.2): on, in dry run, so it
+  // records what it would answer and warns, and enforces when asked.
+  "login.failure-rate": Object.freeze({ on: true, mode: "dryRun" }),
+});
+
+/** Every preset id: the limits and counted rules, and the detectors. */
+export const PRESET_IDS: readonly string[] = Object.freeze([
+  ...Object.keys(PRESETS),
+  ...Object.keys(DETECTOR_PRESETS),
+]);
 
 /** The built-in profile names: the ones the presets and the login defences know. */
 export const PROFILE_NAMES: readonly string[] = Object.freeze([

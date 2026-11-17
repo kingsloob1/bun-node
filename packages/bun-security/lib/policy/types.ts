@@ -489,6 +489,64 @@ export interface LoginProfilePolicy {
   readonly inferOutcome?: boolean;
   /** The profile's mode: in `dryRun` delays, challenges and locks are recorded only. Default `"enforce"`. */
   readonly mode?: SecurityMode;
+  /**
+   * The global failure-rate rule (layers.md L11.2, "global failure ratio"):
+   * sign-in failures across every client of a route marked `login`, against
+   * the route's own baseline. A spray from a fresh address per attempt trips
+   * no per-address or per-username counter; it moves this one. Switched on
+   * and off, and enforced, by the `login.failure-rate` preset (on, in dry
+   * run, as it ships); these are its figures.
+   */
+  readonly failureRate?: FailureRatePolicy;
+}
+
+/** Who a tripped failure-rate rule answers (layers.md L11.2). */
+export type FailureRateTarget = "hosting" | "newDevice" | "all";
+
+/** The global failure-rate rule's figures (`profiles.login.failureRate`). */
+export interface FailureRatePolicy {
+  /** The window the current rate is counted over. Default `"5m"`. */
+  readonly window?: Duration;
+  /** The baseline's window, the route's own history. Default `"24h"`. */
+  readonly baseline?: Duration;
+  /**
+   * How far above the baseline trips it: the window's failure ratio at
+   * `factor` × the baseline's (the baseline taken as at least 5 %, the
+   * threshold capped at 90 %). Default `3`.
+   */
+  readonly factor?: number;
+  /** The fewest failures in the window that can trip it. Default `20`. */
+  readonly minFailures?: number;
+  /** How long it stays tripped once the rate is back under. Default `"5m"`. */
+  readonly hold?: Duration;
+  /**
+   * The answer while tripped, to the attempts {@link to} names: `challenge`
+   * (the engine's challenge flow; a `429` without one), `tag` (`step-up`,
+   * for the app to require a second factor), or `limit` (a stricter limit
+   * per ASN, or for all hosting addresses, {@link limit}). Default `"challenge"`.
+   */
+  readonly respond?: "challenge" | "tag" | "limit";
+  /**
+   * Which attempts are answered while tripped: from a `hosting`-class
+   * address (IP intelligence, layers.md L5), from a `newDevice` (no valid
+   * device cookie for the username), or `all`. Default `["hosting", "newDevice"]`.
+   *
+   * A sign-in carrying a valid device cookie for its username is never
+   * answered, whatever `to` says, `all` and `hosting` included: the owner on
+   * a known device keeps signing in during an attack (T2's step-up
+   * exemption does the same). So `all` answers the same attempts as
+   * `newDevice`; it is kept as the spelling that says so.
+   */
+  readonly to?: readonly FailureRateTarget[];
+  /** The stricter limit of `respond: "limit"`. */
+  readonly limit?: {
+    /** Attempts allowed per key in its window. Default `10`. */
+    readonly attempts?: number;
+    /** Its window. Default `"1m"`. */
+    readonly window?: Duration;
+    /** The key: the client's `asn`, or one key for every `hosting` address. Default `"asn"`. */
+    readonly by?: "asn" | "hosting";
+  };
 }
 
 /** The sensitive endpoints' settings (layers.md L11). */

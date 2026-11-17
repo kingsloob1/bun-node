@@ -153,6 +153,7 @@ assertType<
     | "crawler.conflict"
     | "policy.refused"
     | "policy.unavailable"
+    | "login.failure-rate"
   >
 >();
 

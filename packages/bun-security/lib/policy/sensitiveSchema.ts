@@ -7,7 +7,7 @@ import { toDurationMs } from "@kingsleyweb/bun-common";
 import type { Duration } from "@kingsleyweb/bun-common";
 import type { PolicyIssue } from "./errors";
 import { globRefusal } from "../rules/glob";
-import { PRESETS } from "./presets";
+import { PRESET_IDS } from "./presets";
 
 /** Issues as they are found. */
 type Issues = PolicyIssue[];
@@ -148,6 +148,119 @@ export function patternProblem(pattern: unknown): string | undefined {
   return undefined;
 }
 
+/** Checks `profiles.login.failureRate`. */
+function validateFailureRate(
+  issues: Issues,
+  at: readonly (string | number)[],
+  rate: unknown,
+): void {
+  if (
+    rate === undefined ||
+    !object(issues, at, rate, [
+      "window",
+      "baseline",
+      "factor",
+      "minFailures",
+      "hold",
+      "respond",
+      "to",
+      "limit",
+    ])
+  ) {
+    return;
+  }
+  duration(issues, [...at, "window"], rate.window, 60_000, 3_600_000);
+  duration(
+    issues,
+    [...at, "baseline"],
+    rate.baseline,
+    3_600_000,
+    7 * 86_400_000,
+  );
+  duration(issues, [...at, "hold"], rate.hold, 0, 86_400_000);
+  if (
+    rate.factor !== undefined &&
+    !(
+      typeof rate.factor === "number" &&
+      Number.isFinite(rate.factor) &&
+      rate.factor > 1 &&
+      rate.factor <= 100
+    )
+  ) {
+    add(
+      issues,
+      [...at, "factor"],
+      `must be a number above 1 and at most 100; got ${describe(rate.factor)}`,
+    );
+  }
+  count(issues, [...at, "minFailures"], rate.minFailures);
+  if (
+    rate.respond !== undefined &&
+    !["challenge", "tag", "limit"].includes(rate.respond as string)
+  ) {
+    add(
+      issues,
+      [...at, "respond"],
+      `must be one of challenge, tag, limit; got ${describe(rate.respond)}`,
+    );
+  }
+  if (rate.to !== undefined) {
+    if (
+      !Array.isArray(rate.to) ||
+      rate.to.length === 0 ||
+      rate.to.some(
+        (target: unknown) =>
+          !["hosting", "newDevice", "all"].includes(target as string),
+      )
+    ) {
+      add(
+        issues,
+        [...at, "to"],
+        "must be a non-empty list of hosting, newDevice, all",
+      );
+    }
+  }
+  const limit = rate.limit;
+  if (
+    limit !== undefined &&
+    object(issues, [...at, "limit"], limit, ["attempts", "window", "by"])
+  ) {
+    count(issues, [...at, "limit", "attempts"], limit.attempts);
+    duration(issues, [...at, "limit", "window"], limit.window, 1000, 3_600_000);
+    if (
+      limit.by !== undefined &&
+      !["asn", "hosting"].includes(limit.by as string)
+    ) {
+      add(
+        issues,
+        [...at, "limit", "by"],
+        `must be asn or hosting; got ${describe(limit.by)}`,
+      );
+    }
+  }
+  const baseline =
+    rate.baseline === undefined ? 86_400_000 : safeMs(rate.baseline);
+  const window = rate.window === undefined ? 300_000 : safeMs(rate.window);
+  if (baseline !== undefined && window !== undefined && baseline < 4 * window) {
+    add(
+      issues,
+      [...at, "baseline"],
+      "must be at least four windows long, so the baseline is the route's history and not its present",
+    );
+  }
+}
+
+/** A duration's milliseconds, or `undefined` when it is not one. */
+function safeMs(value: unknown): number | undefined {
+  try {
+    return typeof value === "number"
+      ? undefined
+      : toDurationMs(value as Duration, "duration");
+  } catch {
+    return undefined;
+  }
+}
+
 /** The checks of `presets`, `profiles` and `identifiers`. */
 export function validateSensitive(
   input: Record<string, unknown>,
@@ -156,7 +269,7 @@ export function validateSensitive(
   const presets = input.presets;
   if (
     presets !== undefined &&
-    object(issues, ["presets"], presets, Object.keys(PRESETS))
+    object(issues, ["presets"], presets, PRESET_IDS)
   ) {
     for (const [id, on] of Object.entries(presets)) {
       if (id.startsWith("$")) continue;
@@ -187,8 +300,10 @@ export function validateSensitive(
         "device",
         "inferOutcome",
         "mode",
+        "failureRate",
       ])
     ) {
+      validateFailureRate(issues, [...at, "failureRate"], login.failureRate);
       const failures = login.failures;
       if (
         failures !== undefined &&

@@ -8,11 +8,15 @@
 import { toDurationMs } from "@kingsleyweb/bun-common";
 import type { CompiledPolicy } from "../policy/compile";
 import type {
+  FailureRatePolicy,
+  FailureRateTarget,
   IdentifierKind,
   IdentifierPolicy,
   LoginProfilePolicy,
+  PresetSetting,
   ProfilesPolicy,
 } from "../policy/types";
+import { DETECTOR_PRESETS } from "../policy/presets";
 import { compileGlob } from "../rules/glob";
 import type { GlobMatcher } from "../rules/glob";
 import { DEFAULT_DEVICE_COOKIE } from "./keys";
@@ -51,6 +55,38 @@ export interface CompiledLogin {
   /** Whether outcomes are inferred from the answer. */
   readonly inferOutcome: boolean;
   /** `enforce` or `dryRun`. */
+  readonly mode: "enforce" | "dryRun";
+  /** The global failure-rate rule, or undefined when its preset is off. */
+  readonly failureRate: CompiledFailureRate | undefined;
+}
+
+/** The global failure-rate rule, compiled (`profiles.login.failureRate`, the `login.failure-rate` preset). */
+export interface CompiledFailureRate {
+  /** The window, ms. */
+  readonly window: number;
+  /** A counting slot of the window, ms (a fifth of it). */
+  readonly slot: number;
+  /** The baseline's window, ms. */
+  readonly baseline: number;
+  /** A counting slot of the baseline, ms (a twenty-fourth of it). */
+  readonly baselineSlot: number;
+  /** How far above the baseline trips it. */
+  readonly factor: number;
+  /** The fewest failures that can trip it. */
+  readonly minFailures: number;
+  /** How long it stays tripped once back under, ms. */
+  readonly hold: number;
+  /** The answer while tripped. */
+  readonly respond: "challenge" | "tag" | "limit";
+  /** Which attempts are answered. */
+  readonly to: ReadonlySet<FailureRateTarget>;
+  /** The stricter limit of `respond: "limit"`. */
+  readonly limit: {
+    readonly attempts: number;
+    readonly window: number;
+    readonly by: "asn" | "hosting";
+  };
+  /** `enforce` or `dryRun`: the preset's. */
   readonly mode: "enforce" | "dryRun";
 }
 
@@ -97,9 +133,52 @@ function msOr(
   return value === undefined ? fallback : toDurationMs(value, where);
 }
 
+/** The global failure-rate rule, or undefined when its preset is off. */
+function compileFailureRate(
+  source: FailureRatePolicy | undefined,
+  setting: PresetSetting | undefined,
+): CompiledFailureRate | undefined {
+  const preset = DETECTOR_PRESETS["login.failure-rate"]!;
+  const switched = setting ?? preset.on;
+  if (switched === false) return undefined;
+  const rate = source ?? {};
+  const window = msOr(
+    rate.window,
+    300_000,
+    "profiles.login.failureRate.window",
+  );
+  const baseline = msOr(
+    rate.baseline,
+    86_400_000,
+    "profiles.login.failureRate.baseline",
+  );
+  return Object.freeze({
+    window,
+    slot: Math.max(1000, Math.floor(window / 5)),
+    baseline,
+    baselineSlot: Math.max(60_000, Math.floor(baseline / 24)),
+    factor: rate.factor ?? 3,
+    minFailures: rate.minFailures ?? 20,
+    hold: msOr(rate.hold, 300_000, "profiles.login.failureRate.hold"),
+    respond: rate.respond ?? "challenge",
+    to: new Set<FailureRateTarget>(rate.to ?? ["hosting", "newDevice"]),
+    limit: Object.freeze({
+      attempts: rate.limit?.attempts ?? 10,
+      window: msOr(
+        rate.limit?.window,
+        60_000,
+        "profiles.login.failureRate.limit.window",
+      ),
+      by: rate.limit?.by ?? "asn",
+    }),
+    mode: switched === "enforce" ? "enforce" : preset.mode,
+  });
+}
+
 /** The login defences with their defaults. */
 function compileLogin(
   source: LoginProfilePolicy | false | undefined,
+  presets: Readonly<Record<string, PresetSetting>> | undefined,
 ): CompiledLogin | undefined {
   if (source === false) return undefined;
   const login = source ?? {};
@@ -172,6 +251,10 @@ function compileLogin(
           }),
     inferOutcome: login.inferOutcome !== false,
     mode: login.mode ?? "enforce",
+    failureRate: compileFailureRate(
+      login.failureRate,
+      presets?.["login.failure-rate"],
+    ),
   });
 }
 
@@ -212,8 +295,9 @@ export function sensitiveOf(policy: CompiledPolicy): CompiledSensitive {
     const source = policy.source as {
       profiles?: ProfilesPolicy;
       identifiers?: IdentifierPolicy;
+      presets?: Readonly<Record<string, PresetSetting>>;
     };
-    const login = compileLogin(source.profiles?.login);
+    const login = compileLogin(source.profiles?.login, source.presets);
     compiled = Object.freeze({
       login: policy.mode === "off" ? undefined : login,
       identifiers: compileIdentifiers(source.identifiers),

@@ -1010,6 +1010,19 @@ Distinct counts use a HyperLogLog per key (Redis `PFADD`/`PFCOUNT`; a small
 in-package HLL for the other stores), bounded at 12 KB per key and bounded in
 key count.
 
+**As built (the global failure ratio, after T2's finding).** The
+`login.failure-rate` preset, on in dry run (README §17.20): every sign-in
+outcome of a `login` route counted in the shared store in time slots; tripped
+at 20 failures in 5 minutes with a failure ratio of 3 × the route's 24-hour
+history before the window (taken as at least 5 %, the threshold at most
+90 %), held 5 minutes; while tripped, hosting-address and new-device sign-ins
+are challenged (or tagged `step-up`, or limited per ASN or for all hosting
+addresses), and `login.failure-rate` is warned. A sign-in with a valid device
+cookie for its username is exempt from every target, a hosting address
+included (the user's decision, 2026-11-17, matching the password-spraying
+`step-up` exemption). A ratio rather than a volume,
+so ordinary surges stay quiet.
+
 ### L11.3 Progressive delay [D]
 
 After the per-username threshold, each further failure delays the *next*
