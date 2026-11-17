@@ -256,3 +256,20 @@ describe("what an event keeps of the subject", () => {
     expect(all).toContain("RAWID123");
   });
 });
+
+describe("a sampled allow carries its rate (PR-CP7)", () => {
+  it("stamps sampleAllows on each allow kept; a refusal carries none", () => {
+    const { ring } = setup({ sampleAllows: 0.5, random: () => 0.1 });
+    const allow: Decision = {
+      ...refusal("192.0.2.1"),
+      action: "allow",
+      hits: [],
+    };
+    expect(ring.offer(allow)).toBe("kept");
+    expect(ring.offer(refusal("192.0.2.2"))).toBe("kept");
+    const [kept, refused] = ring.take(10);
+    expect(kept?.sampleRate).toBe(0.5);
+    // The control: a refusal is offered whole, so it carries no rate.
+    expect(refused?.sampleRate).toBeUndefined();
+  });
+});

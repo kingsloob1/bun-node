@@ -388,6 +388,17 @@ export function resolveEvents(
         `security store: ${what}'s latencyMs must be a non-negative number`,
       );
     }
+    if (
+      event.sampleRate !== undefined &&
+      (typeof event.sampleRate !== "number" ||
+        !Number.isFinite(event.sampleRate) ||
+        event.sampleRate <= 0 ||
+        event.sampleRate > 1)
+    ) {
+      throw new ConfigError(
+        `security store: ${what}'s sampleRate must be a share above 0, at most 1`,
+      );
+    }
     if (event.dryRun !== undefined && typeof event.dryRun !== "boolean") {
       throw new ConfigError(
         `security store: ${what}'s dryRun must be a boolean`,

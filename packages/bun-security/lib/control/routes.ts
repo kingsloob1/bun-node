@@ -21,6 +21,7 @@ import { ApiProblem } from "./problems";
 import * as A from "./analyticsSchemas";
 import { analyticsRoutes } from "./analyticsRoutes";
 import { alertRoutes } from "./alertRoutes";
+import { ruleTestRoutes } from "./ruleTestRoutes";
 import type { Alerting } from "./alerts/alerting";
 import { LIVE_LIMITS } from "./contract/live";
 import type { LiveHub } from "./live/hub";
@@ -1287,6 +1288,7 @@ export function routes(
     },
     ...analyticsRoutes(),
     ...(alerting === undefined ? [] : alertRoutes(alerting)),
+    ...ruleTestRoutes(options),
   ];
 }
 

@@ -145,6 +145,8 @@ import { SecurityRefusal } from "../sensitive/refusal";
 import type { PolicyFromStore, PolicySourceStatus } from "../store/follow";
 import { isPolicyFromStore, PolicyFollower } from "../store/follow";
 import type { SecurityWarning, TrustStatus } from "./trust";
+import type { InternalFacts } from "./internal";
+import { internalOf, THROWAWAY_ENGINE } from "./internal";
 
 /** Options for {@link createSecurity}. */
 /** How long a warning counts as in force after it was last raised (`status().warnings`). */
@@ -708,6 +710,8 @@ interface Pass {
   readonly crawler?: CrawlerRequest | undefined;
   /** The request's API key plan, from `identify()` (layers.md L12). */
   readonly apiKeyPlan?: string | undefined;
+  /** State to assume while explaining (the control plane's test-a-request; never with writes). */
+  readonly assume?: InternalFacts["assume"];
 }
 
 /**
@@ -1018,6 +1022,10 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
 
   constructor(options: CreateSecurityOptions<TRequest>) {
     this.#options = options;
+    this.#throwaway =
+      (options as { readonly [THROWAWAY_ENGINE]?: unknown })[
+        THROWAWAY_ENGINE
+      ] === true;
     const maxKeys = options.maxKeys ?? DEFAULT_MAX_KEYS;
     if (!Number.isSafeInteger(maxKeys) || maxKeys < 1) {
       throw new ConfigError(
@@ -1768,6 +1776,74 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     return out;
   }
 
+  /** Whether this engine was built as the control plane's throwaway (it alone takes internal facts). */
+  readonly #throwaway: boolean;
+
+  /** `facts`' internal facts: only on a throwaway engine (the entry points refuse them on any other). */
+  #internalOf(facts: RequestFacts): InternalFacts | undefined {
+    return this.#throwaway ? internalOf(facts) : undefined;
+  }
+
+  /** Refuses internal facts on an engine not built as a throwaway, before anything is counted. */
+  #refuseInternal(facts: RequestFacts | undefined): void {
+    if (
+      facts !== undefined &&
+      !this.#throwaway &&
+      internalOf(facts) !== undefined
+    ) {
+      throw new TypeError(
+        "bun-security: these facts carry the control plane's internal facts (assume, prekeyed), which only its throwaway engines take",
+      );
+    }
+  }
+
+  /** Per compiled policy: its user and API-key list ids by their keys, for pre-keyed facts. */
+  readonly #keyedLists = new WeakMap<
+    PolicyInternals,
+    { users: Map<string, string>; apiKeys: Map<string, string> }
+  >();
+
+  /** The keyed index of `internals`' account list entries, built once. */
+  #keyedListsOf(internals: PolicyInternals): {
+    users: Map<string, string>;
+    apiKeys: Map<string, string>;
+  } {
+    let index = this.#keyedLists.get(internals);
+    if (index === undefined) {
+      index = { users: new Map(), apiKeys: new Map() };
+      for (const id of internals.users.keys())
+        index.users.set(this.#keyring.user(id), id);
+      for (const id of internals.apiKeys.keys())
+        index.apiKeys.set(this.#keyring.apiKey(id), id);
+      this.#keyedLists.set(internals, index);
+    }
+    return index;
+  }
+
+  /** The user id the lists match: the identity's, or, for pre-keyed facts (a replayed event), the list id its key stands for. */
+  #listedUser(
+    facts: RequestFacts,
+    internals: PolicyInternals,
+  ): string | undefined {
+    if (this.#internalOf(facts)?.prekeyed !== true) return listedUser(facts);
+    const key = facts.identity?.user;
+    return key === undefined
+      ? undefined
+      : this.#keyedListsOf(internals).users.get(key);
+  }
+
+  /** The API key id the lists match, as {@link #listedUser}. */
+  #listedKey(
+    facts: RequestFacts,
+    internals: PolicyInternals,
+  ): string | undefined {
+    if (this.#internalOf(facts)?.prekeyed !== true) return listedKey(facts);
+    const key = facts.identity?.apiKey;
+    return key === undefined
+      ? undefined
+      : this.#keyedListsOf(internals).apiKeys.get(key);
+  }
+
   /** Logs and forwards a warning. */
   #warn(warning: SecurityWarning): void {
     this.#recentWarnings.set(warning.kind, { warning, at: this.#now() });
@@ -1810,6 +1886,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     options: EvaluateOptions = {},
   ): Decision | Promise<Decision> {
     this.#assertOpen();
+    this.#refuseInternal(facts);
     return then(
       this.#decide(
         facts,
@@ -1837,6 +1914,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     options: ExplainOptions = {},
   ): Explanation | Promise<Explanation> {
     this.#assertOpen();
+    this.#refuseInternal(facts);
     const steps: ExplainStep[] = [];
     return then(
       this.#decide(
@@ -1870,6 +1948,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     decision: Decision,
     outcome: RequestOutcome,
   ): readonly RuleHit[] | Promise<readonly RuleHit[]> {
+    this.#refuseInternal(facts);
     const context = this.#contexts.get(decision);
     if (context === undefined) return EMPTY;
     this.#contexts.delete(decision);
@@ -1937,6 +2016,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     data?: SignalData,
   ): readonly RuleHit[] | Promise<readonly RuleHit[]> {
     this.#assertOpen();
+    this.#refuseInternal(facts);
     if (typeof event !== "string" || !EVENT_RE.test(event)) {
       throw new TypeError(
         `bun-security: signal(): ${JSON.stringify(event)} is not an event name (a letter, then letters, digits, "_", "." and "-", at most 64)`,
@@ -1958,8 +2038,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       : evaluateLists(
           internals,
           resolved.address,
-          listedUser(facts),
-          listedKey(facts),
+          this.#listedUser(facts, internals),
+          this.#listedKey(facts, internals),
           listPath(facts.path, internals),
           now,
           internals.mode === "dryRun",
@@ -2097,10 +2177,17 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     };
     // An API key's id and a user id are keyed by their HMAC (layers.md L12),
     // as usernames are: nothing after this keeps either in clear.
-    if (apiKey !== undefined) subject.apiKey = this.#keyring.apiKey(apiKey);
-    if (user !== undefined) subject.user = this.#keyring.user(user);
+    // A stored event's subjects are keyed already (the control plane's
+    // replay): taken as they are.
+    const prekeyed = this.#internalOf(facts)?.prekeyed === true;
+    if (apiKey !== undefined)
+      subject.apiKey = prekeyed ? apiKey : this.#keyring.apiKey(apiKey);
+    if (user !== undefined)
+      subject.user = prekeyed ? user : this.#keyring.user(user);
     if (typeof username === "string" && username.trim() !== "") {
-      subject.username = this.#keyring.username(username.slice(0, 1024));
+      subject.username = prekeyed
+        ? username
+        : this.#keyring.username(username.slice(0, 1024));
       const device = sensitiveOf(this.#policy).login?.device;
       const value =
         device === undefined
@@ -2164,6 +2251,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     value: string,
   ): void | Promise<void> {
     this.#assertOpen();
+    this.#refuseInternal(facts);
     if (typeof value !== "string") {
       throw new TypeError("bun-security: check(): the value must be a string");
     }
@@ -2454,6 +2542,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
 
   socket(facts: RequestFacts): SocketLimiter {
     this.#assertOpen();
+    this.#refuseInternal(facts);
     const internals = this.#internals;
     const now = this.#now();
     const resolved = this.#withAccount(
@@ -2466,8 +2555,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       : evaluateLists(
           internals,
           resolved.address,
-          listedUser(facts),
-          listedKey(facts),
+          this.#listedUser(facts, internals),
+          this.#listedKey(facts, internals),
           listPath(facts.path, internals),
           now,
           internals.mode === "dryRun",
@@ -2984,7 +3073,10 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       score = this.#scores.add(ip, weight, now, ladder);
       this.#scoreSync?.added(ip, weight);
     } else {
-      pass.score = (pass.score ?? this.#scores.get(ip, now, ladder)) + weight;
+      pass.score =
+        (pass.score ??
+          this.#scores.get(ip, now, ladder) + (pass.assume?.score ?? 0)) +
+        weight;
       score = pass.score;
     }
     const step = ladder.steps.find((candidate) => score >= candidate.score);
@@ -3671,8 +3763,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       lists = evaluateLists(
         internals,
         resolved.address,
-        listedUser(facts),
-        listedKey(facts),
+        this.#listedUser(facts, internals),
+        this.#listedKey(facts, internals),
         listPath(facts.path, internals),
         now,
         dryPolicy,
@@ -3797,6 +3889,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       stage,
       crawler,
       apiKeyPlan: facts.identity?.apiKeyPlan,
+      ...(writes ? {} : { assume: this.#internalOf(facts)?.assume }),
     };
     if (this.#banned(pass)) return finish();
     if (challengeEntry !== undefined) {
@@ -4233,10 +4326,19 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         });
         continue;
       }
+      // An assumed count (a test's, on its throwaway engine) is counted
+      // there first, then read as any explanation reads.
+      const assumed = writes ? undefined : pass.assume?.limits?.[limit.id];
       counting.push(
         then(
-          this.#limiter.count(built, limit, key, !writes),
-          (value): [CompiledLimit, LimitCount] => [limit, value],
+          assumed === undefined || assumed <= 0
+            ? undefined
+            : this.#limiter.count(built, limit, key, false, assumed),
+          () =>
+            then(
+              this.#limiter.count(built, limit, key, !writes),
+              (value): [CompiledLimit, LimitCount] => [limit, value],
+            ),
         ),
       );
     }

@@ -1616,6 +1616,33 @@ const api = createSecurityApi({
   store (each send is claimed there); the open-alert list, digests,
   in-process queue and log belong to one instance.
 
+### Testing a request and a draft's impact
+
+- **`POST /rules/test`** runs a request you describe (method, path and
+  query, headers, the peer address and your `trustProxy`, the identity as
+  your app's ids, an assumed country or ASN) through a service's effective
+  policy, or with a scope's draft in its place (`draft`), and answers the
+  decision, every hit, every step and how the client was resolved. It runs
+  on an engine of its own that reads the active bans naming the request's
+  subjects and writes nothing; `assume` sets what limits have counted and the
+  address's score ("as if it had sent 299 this minute"). Account ids are
+  keyed with `bans.secret` and shown as keys. Nothing is stored or logged.
+- **`POST /policies/:scope/impact`** replays the stored events of a window
+  (24 hours by default, 7 days at most) through each affected service's
+  published policy and the same with the scope's draft, and reports what
+  would be refused, challenged or allowed differently, by rule and route,
+  with sample event ids. It reads at most 50,000 events for at most 10 s,
+  stops when you disconnect, and stores nothing. It replays stateless
+  layers only: each rule is labelled `exact`, `partial` (what it reads is
+  kept redacted) or `not-evaluated` (a body rule, a limit, the ladder, …).
+  Allows are sampled (one in a thousand by default), so changes to allowed
+  traffic are counted over the allows kept, with their rate, never scaled.
+- **Who**: `rules:test` (an analyst) on the service's or the draft's
+  scope, and `policy:read` there for a draft. What an estimate shows of
+  each event follows the caller's rights on its service. Per operator,
+  across instances: 30 tests and 6 estimates a minute, one estimate at a
+  time.
+
 ## Deciding and explaining
 
 ```ts

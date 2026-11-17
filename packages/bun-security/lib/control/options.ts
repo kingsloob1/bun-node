@@ -222,6 +222,8 @@ export interface ResolvedSecurityApiOptions {
   readonly agents: ResolvedAgentsOptions | undefined;
   /** Keys API-key and user ban subjects as the engines do; `undefined` when both are off. */
   readonly banKeys: Keyring | undefined;
+  /** The fleet's keying secret (`bans.secret`), for the throwaway engines of a test or an estimate (PR-CP7); `undefined` without one. */
+  readonly fleetSecret: string | Uint8Array | undefined;
   /** Which keyed ban subjects are taken (`bans.apiKeys`, `bans.users`). */
   readonly banKinds: { readonly apiKey: boolean; readonly user: boolean };
   /** Normalised: a leading slash, no trailing one. */
@@ -364,6 +366,7 @@ export function resolveOptions(
     onAlert: options.onAlert ?? (() => {}),
     agents: resolveAgents(options.agents, options.store),
     banKeys: resolveBanKeys(options.bans),
+    fleetSecret: options.bans?.secret,
     banKinds: Object.freeze({
       apiKey: options.bans?.apiKeys !== false,
       user: options.bans?.users !== false,
