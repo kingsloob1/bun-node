@@ -654,7 +654,9 @@ export const Ban: Schema<BanDto> = s.object({
   liftedBy: s.optional(s.string()),
   active: s.boolean(),
   revision: s.int({ min: 1 }),
-  entered: s.optional(s.object({ apiKey: s.string() })),
+  entered: s.optional(
+    s.object({ apiKey: s.optional(s.string()), user: s.optional(s.string()) }),
+  ),
 });
 
 /** A page of bans. */

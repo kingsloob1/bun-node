@@ -73,7 +73,7 @@ export interface AgentEngine {
   /** Bans a subject; the ban, with its id. */
   readonly ban: (input: {
     readonly ip?: string;
-    readonly user?: string;
+    readonly userHash?: string;
     readonly apiKeyHash?: string;
     readonly action?: "ban" | "challenge";
     readonly duration?: Duration | null;
@@ -521,11 +521,12 @@ export function connectAgent(options: ConnectAgentOptions): SecurityAgent {
   /** Bans `record`'s subject in the engine; the engine's ban id. */
   const banInto = (record: BanRecord): string => {
     const subject =
+      // A user's and an API key's subject is already keyed by the control
+      // plane: never keyed twice.
       record.subject.type === "user"
-        ? { user: record.subject.value }
+        ? { userHash: record.subject.value }
         : record.subject.type === "apiKey"
-          ? // Already keyed by the control plane: never keyed twice.
-            { apiKeyHash: record.subject.value }
+          ? { apiKeyHash: record.subject.value }
           : { ip: record.subject.value };
     return options.security.ban({
       ...subject,

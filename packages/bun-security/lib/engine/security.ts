@@ -526,8 +526,10 @@ export interface Security<TRequest = Request> {
    */
   ban: (input: BanInput) => Ban;
   /**
-   * Lifts a ban by its id (`ip:203.0.113.5`, `cidr:203.0.113.0/24`,
-   * `user:u_1`): the lifted record, or `undefined` when none is in force.
+   * Lifts a ban by its id (`ip:203.0.113.5`, `cidr:203.0.113.0/24`, a
+   * `Ban.id` from `bans()`): the lifted record, or `undefined` when none is
+   * in force. A user's ban is held under the user id's HMAC; `user:u_1`
+   * names it by the id the app knows, and is keyed here.
    * Lifting an automatic address ban also clears the address's score.
    */
   unban: (id: string, options?: UnbanOptions) => Ban | undefined;
@@ -583,8 +585,14 @@ export interface SocketLimiter {
 export interface BanInput {
   /** An address (banned by its key: IPv4 as itself, IPv6 by `keys.ipv6Prefix`) or a CIDR range. */
   readonly ip?: string;
-  /** A user id, as `identify()` returns it. */
+  /** A user id, as `identify()` returns it: banned under its HMAC, as requests key it. */
   readonly user?: string;
+  /**
+   * A user's key, already its HMAC under this engine's `secret` (32 hex
+   * characters, as `Decision.subject.user` and the control plane carry it):
+   * banned as it is, never keyed twice.
+   */
+  readonly userHash?: string;
   /** An API key id, as `identify()` returns it. */
   readonly apiKey?: string;
   /**
@@ -629,6 +637,9 @@ const ERROR_LOG_INTERVAL = 10_000;
 
 /** An event name `signal()` accepts. */
 const EVENT_RE = /^[a-z][\w.-]{0,63}$/i;
+
+/** A subject already keyed: 32 hex characters (`Keyring`'s 128 bits). */
+const KEYED = /^[\da-f]{32}$/;
 
 /** How a refusing hit answers. */
 interface Answer {
@@ -943,21 +954,27 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   #lastAggregated = Number.NEGATIVE_INFINITY;
   /** Evictions of local state. */
   readonly #evictions: EvictionMonitor;
-  /** API-key list entries with their default id keyed, by the compiled entry. */
+  /** User and API-key list entries with their default id keyed, by the compiled entry. */
   readonly #keyedEntries = new WeakMap<CompiledEntry, CompiledEntry>();
   /**
-   * An API-key list entry whose id is the default, with the id keyed as
-   * requests key the key (`apiKey:` + `Decision.subject.apiKey`), so the key
-   * id never reaches a hit, `explain()` or a log (layers.md L12); any other
-   * entry as it is.
+   * A user or API-key list entry whose id is the default, with the id keyed
+   * as requests key the subject (`user:` + `Decision.subject.user`,
+   * `apiKey:` + `Decision.subject.apiKey`), so the id never reaches a hit,
+   * `explain()` or a log (layers.md L12); any other entry as it is.
    */
   readonly #keyedEntry = (entry: CompiledEntry): CompiledEntry => {
-    if (entry.kind !== "apiKey" || entry.named) return entry;
+    if ((entry.kind !== "apiKey" && entry.kind !== "user") || entry.named) {
+      return entry;
+    }
     let keyed = this.#keyedEntries.get(entry);
     if (keyed === undefined) {
+      const value = boundKey(entry.value);
       keyed = Object.freeze({
         ...entry,
-        id: `apiKey:${this.#keyring.apiKey(boundKey(entry.value))}`,
+        id:
+          entry.kind === "user"
+            ? `user:${this.#keyring.user(value)}`
+            : `apiKey:${this.#keyring.apiKey(value)}`,
       });
       this.#keyedEntries.set(entry, keyed);
     }
@@ -1111,7 +1128,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     // cookies alike, or the login defences hold in none of them.
     if (shared !== undefined && options.secret === undefined) {
       throw new ConfigError(
-        "createSecurity(): a shared store needs a secret: every process sharing it keys usernames and destinations and signs device cookies with it, so give each the same one (at least 32 bytes)",
+        "createSecurity(): a shared store needs a secret: every process sharing it keys user ids, API key ids, usernames and destinations and signs device cookies with it, so give each the same one (at least 32 bytes)",
       );
     }
     this.#keyring = new Keyring(options.secret);
@@ -1870,7 +1887,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       : evaluateLists(
           internals,
           resolved.address,
-          resolved.subject.user,
+          listedUser(facts),
           listedKey(facts),
           listPath(facts.path, internals),
           now,
@@ -1995,18 +2012,22 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     const username = data?.username ?? facts.identity?.username;
     const destination = data?.destination ?? facts.identity?.destination;
     const apiKey = resolved.subject.apiKey;
+    const user = resolved.subject.user;
     if (
       username === undefined &&
       destination === undefined &&
-      apiKey === undefined
+      apiKey === undefined &&
+      user === undefined
     ) {
       return resolved;
     }
     const subject: { -readonly [K in keyof SubjectKeys]: SubjectKeys[K] } = {
       ...resolved.subject,
     };
-    // An API key's id is keyed by its HMAC (layers.md L12), as usernames are.
+    // An API key's id and a user id are keyed by their HMAC (layers.md L12),
+    // as usernames are: nothing after this keeps either in clear.
     if (apiKey !== undefined) subject.apiKey = this.#keyring.apiKey(apiKey);
+    if (user !== undefined) subject.user = this.#keyring.user(user);
     if (typeof username === "string" && username.trim() !== "") {
       subject.username = this.#keyring.username(username.slice(0, 1024));
       const device = sensitiveOf(this.#policy).login?.device;
@@ -2202,13 +2223,13 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     if (typeof input !== "object" || input === null) {
       throw new TypeError("bun-security: ban() takes an object");
     }
-    const given = (["ip", "user", "apiKey", "apiKeyHash"] as const).filter(
-      (key) => input[key] !== undefined,
-    );
+    const given = (
+      ["ip", "user", "userHash", "apiKey", "apiKeyHash"] as const
+    ).filter((key) => input[key] !== undefined);
     const only = given[0];
     if (given.length !== 1 || only === undefined) {
       throw new TypeError(
-        "bun-security: ban() takes exactly one of ip, user, apiKey, apiKeyHash",
+        "bun-security: ban() takes exactly one of ip, user, userHash, apiKey, apiKeyHash",
       );
     }
     const value = input[only];
@@ -2216,18 +2237,19 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       throw new TypeError(`bun-security: ban(): ${only} must be a string`);
     }
     let subject: BanSubject;
-    if (only === "apiKeyHash") {
-      if (!/^[\da-f]{32}$/.test(value)) {
+    if (only === "apiKeyHash" || only === "userHash") {
+      if (!KEYED.test(value)) {
         throw new TypeError(
-          "bun-security: ban(): apiKeyHash must be an API key's key (32 hex characters)",
+          `bun-security: ban(): ${only} must be ${only === "userHash" ? "a user's" : "an API key's"} key (32 hex characters)`,
         );
       }
+      const type = only === "userHash" ? "user" : "apiKey";
       subject = {
-        type: "apiKey",
+        type,
         value:
           keyOf(
-            keyOfType("apiKey"),
-            { apiKey: value },
+            keyOfType(type),
+            { [type]: value },
             {
               method: "",
               path: "",
@@ -2261,11 +2283,12 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
           keyOf(
             keyOfType(only),
             {
-              // An API key is banned under its HMAC, as requests key it.
+              // A user and an API key are banned under their HMAC, as
+              // requests key them.
               [only]:
                 only === "apiKey"
                   ? this.#keyring.apiKey(boundKey(value))
-                  : boundKey(value),
+                  : this.#keyring.user(boundKey(value)),
             },
             {
               method: "",
@@ -2324,17 +2347,29 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   unban(id: string, options: UnbanOptions = {}): Ban | undefined {
     this.#assertOpen();
     const now = this.#now();
-    const lifted = this.#bans.lift(id, options.by, now);
+    // A user's ban is held under the id's HMAC: `user:<id>` names it by the
+    // id the app knows, `user:<key>` (from `bans()`) as it is. Both are
+    // tried, so a 32-hex user id and a ban from before ids were keyed lift
+    // too; lifting an id with no ban changes nothing.
+    const ids =
+      typeof id === "string" && id.startsWith("user:") && id.length <= 1029
+        ? [id, `user:${this.#keyring.user(boundKey(id.slice(5)))}`]
+        : [id];
+    let lifted: Ban | undefined;
+    for (const each of ids) {
+      lifted = this.#bans.lift(each, options.by, now) ?? lifted;
+    }
     if (lifted?.source === "auto" && lifted.subject.type === "ip") {
       this.#scores.reset(lifted.subject.value);
       this.#scoreSync?.reset(lifted.subject.value);
     }
     // Lifted everywhere, whether or not this process held it.
-    if (typeof id === "string" && id.length <= 2304) {
+    for (const each of ids) {
+      if (typeof each !== "string" || each.length > 2304) continue;
       const scope = this.#scopeKey();
       this.#banSync?.record({
         op: "lift",
-        id,
+        id: each,
         at: now,
         ...(scope === "shared" ? {} : { scope }),
       });
@@ -2360,7 +2395,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       : evaluateLists(
           internals,
           resolved.address,
-          resolved.subject.user,
+          listedUser(facts),
           listedKey(facts),
           listPath(facts.path, internals),
           now,
@@ -3564,7 +3599,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       lists = evaluateLists(
         internals,
         resolved.address,
-        subject.user,
+        listedUser(facts),
         listedKey(facts),
         listPath(facts.path, internals),
         now,
@@ -4327,6 +4362,15 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     }
     return decision;
   }
+}
+
+/**
+ * The user id the lists match (their `user` entries name ids): the
+ * identity's, bounded. Everything the engine keeps keys it by its HMAC.
+ */
+function listedUser(facts: RequestFacts): string | undefined {
+  const id = facts.identity?.user;
+  return id === undefined ? undefined : boundKey(id);
 }
 
 /**

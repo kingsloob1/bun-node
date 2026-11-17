@@ -113,14 +113,18 @@ export interface SecurityApiOptions {
   /**
    * Bans (PR-CP4). `secret` is the fleet's keying secret (the
    * services' `createSecurity({ secret })`): an API-key ban's subject is
-   * stored and sent as `HMAC(secret, "apiKey|" + id)`, as the engines key
-   * it, never the id. Required unless `apiKeys: false` (no API-key bans).
+   * stored and sent as `HMAC(secret, "apiKey|" + id)` and a user ban's as
+   * `HMAC(secret, "user|" + id)`, as the engines key them, never the id.
+   * Required unless `apiKeys: false` and `users: false` (only address
+   * bans).
    */
   readonly bans?: {
     /** The fleet's keying secret, at least 32 bytes, from the environment. */
     readonly secret?: string | Uint8Array;
     /** Whether API-key bans are taken. Default `true` (and then `secret` is required). */
     readonly apiKeys?: boolean;
+    /** Whether user bans are taken. Default `true` (and then `secret` is required). */
+    readonly users?: boolean;
   };
   /** Where the API is mounted. Default `/security/api`. */
   readonly basePath?: string;
@@ -197,8 +201,10 @@ export interface ResolvedSecurityApiOptions {
   readonly onAlert: (alert: SecurityAlertDto) => void;
   /** The agent routes' settings, resolved; `undefined` without agents. */
   readonly agents: ResolvedAgentsOptions | undefined;
-  /** Keys API-key ban subjects as the engines do; `undefined` when API-key bans are off. */
+  /** Keys API-key and user ban subjects as the engines do; `undefined` when both are off. */
   readonly banKeys: Keyring | undefined;
+  /** Which keyed ban subjects are taken (`bans.apiKeys`, `bans.users`). */
+  readonly banKinds: { readonly apiKey: boolean; readonly user: boolean };
   /** Normalised: a leading slash, no trailing one. */
   readonly basePath: string;
   /** The CSRF settings, or `false`. */
@@ -338,15 +344,19 @@ export function resolveOptions(
     onAlert: options.onAlert ?? (() => {}),
     agents: resolveAgents(options.agents, options.store),
     banKeys: resolveBanKeys(options.bans),
+    banKinds: Object.freeze({
+      apiKey: options.bans?.apiKeys !== false,
+      user: options.bans?.users !== false,
+    }),
   };
 }
 
-/** The ban subjects' keyring: required while API-key bans are on. */
+/** The ban subjects' keyring: required while API-key or user bans are on. */
 function resolveBanKeys(bans: SecurityApiOptions["bans"]): Keyring | undefined {
-  if (bans?.apiKeys === false) return undefined;
+  if (bans?.apiKeys === false && bans.users === false) return undefined;
   if (bans?.secret === undefined) {
     throw new ConfigError(
-      "createSecurityApi(): bans.secret is required: the fleet's keying secret (createSecurity's secret), so an API-key ban is stored as its HMAC, never the id; or bans: { apiKeys: false } to take no API-key bans",
+      "createSecurityApi(): bans.secret is required: the fleet's keying secret (createSecurity's secret), so an API-key or user ban is stored as its HMAC, never the id; or bans: { apiKeys: false, users: false } to take address bans only",
     );
   }
   try {

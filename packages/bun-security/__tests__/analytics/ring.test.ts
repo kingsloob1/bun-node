@@ -164,21 +164,17 @@ describe("what an event keeps of the subject", () => {
   /** A real engine blocking `RAW_KEY` by a list entry, feeding a ring and a recorder. */
   const run = async (
     lists: readonly ({ apiKey: string } | { user: string })[],
-    userKey?: (user: string) => string,
   ) => {
     const clock = fakeClock(T0);
     const recorder = createAnalyticsRecorder({
       service: "api",
       now: clock.now,
-      ...(userKey === undefined
-        ? {}
-        : { subjects: ["ip", "apiKey", "username", "user"], userKey }),
+      subjects: ["ip", "apiKey", "username", "user"],
     });
     const ring = createEventRing({
       service: "api",
       recorder,
       now: clock.now,
-      userKey,
       logger: () => {},
     });
     const security = createSecurity({
@@ -208,7 +204,11 @@ describe("what an event keeps of the subject", () => {
     expect(events).toHaveLength(1);
     const key = decision.subject.apiKey!;
     expect(key).toMatch(/^[0-9a-f]{32}$/);
-    expect(events[0]?.subjects).toEqual({ ip: "203.0.113.7", apiKey: key });
+    expect(events[0]?.subjects).toEqual({
+      ip: "203.0.113.7",
+      apiKey: key,
+      user: decision.subject.user,
+    });
     // The list entry's default id names the raw key: rewritten to the HMAC.
     expect(events[0]?.rule).toBe(`apiKey:${key}`);
     const refused = counters.filter(
@@ -220,22 +220,21 @@ describe("what an event keeps of the subject", () => {
     expect(all).not.toContain(RAW_USER);
   });
 
-  it("a user id only as the app's key, with userKey", async () => {
-    const userKey = (user: string) => `u:${user.length}`;
-    const { events, counters } = await run([{ user: RAW_USER }], userKey);
-    expect(events[0]?.subjects?.user).toBe(`u:${RAW_USER.length}`);
-    expect(events[0]?.rule).toBe(`user:u:${RAW_USER.length}`);
-    // Without userKey: no user id, and the entry's id redacted.
-    const bare = await run([{ user: RAW_USER }]);
-    expect(bare.events[0]?.subjects?.user).toBeUndefined();
-    expect(bare.events[0]?.rule).toBe("user:[redacted]");
-    expect(
-      JSON.stringify({ events: bare.events, counters: bare.counters }),
-    ).not.toContain(RAW_USER);
+  it("a user id only as its HMAC, as the engine keys it (#842)", async () => {
+    const { decision, events, counters } = await run([{ user: RAW_USER }]);
+    const user = decision.subject.user!;
+    expect(user).toMatch(/^[0-9a-f]{32}$/);
+    expect(events[0]?.subjects?.user).toBe(user);
+    expect(events[0]?.rule).toBe(`user:${user}`);
+    const refused = counters.filter(
+      (row) => row.metric === "top.refused" && row.dims?.kind === "user",
+    );
+    expect(refused.map((row) => row.dims?.subject)).toEqual([user]);
     expect(JSON.stringify({ events, counters })).not.toContain(RAW_USER);
+    // The user kind needs nothing of the app now.
     expect(() =>
       createAnalyticsRecorder({ service: "api", subjects: ["user"] }),
-    ).toThrow(/userKey/);
+    ).not.toThrow();
   });
 
   it("negative control: a decision carrying raw ids would show them, so the checks above can see one", () => {

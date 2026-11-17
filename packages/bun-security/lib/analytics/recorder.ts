@@ -114,12 +114,10 @@ export interface AnalyticsRecorderOptions {
   /**
    * The subject kinds counted per subject. Default `["ip", "apiKey",
    * "username"]`: the address key, and the API key's and the username's
-   * HMAC, as the engine keys them. `user` needs `userKey`: a raw user id is
-   * never counted.
+   * HMAC, as the engine keys them. `user` counts the user id's HMAC, as the
+   * engine keys it too.
    */
   readonly subjects?: readonly AnalyticsSubjectKind[];
-  /** Keys a user id for the `user` kind (the app's own HMAC). */
-  readonly userKey?: (user: string) => string;
   /** How many subjects each minute's top-K holds per metric and kind. Default 100 (README §8.1). */
   readonly topK?: number;
   /** How many rows one minute may hold, every metric together; past it, `(other)`. Default 2,000 (README §8.5). */
@@ -257,12 +255,6 @@ export function createAnalyticsRecorder(
       );
     }
   }
-  if (kinds.includes("user") && options.userKey === undefined) {
-    throw new ConfigError(
-      'createAnalyticsRecorder(): the "user" subject kind needs userKey, so a raw user id is never counted',
-    );
-  }
-  const userKey = options.userKey;
   const topK = positive(options.topK, 100, "topK");
   const maxRows = positive(options.maxRowsPerMinute, 2_000, "maxRowsPerMinute");
   const maxAsns = positive(options.maxAsns, 200, "maxAsns");
@@ -435,9 +427,9 @@ export function createAnalyticsRecorder(
     }
     const refusing = REFUSING_ACTIONS.includes(action);
     for (const kind of kinds) {
-      const raw = input.subject?.[kind];
-      if (raw === undefined || raw === "") continue;
-      const subject = kind === "user" ? userKey!(raw) : raw;
+      // Already keyed by the engine: the address key and the HMACs.
+      const subject = input.subject?.[kind];
+      if (subject === undefined || subject === "") continue;
       offer(minute, ANALYTICS_METRICS.topRequests, kind, subject);
       if (refusing) {
         offer(minute, ANALYTICS_METRICS.topRefused, kind, subject);
@@ -453,7 +445,7 @@ export function createAnalyticsRecorder(
         ...extras,
         action: decision.action,
         hits: decision.hits.map((hit) => ({
-          rule: scrubRule(hit.rule, decision.subject, userKey),
+          rule: scrubRule(hit.rule, decision.subject),
           action: hit.wouldHaveBeen ?? hit.action,
           dryRun: hit.wouldHaveBeen !== undefined,
         })),

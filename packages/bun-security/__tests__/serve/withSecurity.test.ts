@@ -257,7 +257,12 @@ describe("withSecurity", () => {
     expect(
       (await fetch(async.url, { headers: { "x-user": "mallory" } })).status,
     ).toBe(403);
-    expect(async.decisions[0]?.subject.user).toBe("mallory");
+    // Keyed by its HMAC (#842), never the id; the list still matched.
+    const keyed = async.decisions[0]?.subject.user;
+    expect(keyed).toMatch(/^[0-9a-f]{32}$/);
+    expect(async.decisions[0]?.hits.map((hit) => hit.rule)).toEqual([
+      `user:${keyed}`,
+    ]);
   });
 
   it("lets the request through when the engine throws, and logs it", async () => {

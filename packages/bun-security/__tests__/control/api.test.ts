@@ -20,7 +20,7 @@ const base = () => ({
   authenticate: () => ({ id: "x" }),
   owners: ["x"],
   allowWithoutStepUp: true,
-  bans: { apiKeys: false },
+  bans: { apiKeys: false, users: false },
   signing: { keyId: "k", sign: () => new Uint8Array(64) },
   audit: {
     signing: {

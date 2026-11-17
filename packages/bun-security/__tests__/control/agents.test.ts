@@ -164,7 +164,7 @@ describe("agent keys", () => {
       authenticate: () => ({ id: "x" }),
       owners: ["x"],
       allowWithoutStepUp: true,
-      bans: { apiKeys: false },
+      bans: { apiKeys: false, users: false },
       signing: {
         keyId: "k",
         privateKey: generateKeyPairSync("ed25519").privateKey,
@@ -574,7 +574,7 @@ describe("API-key ban subjects are keyed on the control plane", () => {
     expect(() =>
       createSecurityApi({ ...base, bans: { secret: FLEET_SECRET } }),
     ).not.toThrow();
-    const off = testApi({ bans: { apiKeys: false } });
+    const off = testApi({ bans: { apiKeys: false, users: false } });
     return off
       .call("POST", "/bans", { apiKey: "key_1", reason: "x" })
       .then((answer) => {
@@ -656,6 +656,129 @@ describe("API-key ban subjects are keyed on the control plane", () => {
       store.upsertBan({
         scope: "global",
         subject: { type: "apiKey", value: "key_live_raw" },
+        action: "ban",
+        reason: "x",
+        source: "manual",
+        expiresAt: null,
+      }),
+    ).rejects.toThrow(ConfigError);
+  });
+});
+
+describe("user ban subjects are keyed on the control plane (#842)", () => {
+  it("needs the fleet's secret unless user bans are off too, and refuses a user ban when they are", async () => {
+    const off = testApi({ bans: { apiKeys: false, users: false } });
+    expect(
+      (await off.call("POST", "/bans", { user: "u_1", reason: "x" })).status,
+    ).toBe(400);
+    // API-key bans off alone: user bans still need the secret.
+    const base = {
+      authenticate: () => ({ id: "x" }),
+      owners: ["x"],
+      allowWithoutStepUp: true,
+      store: sqliteStore({ path: join(tempDir(), "x.sqlite") }),
+      signing: {
+        keyId: "k",
+        privateKey: generateKeyPairSync("ed25519").privateKey,
+      },
+      audit: {
+        signing: {
+          keyId: "ak",
+          privateKey: generateKeyPairSync("ed25519").privateKey,
+        },
+        allowNoExternalCheckpoints: true,
+      },
+    };
+    expect(() =>
+      createSecurityApi({ ...base, bans: { apiKeys: false } }),
+    ).toThrow(/bans.secret is required/);
+    const usersOff = testApi({ bans: { secret: FLEET_SECRET, users: false } });
+    expect(
+      (await usersOff.call("POST", "/bans", { user: "u_1", reason: "x" }))
+        .status,
+    ).toBe(400);
+  });
+
+  it("stores and sends the user id's HMAC, never the id; the agent bans that key, and the user's requests are refused", async () => {
+    const path = join(tempDir(), "user-bans.sqlite");
+    const store = sqliteStore({ path });
+    await store.connect();
+    const cp = await controlPlane({ store, agents: {} });
+    const raw = "alice@example.com";
+    const made = await cp.call("POST", "/bans", { user: raw, reason: "abuse" });
+    expect(made.status).toBe(201);
+    // Shown to the operator in this answer only.
+    expect(made.body.entered).toEqual({ user: raw });
+    expect(made.body.subject).toEqual({
+      type: "user",
+      value: new Keyring(FLEET_SECRET).user(raw),
+    });
+    expect(JSON.stringify((await cp.call("GET", "/bans")).body)).not.toContain(
+      raw,
+    );
+    expect(
+      JSON.stringify((await cp.call("GET", "/audit?limit=200")).body),
+    ).not.toContain(raw);
+    await store.close();
+    const bytes = Buffer.concat(
+      [path, `${path}-wal`, `${path}-shm`]
+        .filter((file) => existsSync(file))
+        .map((file) => readFileSync(file)),
+    );
+    expect(bytes.includes(Buffer.from(raw))).toBe(false);
+    expect(
+      bytes.includes(Buffer.from(new Keyring(FLEET_SECRET).user(raw))),
+    ).toBe(true);
+    // The agent applies the keyed subject as it is: the user is refused.
+    const fresh = await controlPlane({ agents: { allowEphemeralStore: true } });
+    await fresh.call("POST", "/bans", { user: raw, reason: "abuse" });
+    const security = createSecurity({
+      policy: {},
+      logger: () => {},
+      secret: FLEET_SECRET,
+      now: fresh.clock.now,
+    });
+    const { agent } = agentOn(fresh, { security });
+    await agent.sync();
+    const request = {
+      method: "GET",
+      path: "/",
+      rawPath: "/",
+      headers: {},
+      cookieNames: [],
+      peer: "203.0.113.10",
+      client: "203.0.113.10",
+      chain: [
+        { address: "203.0.113.10", source: "socket" as const, trusted: false },
+      ],
+      identity: { user: raw },
+    };
+    const decision = await security.evaluate(request);
+    expect(decision.action).toBe("ban");
+    expect(JSON.stringify(decision)).not.toContain(raw);
+    // Negative controls: keyed twice, or on another secret, it misses.
+    const twice = createSecurity({
+      policy: {},
+      logger: () => {},
+      secret: FLEET_SECRET,
+    });
+    twice.ban({ user: made.body.subject.value });
+    expect((await twice.evaluate(request)).action).toBe("allow");
+    const other = createSecurity({
+      policy: {},
+      logger: () => {},
+      secret: "another-fleet-secret-0123456789abcdef",
+    });
+    other.ban({ userHash: made.body.subject.value });
+    expect((await other.evaluate(request)).action).toBe("allow");
+  });
+
+  it("refuses a raw user id where its HMAC belongs, at the store", async () => {
+    const store = memoryStore();
+    await expect(
+      store.upsertBan({
+        scope: "global",
+        subject: { type: "user", value: "alice@example.com" },
         action: "ban",
         reason: "x",
         source: "manual",

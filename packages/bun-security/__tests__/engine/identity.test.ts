@@ -4,13 +4,17 @@
  */
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "bun:test";
+import { Keyring } from "../../lib/sensitive/keys";
 import { createSecurity, requestFacts } from "../../lib/index";
 import type { Decision, RequestFacts, SecurityPolicy } from "../../lib/index";
 import { facts } from "../helpers";
 
 /** Evaluates synchronously. */
+/** The secret `decide`'s engines key identifiers with. */
+const SECRET = "the-identity-test-secret-of-32-bytes!";
+
 function decide(policy: SecurityPolicy, request: RequestFacts): Decision {
-  const decision = createSecurity({ policy }).evaluate(request);
+  const decision = createSecurity({ policy, secret: SECRET }).evaluate(request);
   if (decision instanceof Promise)
     throw new Error("expected a synchronous decision");
   return decision;
@@ -148,16 +152,19 @@ describe("the client address", () => {
         },
       }),
     );
+    const keys = new Keyring(SECRET);
     expect(decision.subject).toMatchObject({
-      user: "u_1",
+      // The user id is keyed by its HMAC, never kept in clear (#842).
+      user: keys.user("u_1"),
       session: "s",
       tenant: "t",
     });
     // The API key's id is keyed by its HMAC, never kept in clear (PR-S11).
     expect(decision.subject.apiKey).toMatch(/^[0-9a-f]{32}$/);
     expect(decision.subject.apiKey).not.toBe("k");
+    // A long id is bounded by its SHA-256 first, then keyed.
     expect(decide({}, facts({ identity: { user: long } })).subject.user).toBe(
-      `sha256:${createHash("sha256").update(long).digest("hex")}`,
+      keys.user(`sha256:${createHash("sha256").update(long).digest("hex")}`),
     );
   });
 });

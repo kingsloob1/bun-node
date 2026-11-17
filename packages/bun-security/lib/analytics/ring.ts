@@ -15,9 +15,8 @@
  * - The ring holds `capacity` events; past it the oldest is dropped and
  *   counted (`events.dropped { reason: "ring" }`).
  *
- * Subjects are the decision's, already keyed: the address key, the API
- * key's HMAC and the username's HMAC (S7, S11). A raw user id is never
- * kept; with `userKey`, its key (the app's own hash) is.
+ * Subjects are the decision's, already keyed: the address key and the
+ * HMACs of the API key id, the username and the user id (S7, S11, #842).
  */
 import type { LoggerLike } from "@kingsleyweb/bun-common";
 import type { Decision, SubjectKeys } from "../engine/decision";
@@ -68,8 +67,6 @@ export interface EventRingOptions {
   readonly maxTracked?: number;
   /** Where drops are counted (`events.dropped`, `events.capped`). */
   readonly recorder?: AnalyticsRecorder;
-  /** Keys a user id for an event (the app's own HMAC); without it, no user id is kept. */
-  readonly userKey?: (user: string) => string;
   /** The clock. Default `Date.now`. */
   readonly now?: () => number;
   /** A number in [0, 1). Default `Math.random`. */
@@ -133,7 +130,7 @@ export function createEventRing(options: EventRingOptions): EventRing {
   if (typeof options !== "object" || options === null) {
     throw new ConfigError("createEventRing(): options must be { service, … }");
   }
-  const { service, recorder, userKey } = options;
+  const { service, recorder } = options;
   if (
     typeof service !== "string" ||
     service.length === 0 ||
@@ -209,11 +206,11 @@ export function createEventRing(options: EventRingOptions): EventRing {
   const subjectsOf = (subject: SubjectKeys): SecurityEventSubjects => {
     const out: { -readonly [K in keyof SecurityEventSubjects]: string } = {};
     if (subject.ip !== undefined) out.ip = subject.ip;
-    // Already keyed by the engine: the API key id's and the username's HMAC.
+    // Already keyed by the engine: the API key id's, the username's and the
+    // user id's HMAC.
     if (subject.apiKey !== undefined) out.apiKey = subject.apiKey;
     if (subject.username !== undefined) out.username = subject.username;
-    if (subject.user !== undefined && userKey !== undefined)
-      out.user = userKey(subject.user);
+    if (subject.user !== undefined) out.user = subject.user;
     return out;
   };
 
@@ -238,7 +235,7 @@ export function createEventRing(options: EventRingOptions): EventRing {
       const rule =
         hit === undefined
           ? `(${decision.action})`
-          : scrubRule(hit.rule, decision.subject, userKey);
+          : scrubRule(hit.rule, decision.subject);
       const subjects = subjectsOf(decision.subject);
       const subject =
         subjects.ip ??
@@ -278,7 +275,7 @@ export function createEventRing(options: EventRingOptions): EventRing {
             : {
                 rules: decision.hits
                   .slice(0, 50)
-                  .map((h) => scrubRule(h.rule, decision.subject, userKey)),
+                  .map((h) => scrubRule(h.rule, decision.subject)),
               }),
           ...(dryRun ? { dryRun } : {}),
           ...(extras.route === undefined ? {} : { route: extras.route }),

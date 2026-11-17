@@ -699,7 +699,7 @@ describe("the audit options", () => {
         authenticate: () => ({ id: "x" }),
         owners: ["x"],
         allowWithoutStepUp: true,
-        bans: { apiKeys: false },
+        bans: { apiKeys: false, users: false },
         signing: { keyId: "k", privateKey: bundle.privateKey },
       },
     };

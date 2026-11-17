@@ -359,6 +359,11 @@ security.bans(); // the bans in force
 - A ban answers `403` with `code: "banned"` and, by default, no `Retry-After`
   (an attacker learns nothing); `bans: { code, retryAfter: true }` changes
   both. Its id is its subject, `ip:203.0.113.5`.
+- **A user is banned under its user id's HMAC**, as every request keys it
+  (`subject.user`, below): `bans()` lists it as `user:<HMAC>`.
+  `ban({ user })` and `unban("user:<id>")` take the id your app knows and
+  key it; `ban({ userHash })` takes an already-keyed one (as the control
+  plane sends it), and `unban()` also takes the `Ban.id` from `bans()`.
 - **Merging**: a new ban on a subject already banned extends it (the later end
   wins, "until lifted" beats any date), `ban` beats `challenge`, and a manual
   ban replaces an automatic one's reason.
@@ -811,7 +816,9 @@ stores them (layers.md L12). Tell it the key's **id** (never the key) in
 
 - **Keyed by HMAC.** Everything the engine keeps about a key (limits, bans,
   counts, the shared store, a decision's `subject.apiKey`) is keyed by
-  `HMAC(secret, id)`, as usernames are. With a shared store, give every
+  `HMAC(secret, id)`, as usernames and user ids are (`identify()`'s `user`
+  is `subject.user` as `HMAC(secret, "user|" + id)`, and a user list
+  entry's default id is `user:<HMAC>`, the same way). With a shared store, give every
   process the same `secret` (a store without one refuses to start). List
   entries and `ban({ apiKey })` still name the id, and the engine maps it:
   an API-key entry's default id, the `rule` of its hits and its `explain()`
@@ -1236,10 +1243,11 @@ const security = createSecurity({
   its field names on a `login`, `mfa`, `otp`, `reset` or `signup` route;
   any other body its type and length only. The answer keeps its status and
   headers, and a body only when the engine answered itself.
-- **Subjects** are the engine's keys: the address, the API key's HMAC and
-  the username's HMAC. A raw user id is never kept; with `userKey`, the
-  app's own key of it is. A list entry's default id, which names its key
-  or user, is rewritten the same way.
+- **Subjects** are the engine's keys: the address, and the HMACs of the API
+  key id, the username and the user id. A raw user id or key id is never
+  kept, so the `user` subject kind needs nothing of the app. A rule id that
+  names a key or a user (`apiKey:…`, `user:…`, `ban:user:…`) is rewritten
+  to the request's own key.
 - **At the control plane**: `createSecurityApi({ agentEvents: {
   authenticate } })` adds `POST /agent/events`: on an adapter that defers
   bodies (`secureAdmin`'s does), the agent is authenticated in a `use`
@@ -1471,7 +1479,12 @@ await agent.ready; // the last known good is in, before the control plane is ask
   the last bundle, the version floor and the last full ban set, and is
   verified again at start; a bad one is ignored with a critical alert.
 - **Bans** (`POST /bans`, `POST /bans/:id/lift`, `GET /bans`; `bans:write`
-  from operator, `bans:read` from viewer) reach every agent whose service
+  from operator, `bans:read` from viewer). A user's or an API key's subject
+  is stored and sent as its HMAC under `bans.secret` (the services'
+  `secret`), never the id; what the operator typed comes back in the create
+  answer only (`entered`), and the store refuses a raw one. `bans.secret` is
+  required unless `bans: { apiKeys: false, users: false }`. Bans reach every
+  agent whose service
   they cover (`global`, its groups, itself): changes every 5 s and on a
   nudge, the whole set every 60 s. Each batch is **signed with the bundle
   key** and bound to the request it answers, so a ban forged into the

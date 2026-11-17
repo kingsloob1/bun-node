@@ -627,7 +627,7 @@ export interface BanDto {
   readonly id: string;
   /** Where it applies. */
   readonly scope: PolicyScopeId;
-  /** What it refuses; an API key's `value` is its HMAC under the fleet's secret, never the id. */
+  /** What it refuses; an API key's or a user's `value` is its HMAC under the fleet's secret, never the id. */
   readonly subject: {
     readonly type: "ip" | "cidr" | "user" | "apiKey";
     readonly value: string;
@@ -656,8 +656,8 @@ export interface BanDto {
   readonly active: boolean;
   /** Its revision. */
   readonly revision: number;
-  /** What the operator typed, in the answer to `POST /bans` only (an API key's subject is its HMAC, never the id). */
-  readonly entered?: { readonly apiKey: string };
+  /** What the operator typed, in the answer to `POST /bans` only (an API key's or a user's subject is its HMAC, never the id). */
+  readonly entered?: { readonly apiKey?: string; readonly user?: string };
 }
 
 /** `POST /bans`'s body. */
@@ -666,9 +666,9 @@ export interface BanCreateInput {
   readonly scope?: PolicyScopeId;
   /** An address or CIDR range. Exactly one of `ip`, `user`, `apiKey`. */
   readonly ip?: string;
-  /** A user id, as the services' `identify()` returns it. */
+  /** A user id, as the services' `identify()` returns it (stored and sent as its HMAC). */
   readonly user?: string;
-  /** An API key id. */
+  /** An API key id (stored and sent as its HMAC). */
   readonly apiKey?: string;
   /** `ban` (the default) or `challenge`. */
   readonly action?: "ban" | "challenge";

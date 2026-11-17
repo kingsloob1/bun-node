@@ -575,8 +575,9 @@ export function checkBanInput(ban: BanInputRecord): BanInputRecord {
     ban.subject !== null &&
     ["ip", "cidr", "user", "apiKey"].includes(ban.subject.type) &&
     text(ban.subject.value, 512) &&
-    // An API key's subject is its HMAC (32 hex characters), never the id.
-    (ban.subject.type !== "apiKey" ||
+    // An API key's and a user's subject is its HMAC (32 hex characters),
+    // never the id.
+    ((ban.subject.type !== "apiKey" && ban.subject.type !== "user") ||
       /^[\da-f]{32}$/.test(ban.subject.value)) &&
     (ban.action === "ban" || ban.action === "challenge") &&
     text(ban.reason, 500) &&
