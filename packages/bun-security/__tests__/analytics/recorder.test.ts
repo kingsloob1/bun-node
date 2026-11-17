@@ -53,8 +53,12 @@ describe("createAnalyticsRecorder", () => {
       latencyMs: 0.3,
     });
     recorder.record({ action: "allow", status: 200, latencyMs: 400 });
-    // The open minute is not flushed.
-    expect(recorder.flush().filter((row) => row.tier !== "day")).toEqual([]);
+    // The open minute is not flushed (the exact refusals, day and hour tiers, are at once).
+    expect(
+      recorder
+        .flush()
+        .filter((row) => row.tier !== "day" && row.tier !== "hour"),
+    ).toEqual([]);
     now += 60_000;
     const rows = recorder.flush();
     expect(byDims(rows, "requests")).toEqual({
@@ -173,6 +177,7 @@ describe("createAnalyticsRecorder", () => {
     const counted = rows.filter(
       (row) =>
         row.tier !== "day" &&
+        row.tier !== "hour" &&
         row.metric !== "analytics.overflow" &&
         !row.metric.startsWith("top."),
     );

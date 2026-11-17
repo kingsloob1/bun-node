@@ -389,6 +389,16 @@ export function resolveEvents(
       );
     }
     if (
+      event.score !== undefined &&
+      (typeof event.score !== "number" ||
+        !Number.isFinite(event.score) ||
+        event.score < 0)
+    ) {
+      throw new ConfigError(
+        `security store: ${what}'s score must be a non-negative number`,
+      );
+    }
+    if (
       event.sampleRate !== undefined &&
       (typeof event.sampleRate !== "number" ||
         !Number.isFinite(event.sampleRate) ||
@@ -599,6 +609,15 @@ export interface ResolvedCounterQuery {
 }
 
 /** Checks a {@link CounterQuery}. */
+/** The value a bound folds dimensions into (the recorder's `OTHER`). */
+export const OTHER_DIM = "(other)";
+
+/** Checks a series' `groupBy`. */
+export function checkGroupBy(groupBy: unknown): "service" | undefined {
+  if (groupBy === undefined || groupBy === "service") return groupBy;
+  throw new ConfigError('security store: a series groups by "service" only');
+}
+
 export function resolveCounterQuery(query: CounterQuery): ResolvedCounterQuery {
   if (typeof query !== "object" || query === null) {
     throw new ConfigError("security store: a counter query must be an object");

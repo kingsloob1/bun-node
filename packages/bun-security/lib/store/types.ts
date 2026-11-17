@@ -507,6 +507,8 @@ export interface SecurityEvent {
    * (each is offered) and on allows stored before.
    */
   readonly sampleRate?: number;
+  /** The client address's offence score after this request (the decision's `score`), when it added to it (PR-AN). */
+  readonly score?: number;
   /** The status the request was answered with, when known. */
   readonly status?: number;
   /** The redacted request sample and anything else recorded: a JSON value the store keeps as given. */
@@ -595,12 +597,21 @@ export interface CounterQuery {
 }
 
 /** {@link SecurityStoreDriver.series}' query: a counter range, one point per bucket and dimension set. */
-export type SeriesQuery = CounterQuery;
+export interface SeriesQuery extends CounterQuery {
+  /**
+   * `service`: one point per bucket, dimension set **and service**, each
+   * point naming its service (PR-AN); the services read are the query's
+   * (`service`, `services`, or every one). Default: summed over them.
+   */
+  readonly groupBy?: "service";
+}
 
 /** One point of a series. */
 export interface SeriesPoint {
   /** The bucket's start, epoch milliseconds. */
   readonly at: number;
+  /** The point's service, with `groupBy: "service"`. */
+  readonly service?: string;
   /** The row's dimensions. */
   readonly dims: Readonly<Record<string, string>>;
   /** The sum over the services read. */
@@ -619,6 +630,14 @@ export interface TopKRow {
   readonly dims: Readonly<Record<string, string>>;
   /** Their sum over the range. */
   readonly value: number;
+}
+
+/** {@link SecurityStoreDriver.distinct}'s answer. */
+export interface DistinctCount {
+  /** The distinct dimension sets, `(other)` aside. */
+  readonly count: number;
+  /** Whether a set folded into `(other)` was seen: the count is then a floor. */
+  readonly other: boolean;
 }
 
 /** The most points {@link SecurityStoreDriver.series} answers; a wider query is refused (a `ConfigError`). */
@@ -814,6 +833,13 @@ export interface SecurityStoreDriver {
   series?: (query: SeriesQuery) => Promise<readonly SeriesPoint[]>;
   /** A metric summed per dimension set over a range, the largest first. */
   topK?: (query: TopKQuery) => Promise<readonly TopKRow[]>;
+  /**
+   * How many distinct dimension sets a metric has over a range (PR-AN):
+   * `refused` with `dims: { kind: "ip" }` counts the distinct refused
+   * addresses. Sets holding `(other)` (a bound's fold) are not counted;
+   * `other` says whether any was seen, so the count is a floor.
+   */
+  distinct?: (query: CounterQuery) => Promise<DistinctCount>;
   /**
    * Rolls `from` rows up into `to` buckets (`minute` to `hour`, `hour` to
    * `day`) for every `to` bucket that ends by `until`, each bucket once

@@ -96,6 +96,23 @@ export interface AgentWarning {
   readonly share?: number;
 }
 
+/** The most IP feeds a heartbeat reports (PR-AN). */
+export const MAX_HEARTBEAT_FEEDS = 32;
+
+/** One IP feed's state in a heartbeat (PR-AN). */
+export interface AgentFeedStatus {
+  /** The feed's id. */
+  readonly id: string;
+  /** Its size: the entries it holds. */
+  readonly size: number;
+  /** When it last refreshed, epoch ms; `null` never. */
+  readonly refreshedAt: number | null;
+  /** When a refresh was last tried, epoch ms; `null` never. */
+  readonly attemptedAt: number | null;
+  /** The last failure, at most 200 characters. */
+  readonly error?: string;
+}
+
 /** What an agent's heartbeat says (`POST /agent/heartbeat`). */
 export interface AgentHeartbeat {
   /** The route: `heartbeat`. */
@@ -118,6 +135,8 @@ export interface AgentHeartbeat {
   readonly lastError?: string;
   /** The engine's warnings in force, at most {@link MAX_HEARTBEAT_WARNINGS} (PR-CP6); absent from an older agent. */
   readonly warnings?: readonly AgentWarning[];
+  /** The engine's IP feeds, at most {@link MAX_HEARTBEAT_FEEDS} (PR-AN); absent without an intel that reports them. */
+  readonly intel?: { readonly feeds: readonly AgentFeedStatus[] };
 }
 
 /** What the control plane answers a heartbeat. */

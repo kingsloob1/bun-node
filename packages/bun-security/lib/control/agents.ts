@@ -333,6 +333,19 @@ export class AgentRegistry {
       banCount: beat.bans.count,
       health: beat.health,
       ...(beat.lastError === undefined ? {} : { lastError: beat.lastError }),
+      ...(beat.intel === undefined
+        ? {}
+        : {
+            intel: {
+              feeds: beat.intel.feeds.map((feed) => ({
+                id: feed.id,
+                size: feed.size,
+                refreshedAt: feed.refreshedAt,
+                attemptedAt: feed.attemptedAt,
+                ...(feed.error === undefined ? {} : { error: feed.error }),
+              })),
+            },
+          }),
       ...(beat.warnings === undefined
         ? {}
         : {

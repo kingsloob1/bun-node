@@ -29,6 +29,7 @@ type AnalyticsStore = SecurityStoreDriver &
       | "listEvents"
       | "series"
       | "topK"
+      | "distinct"
       | "rollup"
       | "deleteBefore"
     >
@@ -42,6 +43,7 @@ function analytics(store: SecurityStoreDriver): AnalyticsStore {
     "listEvents",
     "series",
     "topK",
+    "distinct",
     "rollup",
     "deleteBefore",
   ] as const) {
@@ -389,6 +391,122 @@ export function analyticsConformance(withStore: WithStore): void {
               })
             )[0]?.dims,
           ).toEqual({ other: "=", route: "x&route=a" });
+        });
+      },
+    );
+
+    check(
+      "a series grouped by service: one point per bucket, dims and service, each naming its service (PR-AN)",
+      async () => {
+        await withStore(async (raw) => {
+          const store = analytics(raw);
+          await store.addCounters([
+            row("requests", T0, 1, { action: "block" }, "a"),
+            row("requests", T0, 2, { action: "block" }, "b"),
+            row("requests", T0, 4, { action: "allow" }, "b"),
+            row("requests", T0 + MINUTE, 8, { action: "block" }, "a"),
+          ]);
+          const points = await store.series({
+            metric: "requests",
+            from: T0,
+            to: T0 + 2 * MINUTE,
+            tier: "minute",
+            groupBy: "service",
+          });
+          expect(
+            points.map((p) => [p.at - T0, p.service, p.dims.action, p.value]),
+          ).toEqual([
+            [0, "b", "allow", 4],
+            [0, "a", "block", 1],
+            [0, "b", "block", 2],
+            [MINUTE, "a", "block", 8],
+          ]);
+          // Filtered to a set of services, and the control: ungrouped sums them.
+          const some = await store.series({
+            metric: "requests",
+            from: T0,
+            to: T0 + MINUTE,
+            tier: "minute",
+            groupBy: "service",
+            services: ["a"],
+          });
+          expect(some.map((p) => p.service)).toEqual(["a"]);
+          const summed = await store.series({
+            metric: "requests",
+            from: T0,
+            to: T0 + MINUTE,
+            tier: "minute",
+            dims: { action: "block" },
+          });
+          expect(summed.map((p) => [p.value, p.service])).toEqual([
+            [3, undefined],
+          ]);
+          expect(
+            await rejects(() =>
+              store.series({
+                metric: "requests",
+                from: T0,
+                to: T0 + MINUTE,
+                groupBy: "route" as never,
+              }),
+            ),
+          ).toBe(true);
+        });
+      },
+    );
+
+    check(
+      "distinct counts dimension sets across services and buckets; (other) is not counted but reported (PR-AN)",
+      async () => {
+        await withStore(async (raw) => {
+          const store = analytics(raw);
+          await store.addCounters([
+            row("refused", T0, 3, { kind: "ip", subject: "192.0.2.1" }, "a"),
+            row("refused", T0, 1, { kind: "ip", subject: "192.0.2.1" }, "b"),
+            row("refused", T0, 1, { kind: "ip", subject: "192.0.2.2" }, "a"),
+            row("refused", T0, 5, { kind: "user", subject: "u1" }, "a"),
+          ]);
+          const day = 86_400_000;
+          const query = {
+            metric: "refused",
+            from: T0,
+            to: T0 + day,
+            tier: "minute" as const,
+          };
+          expect(
+            await store.distinct({ ...query, dims: { kind: "ip" } }),
+          ).toEqual({
+            count: 2,
+            other: false,
+          });
+          expect(await store.distinct(query)).toEqual({
+            count: 3,
+            other: false,
+          });
+          expect(
+            await store.distinct({
+              ...query,
+              dims: { kind: "ip" },
+              services: ["b"],
+            }),
+          ).toEqual({ count: 1, other: false });
+          await store.addCounters([
+            row("refused", T0, 9, { kind: "ip", subject: "(other)" }, "a"),
+          ]);
+          expect(
+            await store.distinct({ ...query, dims: { kind: "ip" } }),
+          ).toEqual({
+            count: 2,
+            other: true,
+          });
+          // The control: nothing in range is none.
+          expect(
+            await store.distinct({
+              ...query,
+              from: T0 + day,
+              to: T0 + 2 * day,
+            }),
+          ).toEqual({ count: 0, other: false });
         });
       },
     );

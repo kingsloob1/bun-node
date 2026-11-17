@@ -616,6 +616,20 @@ export const Agent: Schema<AgentDto> = s.object({
       banCount: s.int({ min: 0 }),
       health: s.enum(["ok", "signature-failing"]),
       lastError: s.optional(s.string()),
+      intel: s.optional(
+        s.object({
+          feeds: s.array(
+            s.object({
+              id: s.string(),
+              size: s.int({ min: 0 }),
+              refreshedAt: s.nullable(s.int({ min: 0 })),
+              attemptedAt: s.nullable(s.int({ min: 0 })),
+              error: s.optional(s.string()),
+            }),
+            32,
+          ),
+        }),
+      ),
       warnings: s.optional(
         s.array(
           s.object({

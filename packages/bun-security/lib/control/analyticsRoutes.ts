@@ -25,15 +25,43 @@ import type { EventListQuery, SecurityStoreDriver, Tier } from "../store/types";
 import { ConfigError } from "@kingsleyweb/bun-common";
 import * as A from "./analyticsSchemas";
 import { ANALYTICS_READ_LIMITS } from "./contract/live";
-import { TIER_MS } from "../store/types";
+import { MAX_FILTER_SERVICES, TIER_MS } from "../store/types";
+import { DEFAULT_RETENTION } from "../analytics/maintenance";
 import { eventView, viewerRule } from "./live/view";
 import { ApiProblem, notFound } from "./problems";
 
 /** The most bans one timeline read scans (the store bounds active bans at 100,000 per EP). */
 const MAX_TIMELINE_BANS = 20_000;
 
+/** The per-rule false-positive counter (PR-AN): `{ rule }`. */
+export const FALSE_POSITIVE_METRIC = "rules.false-positive";
+
 /** The metrics keyed by a subject, whose `kind` decides the permission. */
-const SUBJECT_METRICS = new Set(["refused", "top.refused", "top.requests"]);
+const SUBJECT_METRICS = new Set([
+  "refused",
+  "refused.hourly",
+  "top.refused",
+  "top.requests",
+  "top.usernames-per-ip",
+  "top.pattern",
+]);
+
+/** How long a false-positive flag's marker lives after its event: as long as events are kept by default. */
+const FLAG_LIFE_MS = DEFAULT_RETENTION.events;
+
+/** The most events `GET /analytics/scores` reads. */
+const MAX_SCORE_EVENTS = 20_000;
+
+/** The store key marking an event flagged a false positive. */
+const flagKey = (id: string): string => `fp:${id}`;
+
+/** Whether an event is flagged a false positive (PR-AN). */
+async function flagged(
+  store: SecurityStoreDriver,
+  id: string,
+): Promise<boolean> {
+  return (await store.getCounter(flagKey(id))) !== undefined;
+}
 
 /** The subject kinds an analyst alone may read. */
 const ACCOUNT_KINDS = new Set(["user", "username", "apiKey"]);
@@ -115,8 +143,15 @@ function dimsView(
   dims: Readonly<Record<string, string>>,
   detail: boolean,
 ): Readonly<Record<string, string>> {
-  if (detail || dims.rule === undefined) return dims;
-  return { ...dims, rule: viewerRule(dims.rule) };
+  if (detail || (dims.rule === undefined && dims.pattern === undefined))
+    return dims;
+  return {
+    ...dims,
+    ...(dims.rule === undefined ? {} : { rule: viewerRule(dims.rule) }),
+    ...(dims.pattern === undefined
+      ? {}
+      : { pattern: viewerRule(dims.pattern) }),
+  };
 }
 
 /** A store's refusal of a query (a `ConfigError`) as a `400`. */
@@ -160,6 +195,21 @@ export function analyticsRoutes(): AnyRoute[] {
             : span <= 14 * 86_400_000
               ? "hour"
               : "day");
+        // Grouped by service: the services under the scope, at most 1,000.
+        const grouped =
+          q.groupBy === "service"
+            ? (services ??
+              (await plane.servicesUnder("global")).map(
+                (service) => service.id,
+              ))
+            : undefined;
+        if (grouped !== undefined && grouped.length > MAX_FILTER_SERVICES) {
+          throw new ApiProblem(
+            400,
+            "invalid_request",
+            `groupBy=service reads at most ${MAX_FILTER_SERVICES} services: narrow the scope`,
+          );
+        }
         const points = await asProblem(async () =>
           series({
             metric: q.metric,
@@ -167,7 +217,11 @@ export function analyticsRoutes(): AnyRoute[] {
             to: q.to,
             tier,
             ...(Object.keys(dims).length === 0 ? {} : { dims }),
-            ...(services === undefined ? {} : { services }),
+            ...(grouped !== undefined
+              ? { services: grouped, groupBy: "service" as const }
+              : services === undefined
+                ? {}
+                : { services }),
           }),
         );
         return {
@@ -176,6 +230,9 @@ export function analyticsRoutes(): AnyRoute[] {
             tier,
             points: points.map((point) => ({
               at: point.at,
+              ...(point.service === undefined
+                ? {}
+                : { service: point.service }),
               dims: dimsView(point.dims, detail),
               value: point.value,
             })),
@@ -282,12 +339,13 @@ export function analyticsRoutes(): AnyRoute[] {
           status: 200,
           body: {
             items: await Promise.all(
-              page.items.map(async (event) =>
-                eventView(event, {
-                  detail: await detailFor(event.service),
-                  live: false,
-                }),
-              ),
+              page.items.map(async (event) => {
+                const detail = await detailFor(event.service);
+                const view = eventView(event, { detail, live: false });
+                return detail && (await flagged(plane.store, event.id))
+                  ? { ...view, falsePositive: true }
+                  : view;
+              }),
             ),
             ...(page.next === undefined ? {} : { next: page.next }),
           },
@@ -397,9 +455,156 @@ export function analyticsRoutes(): AnyRoute[] {
         const event = page.items[0];
         if (event === undefined) throw notFound(`event "${id}"`);
         await require("events:read", `service:${event.service}`);
+        const view = eventView(event, { detail: true, live: false });
         return {
           status: 200,
-          body: eventView(event, { detail: true, live: false }),
+          body: (await flagged(plane.store, event.id))
+            ? { ...view, falsePositive: true }
+            : view,
+        };
+      },
+    },
+    {
+      method: "post",
+      path: "/events/:id/false-positive",
+      summary:
+        "Flags an event a false positive (events:read on its service): counted once against every rule it hit; append-only and audited",
+      tag: "analytics",
+      params: A.EventParams,
+      responses: { 200: A.FalsePositive },
+      problems: [403, 404],
+      handle: async ({ plane, require, params }) => {
+        const { id } = params as { id: string };
+        const { listEvents } = analytics(plane.store);
+        const addCounters = plane.store.addCounters;
+        const page = await asProblem(async () => listEvents({ limit: 1, id }));
+        const event = page.items[0];
+        if (event === undefined || addCounters === undefined)
+          throw notFound(`event "${id}"`);
+        const scope: PolicyScopeId = `service:${event.service}`;
+        await require("events:read", scope);
+        const rules = [
+          ...new Set(
+            event.rules ?? (event.rule === undefined ? [] : [event.rule]),
+          ),
+        ];
+        const now = plane.now();
+        const already = await plane.audited(
+          {
+            action: "event.falsePositive",
+            scope,
+            target: { kind: "event", id },
+            after: { rules },
+          },
+          async () => {
+            // One flag per event, as long as the event is kept.
+            const ttl = Math.max(60_000, event.at + FLAG_LIFE_MS - now);
+            if (!(await plane.store.claimKey(flagKey(id), ttl))) return true;
+            if (rules.length > 0) {
+              await addCounters(
+                rules.map((rule) => ({
+                  service: event.service,
+                  at: now,
+                  metric: FALSE_POSITIVE_METRIC,
+                  dims: { rule },
+                  value: 1,
+                })),
+              );
+            }
+            return false;
+          },
+          (repeat) => ({ already: repeat }),
+        );
+        return { status: 200, body: { already, rules } };
+      },
+    },
+    {
+      method: "get",
+      path: "/analytics/distinct",
+      summary:
+        "How many distinct dimension sets a metric has over a range (refused with kind=ip: the distinct refused addresses), for a scope and what is under it",
+      tag: "analytics",
+      query: A.DistinctQuery,
+      responses: { 200: A.Distinct },
+      problems: [403, 404],
+      handle: async ({ plane, require, query }) => {
+        const q = query as Infer<typeof A.DistinctQuery>;
+        const scope: PolicyScopeId = q.scope ?? "global";
+        const dims = dimsOf(q);
+        await require(counterPermission(q.metric, dims), scope);
+        checkRange(q.from, q.to);
+        const distinct = plane.store.distinct;
+        if (distinct === undefined) {
+          throw new ApiProblem(
+            404,
+            "not_found",
+            `the "${plane.store.name}" store keeps no analytics`,
+          );
+        }
+        const services = await servicesUnder(plane, scope);
+        return {
+          status: 200,
+          body: await asProblem(async () =>
+            distinct({
+              metric: q.metric,
+              from: q.from,
+              to: q.to,
+              ...(q.tier === undefined ? {} : { tier: q.tier }),
+              ...(Object.keys(dims).length === 0 ? {} : { dims }),
+              ...(services === undefined ? {} : { services }),
+            }),
+          ),
+        };
+      },
+    },
+    {
+      method: "get",
+      path: "/analytics/scores",
+      summary:
+        "The addresses with the highest offence scores their events carried over a range, for a scope and what is under it (at most 20,000 events read)",
+      tag: "analytics",
+      query: A.ScoresQuery,
+      responses: { 200: A.Scores },
+      problems: [403, 404],
+      handle: async ({ plane, require, query }) => {
+        const q = query as Infer<typeof A.ScoresQuery>;
+        const scope: PolicyScopeId = q.scope ?? "global";
+        await require("analytics:read", scope);
+        checkRange(q.from, q.to);
+        const { listEvents } = analytics(plane.store);
+        const services = await servicesUnder(plane, scope);
+        const best = new Map<string, { score: number; at: number }>();
+        let read = 0;
+        let cursor: string | undefined;
+        do {
+          const page = await asProblem(async () =>
+            listEvents({
+              limit: 500,
+              from: q.from,
+              to: q.to,
+              ...(services === undefined ? {} : { services }),
+              ...(cursor === undefined ? {} : { cursor }),
+            }),
+          );
+          for (const event of page.items) {
+            read += 1;
+            const subject = event.subjects?.ip;
+            if (event.score === undefined || subject === undefined) continue;
+            const known = best.get(subject);
+            if (known === undefined || event.score > known.score)
+              best.set(subject, { score: event.score, at: event.at });
+          }
+          cursor = page.next;
+        } while (cursor !== undefined && read < MAX_SCORE_EVENTS);
+        return {
+          status: 200,
+          body: {
+            rows: [...best]
+              .sort((a, b) => b[1].score - a[1].score)
+              .slice(0, q.limit ?? 10)
+              .map(([subject, { score, at }]) => ({ subject, score, at })),
+            truncated: cursor !== undefined,
+          },
         };
       },
     },

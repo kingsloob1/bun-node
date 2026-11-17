@@ -55,6 +55,8 @@ import type {
   Tier,
   TopKQuery,
   TopKRow,
+  CounterQuery,
+  DistinctCount,
 } from "./types";
 import { ConfigError } from "@kingsleyweb/bun-common";
 import {
@@ -79,6 +81,8 @@ import {
   retentionFloor,
   ROLLUPS,
   watermarkName,
+  checkGroupBy,
+  OTHER_DIM,
 } from "./analytics";
 import {
   auditCursor,
@@ -1410,18 +1414,20 @@ export function sqlSecurityStore(
       });
     },
     series: async (query: SeriesQuery): Promise<readonly SeriesPoint[]> => {
+      const byService = checkGroupBy(query.groupBy) === "service";
       const { where, values } = counterWhere(resolveCounterQuery(query));
       const sql = await connection();
       const rows = (await sql.unsafe(
-        `SELECT bucket, dims, SUM(value) AS value FROM ${tables.analyticsCounters}
+        `SELECT bucket, dims, ${byService ? "service, " : ""}SUM(value) AS value FROM ${tables.analyticsCounters}
           WHERE ${where}
-          GROUP BY bucket, dims
-          ORDER BY bucket ASC, ${dimsOrder} ASC
+          GROUP BY bucket, dims${byService ? ", service" : ""}
+          ORDER BY bucket ASC, ${dimsOrder} ASC${byService ? ", service ASC" : ""}
           LIMIT ${MAX_SERIES_POINTS + 1}`,
         values,
       )) as {
         bucket: number | bigint;
         dims: string;
+        service?: string;
         value: number | bigint | string;
       }[];
       if (rows.length > MAX_SERIES_POINTS) {
@@ -1433,11 +1439,31 @@ export function sqlSecurityStore(
         rows.map((row) =>
           Object.freeze({
             at: Number(row.bucket),
+            ...(byService ? { service: String(row.service) } : {}),
             dims: dimsOf(row.dims),
             value: Number(row.value),
           }),
         ),
       );
+    },
+    distinct: async (query: CounterQuery): Promise<DistinctCount> => {
+      const { where, values } = counterWhere(resolveCounterQuery(query));
+      const sql = await connection();
+      // "(other)" is a constant of ours, never a value from a caller.
+      const rows = (await sql.unsafe(
+        `SELECT COUNT(DISTINCT CASE WHEN dims NOT LIKE '%${OTHER_DIM}%' THEN dims END) AS n,
+                MAX(CASE WHEN dims LIKE '%${OTHER_DIM}%' THEN 1 ELSE 0 END) AS o
+           FROM ${tables.analyticsCounters}
+          WHERE ${where}`,
+        values,
+      )) as {
+        n: number | bigint | string | null;
+        o: number | bigint | string | null;
+      }[];
+      return Object.freeze({
+        count: Number(rows[0]?.n ?? 0),
+        other: Number(rows[0]?.o ?? 0) === 1,
+      });
     },
     topK: async (query: TopKQuery): Promise<readonly TopKRow[]> => {
       const limit = checkTopKLimit(query);

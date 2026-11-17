@@ -68,6 +68,20 @@ export const ANALYTICS_METRICS = Object.freeze({
   topRequests: "top.requests",
   /** Values folded into `(other)` by a bound: `{ what }`. */
   overflow: "analytics.overflow",
+  /** Exact refusals per subject, hour tier, for sparklines (PR-AN): `{ kind, subject }`. */
+  refusedHourly: "refused.hourly",
+  /** Challenge answers (layers.md L10.2, PR-AN): `{ outcome }` (`passed`, `failed`). */
+  challenges: "challenges",
+  /** Sign-in outcomes (layers.md L11.2, PR-AN): `{ route, outcome }` (`success`, `failure`). */
+  login: "login",
+  /** Sign-ins that succeeded after a recent failure from the same address or username: `{ route }`. */
+  successAfterFailures: "login.success-after-failures",
+  /** Each minute's addresses by distinct usernames attempted (PR-AN): `{ kind: "ip", subject }`, the value that minute's count. */
+  topUsernamesPerIp: "top.usernames-per-ip",
+  /** Identifier-pattern hits (layers.md L11.7, PR-AN): `{ pattern }`. */
+  patterns: "patterns",
+  /** The minute's addresses each pattern tripped, by space-saving: `{ pattern, kind: "ip", subject }`. */
+  topPattern: "top.pattern",
 } as const);
 
 /** One decision to count. */
@@ -149,6 +163,13 @@ export interface AnalyticsRecorder {
     decision: Decision,
     extras?: DecisionExtras,
   ) => void;
+  /**
+   * Counts a signal the engine took (`onSignal`, PR-AN): a challenge's
+   * answer, a sign-in's outcome (and the distinct usernames per address,
+   * and a success after failures), an identifier pattern's hit. Other
+   * events are not counted here.
+   */
+  readonly recordSignal: (event: string, record?: SignalRecord) => void;
   /** Adds to any metric of the minute (`store.errors`, `events.dropped`). */
   readonly count: (
     metric: string,
@@ -171,8 +192,35 @@ interface Minute {
   >;
   /** The ASNs counted by name. */
   readonly asns: Set<string>;
-  /** Each top-K summary, by metric and kind. */
-  readonly tops: Map<string, SpaceSaving>;
+  /** Each top-K summary, by metric, kind and any extra dimension. */
+  readonly tops: Map<
+    string,
+    {
+      readonly metric: string;
+      readonly dims: Readonly<Record<string, string>>;
+      readonly summary: SpaceSaving;
+    }
+  >;
+  /** The distinct keyed usernames each address attempted, this minute (bounded). */
+  readonly usernames: Map<string, Set<string>>;
+}
+
+/** How long a sign-in failure is remembered for `login.success-after-failures`, ms. */
+export const LOGIN_FAILURE_MEMORY_MS = 15 * 60_000;
+
+/** The most addresses, and usernames per address, one minute's distinct counts hold. */
+const MAX_USERNAME_ADDRESSES = 10_000;
+
+/** A signal the recorder counts (`analyticsSignalHook` passes the engine's). */
+export interface SignalRecord {
+  /** The route's key. */
+  readonly route?: string;
+  /** The keys the engine resolved (keyed: never a raw account id). */
+  readonly subject?: Partial<Record<"ip" | "username", string>>;
+  /** The identifier pattern a `pattern.hit` matched. */
+  readonly pattern?: string;
+  /** When, epoch ms. Default the recorder's clock. */
+  readonly at?: number;
 }
 
 /** A minute's start. */
@@ -289,7 +337,12 @@ export function createAnalyticsRecorder(
     const start = minuteOf(at);
     let minute = minutes.get(start);
     if (minute === undefined) {
-      minute = { rows: new Map(), asns: new Set(), tops: new Map() };
+      minute = {
+        rows: new Map(),
+        asns: new Set(),
+        tops: new Map(),
+        usernames: new Map(),
+      };
       minutes.set(start, minute);
       if (minutes.size > maxPending) {
         const oldest = Math.min(...minutes.keys());
@@ -330,24 +383,57 @@ export function createAnalyticsRecorder(
     row.value += value;
   };
 
-  /** Offers a subject to a minute's top-K of `metric`. */
+  /** Offers a subject to a minute's top-K of `metric` (per `extra` dimension too, as `top.pattern` per pattern). */
   const offer = (
     minute: Minute,
     metric: string,
     kind: string,
     subject: string,
+    extra: Readonly<Record<string, string>> = {},
   ): void => {
-    const key = `${metric}\u0000${kind}`;
-    let summary = minute.tops.get(key);
-    if (summary === undefined) {
-      summary = new SpaceSaving(topK);
-      minute.tops.set(key, summary);
+    const fitted = Object.fromEntries(
+      Object.entries(extra).map(([name, value]) => [name, fit(value)]),
+    );
+    const key = rowKey(metric, { ...fitted, kind });
+    let top = minute.tops.get(key);
+    if (top === undefined) {
+      top = {
+        metric,
+        dims: { ...fitted, kind },
+        summary: new SpaceSaving(topK),
+      };
+      minute.tops.set(key, top);
     }
-    summary.offer(fit(subject));
+    top.summary.offer(fit(subject));
   };
+
+  /** Exact refusals, by hour, then `kind\0subject` (PR-AN's sparklines). */
+  const refusedHourly = new Map<number, Map<string, number>>();
+  let refusedHourlySize = 0;
+
+  /** Counts a refusal of a subject, exactly, for its hour (the same bound as the day's). */
+  const refuseHourly = (at: number, kind: string, subject: string): void => {
+    const hour = Math.floor(at / 3_600_000) * 3_600_000;
+    let counts = refusedHourly.get(hour);
+    if (counts === undefined) {
+      counts = new Map();
+      refusedHourly.set(hour, counts);
+    }
+    let key = `${kind}\u0000${fit(subject)}`;
+    if (!counts.has(key) && refusedHourlySize >= maxRefused) {
+      key = `${kind}\u0000${OTHER}`;
+      countOverflow("refused.hourly", at);
+    }
+    if (!counts.has(key)) refusedHourlySize += 1;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  };
+
+  /** When each address and username key last failed a sign-in (bounded, oldest out first). */
+  const failures = new Map<string, number>();
 
   /** Counts a refusal of a subject, exactly, for its day. */
   const refuse = (at: number, kind: string, subject: string): void => {
+    refuseHourly(at, kind, subject);
     const day = dayOf(at);
     let counts = refused.get(day);
     if (counts === undefined) {
@@ -438,8 +524,87 @@ export function createAnalyticsRecorder(
     }
   };
 
+  const recordSignal = (event: string, input: SignalRecord = {}): void => {
+    const at = input.at ?? now();
+    if (event === "challenge.passed" || event === "challenge.failed") {
+      add(
+        minuteFor(at),
+        at,
+        ANALYTICS_METRICS.challenges,
+        { outcome: event === "challenge.passed" ? "passed" : "failed" },
+        1,
+      );
+      return;
+    }
+    if (event === "pattern.hit" && input.pattern !== undefined) {
+      const minute = minuteFor(at);
+      add(
+        minute,
+        at,
+        ANALYTICS_METRICS.patterns,
+        { pattern: input.pattern },
+        1,
+      );
+      const ip = input.subject?.ip;
+      if (ip !== undefined && ip !== "") {
+        offer(minute, ANALYTICS_METRICS.topPattern, "ip", ip, {
+          pattern: input.pattern,
+        });
+      }
+      return;
+    }
+    if (event !== "auth.success" && event !== "auth.failure") return;
+    const minute = minuteFor(at);
+    const route = input.route ?? "(unknown)";
+    const success = event === "auth.success";
+    add(
+      minute,
+      at,
+      ANALYTICS_METRICS.login,
+      { route, outcome: success ? "success" : "failure" },
+      1,
+    );
+    const ip = input.subject?.ip;
+    const username = input.subject?.username;
+    if (ip !== undefined && username !== undefined) {
+      let names = minute.usernames.get(ip);
+      if (
+        names === undefined &&
+        minute.usernames.size < MAX_USERNAME_ADDRESSES
+      ) {
+        names = new Set();
+        minute.usernames.set(ip, names);
+      }
+      if (names !== undefined && names.size < MAX_USERNAME_ADDRESSES)
+        names.add(username);
+    }
+    const keys = [
+      ...(ip === undefined ? [] : [`ip\u0000${ip}`]),
+      ...(username === undefined ? [] : [`username\u0000${username}`]),
+    ];
+    if (success) {
+      const failed = keys.some((key) => {
+        const last = failures.get(key);
+        return last !== undefined && at - last <= LOGIN_FAILURE_MEMORY_MS;
+      });
+      for (const key of keys) failures.delete(key);
+      if (failed) {
+        add(minute, at, ANALYTICS_METRICS.successAfterFailures, { route }, 1);
+      }
+      return;
+    }
+    for (const key of keys) {
+      failures.delete(key);
+      failures.set(key, at);
+      if (failures.size > maxRefused) {
+        failures.delete(failures.keys().next().value!);
+      }
+    }
+  };
+
   const recorder: AnalyticsRecorder = {
     record,
+    recordSignal,
     recordDecision: (decision, extras = {}) => {
       record({
         ...extras,
@@ -472,17 +637,29 @@ export function createAnalyticsRecorder(
             value: row.value,
           });
         }
-        for (const [key, summary] of minute.tops) {
-          const [metric, kind] = key.split("\u0000") as [string, string];
-          for (const entry of summary.top()) {
+        for (const top of minute.tops.values()) {
+          for (const entry of top.summary.top()) {
             out.push({
               service,
               at: start,
-              metric,
-              dims: { kind, subject: entry.key },
+              metric: top.metric,
+              dims: { ...top.dims, subject: entry.key },
               value: entry.count,
             });
           }
+        }
+        // The addresses with the most distinct usernames this minute.
+        const spread = [...minute.usernames]
+          .sort((a, b) => b[1].size - a[1].size)
+          .slice(0, topK);
+        for (const [ip, names] of spread) {
+          out.push({
+            service,
+            at: start,
+            metric: ANALYTICS_METRICS.topUsernamesPerIp,
+            dims: { kind: "ip", subject: ip },
+            value: names.size,
+          });
         }
       }
       for (const [day, counts] of refused) {
@@ -500,6 +677,21 @@ export function createAnalyticsRecorder(
       }
       refused.clear();
       refusedSize = 0;
+      for (const [hour, counts] of refusedHourly) {
+        for (const [key, value] of counts) {
+          const [kind, subject] = key.split("\u0000") as [string, string];
+          out.push({
+            service,
+            tier: "hour",
+            at: hour,
+            metric: ANALYTICS_METRICS.refusedHourly,
+            dims: { kind, subject },
+            value,
+          });
+        }
+      }
+      refusedHourly.clear();
+      refusedHourlySize = 0;
       for (const [what, { at, value }] of overflow) {
         out.push({
           service,
