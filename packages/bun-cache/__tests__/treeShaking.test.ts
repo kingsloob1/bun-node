@@ -10,7 +10,14 @@
  *   {@link BOUND}. Measured 2026-11-09 (Bun 1.4.4-canary.1+11c367163): 1,335
  *   bytes with the field, 23,891 without, the negative control;
  * - **an entry's effect survives**: importing the process entry keeps the
- *   module. Under a plain `false` it bundles to nothing, the negative control.
+ *   module. Under a plain `false` it bundles to nothing, the negative control;
+ * - **`./encryption` stays apart from the cache**: `sealField` alone bundles
+ *   to under {@link FIELD_BOUND} and leaves out `node:zlib`, which its
+ *   module's import of the cache's envelope reaches through the compression
+ *   module. Measured 2026-11-17 (Bun 1.4.5-canary.1+862278db7): 3,662
+ *   bytes with the field; without it, the negative control, the compression
+ *   module's tables and its `node:zlib` import stay (3,987 bytes: the
+ *   import, not the size, is what it shows).
  *
  * Bytes are a correctness check here, not a benchmark.
  */
@@ -43,6 +50,15 @@ const BOUND = 4096;
 
 /** The one-export app. */
 const APP = `import { fromSimpleDriver } from "${MANIFEST.name}";\nexport const adapt = fromSimpleDriver;\n`;
+
+/** The most the one-`./encryption`-export app may weigh, minified (measured: 3,662 bytes). */
+const FIELD_BOUND = 6144;
+
+/** An import of `node:zlib`, as a Bun bundle spells it. */
+const ZLIB_IMPORT = /from\s*"(?:node:)?zlib"/;
+
+/** The one-`./encryption`-export app. */
+const FIELD_APP = `import { sealField } from "${MANIFEST.name}/encryption";\nexport const seal = sealField;\n`;
 
 /** An app that imports the process entry for its effect alone. */
 const ENTRY_APP = `import "${MANIFEST.name}/lib/testing/crossprocess-worker.ts";\n`;
@@ -156,5 +172,18 @@ describe("an entry imported for its effect", () => {
   it("negative control: a plain false drops it", async () => {
     const code = await bundle(copyPackage(false), ENTRY_APP);
     expect(code).not.toContain(ENTRY_TEXT);
+  });
+});
+
+describe("./encryption in a bundle", () => {
+  it("weighs the envelope, not the cache: no compression, no node:zlib", async () => {
+    const code = await bundle(copyPackage(MANIFEST.sideEffects), FIELD_APP);
+    expect(code.length).toBeLessThanOrEqual(FIELD_BOUND);
+    expect(code).not.toMatch(ZLIB_IMPORT);
+  });
+
+  it("negative control: without sideEffects the compression module stays", async () => {
+    const code = await bundle(copyPackage(undefined), FIELD_APP);
+    expect(code).toMatch(ZLIB_IMPORT);
   });
 });

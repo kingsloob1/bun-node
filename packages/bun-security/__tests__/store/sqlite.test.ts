@@ -25,8 +25,9 @@ const bound = (context: StoreCodecContext): string =>
   `${context.field}|${context.kind}|${context.id}|${context.version ?? ""}`;
 
 /**
- * A stand-in for PR-D3's sealing: the body's JSON reversed, base64, tagged
- * with its context; opening under another context throws.
+ * A stand-in codec, so the seam is tested apart from `./sealing`: the
+ * body's JSON reversed, base64, tagged with its context; opening under
+ * another context throws.
  */
 const sealing: StoreCodec = {
   seal: (body, context) =>

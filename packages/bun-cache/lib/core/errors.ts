@@ -147,7 +147,8 @@ export class EntryTooLargeError extends Error {
  * `error` event's `error` (`phase: "decrypt"`). The entry is **not** deleted —
  * a process missing a peer's new key would otherwise wipe its entries during
  * a rollout. Its message names the reason and the key id only, never key
- * material or plaintext.
+ * material or plaintext. `./encryption`'s `openField` throws it for a sealed
+ * field that does not open.
  */
 export class CacheDecryptError extends Error {
   /**
@@ -171,9 +172,11 @@ export class CacheDecryptError extends Error {
     keyId?: string;
     /** What a user cipher threw, when it threw. */
     cause?: unknown;
+    /** What did not open, for the message. Default `"cache entry"`; `./encryption`'s `openField` says `"sealed field"`. */
+    subject?: string;
   }) {
     super(
-      `cache entry did not open (${init.reason}${
+      `${init.subject ?? "cache entry"} did not open (${init.reason}${
         init.keyId === undefined ? "" : `, key id "${init.keyId}"`
       })`,
       init.cause === undefined ? undefined : { cause: init.cause },

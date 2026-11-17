@@ -449,6 +449,34 @@
       "types": ["CacheStoreOptions"]
     },
     {
+      "$comment": "Field sealing for the durable store (storage.md §8, PR-D3) on bun-cache's ./encryption: the second entry that needs the optional peer @kingsleyweb/bun-cache.",
+      "spelling": "@kingsleyweb/bun-security/sealing",
+      "peers": ["@kingsleyweb/bun-cache"],
+      "values": [
+        "sealedFields",
+        "resealStore",
+        "SealedFieldError",
+        "DEFAULT_SEALED_FIELDS",
+        "SEALED_MARKER",
+        "SEALING_PURPOSE"
+      ],
+      "types": [
+        "SealedFieldsOptions",
+        "SealedFieldsCodec",
+        "SealedFieldPaths",
+        "SealedFieldFailure",
+        "ResealStoreOptions",
+        "ResealResult"
+      ],
+      "snippet": "import { postgresStore, sqliteStore } from \"@kingsleyweb/bun-security/store\";\nimport type { StoreCodec } from \"@kingsleyweb/bun-security/store\";\nconst codec = m.sealedFields({ keys: [{ id: \"2026-11\", key: new Uint8Array(32) }, { id: \"2026-10\", key: \"a\".repeat(64) }], fields: { doc: { agentKey: [\"secret\"], alertChannel: [\"url\", \"headers.*\"] }, policy: [] }, acceptUnsealed: false });\nexport type _codecNotAny = Expect<IsAny<typeof codec>>;\nexport const _asCodec: StoreCodec = codec;\nexport const _sqlite = sqliteStore({ path: \":memory:\", codec });\nexport const _pg = postgresStore({ url: \"postgres://localhost/app\", codec });\nexport type _stale = Equal<ReturnType<typeof codec.isStale>, boolean>;\nexport const _resealed: Promise<t.ResealResult> = m.resealStore(_sqlite, codec, { kinds: [\"agentKey\"], pageSize: 50 });\nexport type _reason = Equal<InstanceType<typeof m.SealedFieldError>[\"reason\"], t.SealedFieldFailure>;\nexport type _failure = Equal<t.SealedFieldFailure, \"auth\" | \"unknown-key\" | \"malformed\" | \"unsealed\">;\nexport const _defaults: t.SealedFieldPaths = m.DEFAULT_SEALED_FIELDS;\nexport const _marker: string = m.SEALED_MARKER;\nexport const _purpose: string = m.SEALING_PURPOSE;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-security/lib/sealing",
+      "peers": ["@kingsleyweb/bun-cache"],
+      "values": ["sealedFields", "resealStore"],
+      "types": ["SealedFieldsCodec"]
+    },
+    {
       "$comment": "The security store (storage.md §3, §5, §6, PR-D1): the driver interface, memoryStore, sqliteStore over bun-sql, and the read-only policyFile.",
       "spelling": "@kingsleyweb/bun-security/store",
       "values": [

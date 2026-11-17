@@ -104,7 +104,7 @@ const MAGIC_1 = 0x45;
 const EXPAND_COUNTER = new Uint8Array([1]);
 
 /** One resolved ring key. */
-interface RingKey {
+export interface RingKey {
   /** Its id. */
   id: string;
   /** Its id's UTF-8 bytes, as written into the envelope. */
@@ -184,9 +184,15 @@ export function parseKey(key: unknown, where: string): Uint8Array {
 /**
  * Validates a key ring and derives each key's K, or throws a `TypeError`
  * naming what is wrong: not an array, empty, a malformed or duplicate id, a
- * key that is not 32 bytes.
+ * key that is not 32 bytes. `info` is the HKDF label K is derived under: the
+ * cache's own by default; `./encryption` passes its field label, so one key
+ * never derives the same K for an entry and a field.
  */
-export function resolveRing(ring: unknown, where: string): ResolvedRing {
+export function resolveRing(
+  ring: unknown,
+  where: string,
+  info: string = ENCRYPTION_LABELS.hkdf,
+): ResolvedRing {
   if (!Array.isArray(ring)) {
     throw new TypeError(`${where} must be an array of { id, key }`);
   }
@@ -212,7 +218,7 @@ export function resolveRing(ring: unknown, where: string): ResolvedRing {
     }
     const raw = parseKey(key, `${at}.key`);
     const derived = Buffer.from(
-      hkdfSync("sha256", raw, new Uint8Array(0), ENCRYPTION_LABELS.hkdf, 32),
+      hkdfSync("sha256", raw, new Uint8Array(0), info, 32),
     );
     raw.fill(0);
     const resolved: RingKey = { id, idBytes: encoder.encode(id), derived };
@@ -383,22 +389,26 @@ function decodeSealedBody(
   };
 }
 
-/** The per-entry key: HKDF-Expand(K, "entry" ‖ salt, 32) = HMAC-SHA-256(K, "entry" ‖ salt ‖ 0x01). */
-function entryKey(derived: Buffer, salt: Uint8Array): Buffer {
+/** The per-entry key: HKDF-Expand(K, label ‖ salt, 32) = HMAC-SHA-256(K, label ‖ salt ‖ 0x01); the label is `"entry"` for the cache. */
+function entryKey(derived: Buffer, salt: Uint8Array, label: string): Buffer {
   return new Bun.CryptoHasher("sha256", derived)
-    .update(ENCRYPTION_LABELS.entry)
+    .update(label)
     .update(salt)
     .update(EXPAND_COUNTER)
     .digest();
 }
 
-/** Seals `body` under the ring key `key` with the built-in cipher, into a whole envelope. */
-function sealBuiltIn(
+/**
+ * Seals `body` under the ring key `ringKey` with the built-in cipher, into a
+ * whole envelope. `aadFor` builds the AAD from the envelope's prefix (through
+ * the nonce); `label` is the per-seal key's expand label (`"entry"` for the
+ * cache).
+ */
+export function sealBuiltIn(
   ringKey: RingKey,
   body: Uint8Array,
-  namespace: string,
-  key: string,
-  extra: Uint8Array,
+  aadFor: (prefix: Uint8Array) => Uint8Array,
+  label: string,
 ): Uint8Array {
   const idLength = ringKey.idBytes.length;
   const saltAt = 5 + idLength;
@@ -415,10 +425,10 @@ function sealBuiltIn(
   crypto.getRandomValues(out.subarray(saltAt, bodyAt));
   const cipher = createCipheriv(
     "aes-256-gcm",
-    entryKey(ringKey.derived, out.subarray(saltAt, nonceAt)),
+    entryKey(ringKey.derived, out.subarray(saltAt, nonceAt), label),
     out.subarray(nonceAt, bodyAt),
   );
-  cipher.setAAD(buildAad(namespace, key, extra, out.subarray(0, bodyAt)));
+  cipher.setAAD(aadFor(out.subarray(0, bodyAt)));
   const head = cipher.update(body);
   out.set(head, bodyAt);
   // GCM is a stream mode: `final` adds nothing, but must run for the tag.
@@ -428,7 +438,7 @@ function sealBuiltIn(
 }
 
 /** A built-in envelope's parts, parsed but not opened. */
-interface BuiltInEnvelope {
+export interface BuiltInEnvelope {
   /** The key id. */
   keyId: string;
   /** Where the ciphertext starts (the prefix ends). */
@@ -436,7 +446,7 @@ interface BuiltInEnvelope {
 }
 
 /** Parses a built-in envelope's prefix; throws `"malformed"` when it does not parse. */
-function parseBuiltIn(bytes: Uint8Array): BuiltInEnvelope {
+export function parseBuiltIn(bytes: Uint8Array): BuiltInEnvelope {
   const idLength = bytes.length > 4 ? bytes[4] : 0;
   const bodyAt = 5 + idLength + SALT_BYTES + NONCE_BYTES;
   if (idLength < 1 || idLength > 32 || bytes.length < bodyAt + TAG_BYTES) {
@@ -454,14 +464,16 @@ function parseBuiltIn(bytes: Uint8Array): BuiltInEnvelope {
   return { keyId, bodyAt };
 }
 
-/** Opens a parsed built-in envelope with its ring key; throws `"auth"` when the tag fails. */
-function openBuiltIn(
+/**
+ * Opens a parsed built-in envelope with its ring key; throws `"auth"` when
+ * the tag fails. `aadFor` and `label` as {@link sealBuiltIn}'s.
+ */
+export function openBuiltIn(
   ringKey: RingKey,
   bytes: Uint8Array,
   envelope: BuiltInEnvelope,
-  namespace: string,
-  key: string,
-  extra: Uint8Array,
+  aadFor: (prefix: Uint8Array) => Uint8Array,
+  label: string,
 ): Uint8Array {
   const { bodyAt, keyId } = envelope;
   const saltAt = bodyAt - NONCE_BYTES - SALT_BYTES;
@@ -470,10 +482,10 @@ function openBuiltIn(
   try {
     const decipher = createDecipheriv(
       "aes-256-gcm",
-      entryKey(ringKey.derived, bytes.subarray(saltAt, nonceAt)),
+      entryKey(ringKey.derived, bytes.subarray(saltAt, nonceAt), label),
       bytes.subarray(nonceAt, bodyAt),
     );
-    decipher.setAAD(buildAad(namespace, key, extra, bytes.subarray(0, bodyAt)));
+    decipher.setAAD(aadFor(bytes.subarray(0, bodyAt)));
     decipher.setAuthTag(bytes.subarray(tagAt));
     const head = decipher.update(bytes.subarray(bodyAt, tagAt));
     const tail = decipher.final();
@@ -664,7 +676,12 @@ export class EntryEncryption {
           "no encryption key: the encrypt.keys function has not answered a ring",
         );
       }
-      return sealBuiltIn(ring.primary, body, namespace, key, this.#aad);
+      return sealBuiltIn(
+        ring.primary,
+        body,
+        (prefix) => buildAad(namespace, key, this.#aad, prefix),
+        ENCRYPTION_LABELS.entry,
+      );
     };
     const ring = this.#ringFor("encrypt");
     return isPromiseLike(ring)
@@ -709,9 +726,8 @@ export class EntryEncryption {
           ringKey,
           bytes,
           envelope,
-          namespace,
-          key,
-          this.#aad,
+          (prefix) => buildAad(namespace, key, this.#aad, prefix),
+          ENCRYPTION_LABELS.entry,
         );
         return decodeSealedBody(body, envelope.keyId);
       };

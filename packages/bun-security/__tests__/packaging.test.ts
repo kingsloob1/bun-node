@@ -144,6 +144,16 @@ describe("package.json exports", () => {
     }
   });
 
+  it("checks the ./sealing subpath, the store's field sealing over bun-cache (PR-D3)", () => {
+    for (const key of ["./sealing", "./lib/sealing"]) {
+      expect(manifest.exports[key]).toEqual({
+        "@kingsleyweb/source": "./lib/sealing/index.ts",
+        types: "./dts/sealing/index.d.ts",
+        default: "./lib/sealing/index.ts",
+      });
+    }
+  });
+
   it("gives the challenges their own subpath, ./challenge (PR-S9)", () => {
     for (const key of ["./challenge", "./lib/challenge"]) {
       expect(manifest.exports[key]).toEqual({
@@ -235,7 +245,7 @@ describe("this package's dependencies", () => {
     });
   });
 
-  it("needs one optional peer, bun-cache, for ./stores alone", () => {
+  it("needs one optional peer, bun-cache, for ./stores and ./sealing alone", () => {
     const optional = new Set(
       Object.entries(manifest.peerDependenciesMeta)
         .filter(([, meta]) => meta.optional)
@@ -249,7 +259,9 @@ describe("this package's dependencies", () => {
     );
     for (const entry of checkConfig.entries ?? []) {
       expect(entry.peers ?? []).toEqual(
-        entry.spelling.includes("/stores") ? ["@kingsleyweb/bun-cache"] : [],
+        /\/(?:stores|sealing)$/.test(entry.spelling)
+          ? ["@kingsleyweb/bun-cache"]
+          : [],
       );
     }
   });
