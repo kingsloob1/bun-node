@@ -42,6 +42,7 @@ export {
 export { AUDIT_GENESIS_HASH, banId } from "./shared";
 export type {
   AppendAuditResult,
+  AuditAppended,
   AppendResult,
   AuditCheckpoint,
   AuditHead,

@@ -238,7 +238,7 @@ describe("the break-glass login", () => {
     let down = true;
     const store = faultyStore(memoryStore(), {
       fail: (operation) =>
-        operation === "appendAudit" && down
+        operation === "appendAuditAtHead" && down
           ? new Error("audit down")
           : undefined,
     });

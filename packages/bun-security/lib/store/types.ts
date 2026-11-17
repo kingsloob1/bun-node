@@ -233,6 +233,16 @@ export interface AuditHead {
   readonly hash: string;
 }
 
+/** What {@link SecurityStoreDriver.appendAuditAtHead} answers. */
+export interface AuditAppended {
+  /** The entry's number. */
+  readonly n: number;
+  /** The change the append wrote. */
+  readonly seq: bigint;
+  /** The entry as appended (what `make` answered). */
+  readonly entry: AuditInput;
+}
+
 /** What {@link SecurityStoreDriver.appendAudit} answers. */
 export type AppendAuditResult =
   | {
@@ -699,6 +709,19 @@ export interface SecurityStoreDriver {
     entry: AuditInput,
     expectedPrevHash: string | null,
   ) => Promise<AppendAuditResult>;
+  /**
+   * Appends an audit entry on the chain's head, whatever it is now: the
+   * head is read and the entry appended in one serialised transaction (the
+   * store's write lock: Postgres's advisory lock, SQLite's `BEGIN
+   * IMMEDIATE`), so the append never loses to another writer, in this
+   * process or another. `make` is called once, with the head as read
+   * there, and answers the entry, whose `prevHash` must be that head's hash
+   * (64 zeros for an empty chain); it must not wait. Appends an `audit`
+   * change. The control plane's audit log appends through it (#846).
+   */
+  appendAuditAtHead: (
+    make: (head: AuditHead | null) => AuditInput,
+  ) => Promise<AuditAppended>;
   /** The chain's head, or `null` when it has never had an entry. Kept after a purge. */
   getAuditHead: () => Promise<AuditHead | null>;
   /** A page of audit entries by number, filtered. */

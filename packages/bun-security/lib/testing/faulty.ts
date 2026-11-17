@@ -19,6 +19,7 @@ export type StoreOperation =
   | "putBundle"
   | "getBundle"
   | "appendAudit"
+  | "appendAuditAtHead"
   | "getAuditHead"
   | "listAudit"
   | "appendCheckpoint"
@@ -86,6 +87,7 @@ export function faultyStore(
     putBundle: wrap("putBundle", store.putBundle),
     getBundle: wrap("getBundle", store.getBundle),
     appendAudit: wrap("appendAudit", store.appendAudit),
+    appendAuditAtHead: wrap("appendAuditAtHead", store.appendAuditAtHead),
     getAuditHead: wrap("getAuditHead", store.getAuditHead),
     listAudit: wrap("listAudit", store.listAudit),
     appendCheckpoint: wrap("appendCheckpoint", store.appendCheckpoint),

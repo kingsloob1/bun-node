@@ -62,6 +62,9 @@ const api = createSecurityApi({
   },
   bans: { secret: config.fleetSecret },
   agents: {},
+  // The repair pass every second, so a bundle a cut-off publish left
+  // behind is caught up within the test's deadline (#847).
+  bundleRepair: { interval: "1s" },
   ...(config.breakGlass === undefined ? {} : { breakGlass: config.breakGlass }),
   logger: () => {},
 });

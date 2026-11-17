@@ -220,6 +220,7 @@ export function policyFile(
     appendVersion: async () => refuseReadOnly(name, "appendVersion()"),
     putBundle: async () => refuseReadOnly(name, "putBundle()"),
     appendAudit: async () => refuseReadOnly(name, "appendAudit()"),
+    appendAuditAtHead: async () => refuseReadOnly(name, "appendAuditAtHead()"),
     appendCheckpoint: async () => refuseReadOnly(name, "appendCheckpoint()"),
     deleteAuditBefore: async () => refuseReadOnly(name, "deleteAuditBefore()"),
     incrementCounter: async () => refuseReadOnly(name, "incrementCounter()"),

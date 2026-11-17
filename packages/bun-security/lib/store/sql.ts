@@ -23,6 +23,8 @@ import type {
 import type { ResolvedCounter, ResolvedCounterQuery } from "./analytics";
 import type {
   AppendAuditResult,
+  AuditAppended,
+  AuditInput,
   BanRecord,
   AppendResult,
   AuditCheckpoint,
@@ -858,6 +860,61 @@ export function sqlSecurityStore(
     return seq;
   };
 
+  /**
+   * Writes `entry` on `head` inside a serialised transaction: the head row
+   * moved by compare-and-set, then the entry; a refusal when the head is no
+   * longer `head`; the entry's number and change otherwise.
+   */
+  const writeAudit = async (
+    tx: SQL,
+    entry: AuditInput,
+    head: AuditHead | null,
+  ): Promise<AppendAuditResult> => {
+    const n = (head?.n ?? 0) + 1;
+    const p = new Params(dialect);
+    if (head === null) {
+      const result = await tx.unsafe(
+        dialect.insertIgnore(
+          tables.auditHead,
+          ["id", "n", "hash"],
+          [p.bind(1), p.bind(n), p.bind(entry.hash)],
+        ),
+        p.values,
+      );
+      if ((await dialect.affectedRows(result, tx)) !== 1) {
+        return Object.freeze({
+          ok: false as const,
+          head: await readAuditHead(tx),
+        });
+      }
+    } else {
+      const result = await tx.unsafe(
+        `UPDATE ${tables.auditHead} SET n = ${p.bind(n)}, hash = ${p.bind(entry.hash)}
+          WHERE id = 1 AND hash = ${p.bind(head.hash)}`,
+        p.values,
+      );
+      if ((await dialect.affectedRows(result, tx)) !== 1) {
+        return Object.freeze({
+          ok: false as const,
+          head: await readAuditHead(tx),
+        });
+      }
+    }
+    const q = new Params(dialect);
+    await tx.unsafe(
+      `INSERT INTO ${tables.audit} (n, prev_hash, hash, at, actor, action, scope, entry)
+       VALUES (${q.bind(n)}, ${q.bind(entry.prevHash)}, ${q.bind(entry.hash)}, ${q.bind(entry.at)},
+               ${q.bind(entry.actor)}, ${q.bind(entry.action)}, ${q.bind(entry.scope)},
+               ${q.bind(dialect.jsonIn(codec.seal(entry.entry, { field: "doc", kind: "audit", id: String(n) })))})`,
+      q.values,
+    );
+    return Object.freeze({
+      ok: true as const,
+      n,
+      seq: await record(tx, "audit", String(n), n, false),
+    });
+  };
+
   /** A stored ban's body, opened. */
   const openBan = (id: string, body: unknown): BanRecord =>
     Object.freeze(
@@ -1478,49 +1535,24 @@ export function sqlSecurityStore(
         if ((head?.hash ?? null) !== expectedPrevHash) {
           return Object.freeze({ ok: false as const, head });
         }
-        const n = (head?.n ?? 0) + 1;
-        const p = new Params(dialect);
-        if (head === null) {
-          const result = await tx.unsafe(
-            dialect.insertIgnore(
-              tables.auditHead,
-              ["id", "n", "hash"],
-              [p.bind(1), p.bind(n), p.bind(entry.hash)],
-            ),
-            p.values,
+        return await writeAudit(tx, entry, head);
+      });
+    },
+    appendAuditAtHead: async (make): Promise<AuditAppended> => {
+      const sql = await connection();
+      return await dialect.transaction(sql, async (tx) => {
+        // The head is read under the store's write lock, so no other
+        // writer can move it before the entry is written on it (#846).
+        await init.serialize?.(tx);
+        const head = await readAuditHead(tx);
+        const entry = checkAuditInput(make(head), head?.hash ?? null);
+        const written = await writeAudit(tx, entry, head);
+        if (!written.ok) {
+          throw new Error(
+            "security store: the audit head moved under the write lock",
           );
-          if ((await dialect.affectedRows(result, tx)) !== 1) {
-            return Object.freeze({
-              ok: false as const,
-              head: await readAuditHead(tx),
-            });
-          }
-        } else {
-          const result = await tx.unsafe(
-            `UPDATE ${tables.auditHead} SET n = ${p.bind(n)}, hash = ${p.bind(entry.hash)}
-              WHERE id = 1 AND hash = ${p.bind(head.hash)}`,
-            p.values,
-          );
-          if ((await dialect.affectedRows(result, tx)) !== 1) {
-            return Object.freeze({
-              ok: false as const,
-              head: await readAuditHead(tx),
-            });
-          }
         }
-        const q = new Params(dialect);
-        await tx.unsafe(
-          `INSERT INTO ${tables.audit} (n, prev_hash, hash, at, actor, action, scope, entry)
-           VALUES (${q.bind(n)}, ${q.bind(entry.prevHash)}, ${q.bind(entry.hash)}, ${q.bind(entry.at)},
-                   ${q.bind(entry.actor)}, ${q.bind(entry.action)}, ${q.bind(entry.scope)},
-                   ${q.bind(dialect.jsonIn(codec.seal(entry.entry, { field: "doc", kind: "audit", id: String(n) })))})`,
-          q.values,
-        );
-        return Object.freeze({
-          ok: true as const,
-          n,
-          seq: await record(tx, "audit", String(n), n, false),
-        });
+        return Object.freeze({ n: written.n, seq: written.seq, entry });
       });
     },
     getAuditHead: async () => await readAuditHead(await connection()),

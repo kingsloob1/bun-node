@@ -1313,6 +1313,15 @@ const admin = await secureAdmin({ port: 9443, api }); // 127.0.0.1 unless told o
   the head it was based on (`409` if someone published meanwhile), appends a
   version, and recompiles and signs the bundle of every service under the
   scope. `rollback` publishes an older version's content as a new version.
+- **Bundle repair.** A publish cut off between appending its version and
+  writing its bundles (an instance dying there) is caught up by the repair
+  pass: at start and every `bundleRepair.interval` (`"1m"`; `false` turns it
+  off, and `api.repairBundles()` runs it by hand), each instance recompiles
+  any service bundle whose policy versions are behind its scopes' heads. A
+  head that moved within half the interval (at most 30 s) is left to its
+  publish; a repair is claimed in the store, so one instance makes it; at
+  most 100 a pass; each is audited as `bundle.repair` by `system`.
+  `api.close()` stops the pass.
 - **Dangerous changes** (a rule from dry run to enforced on production, an
   action raised, an allow entry added or widened, the ladder changed) need
   the scope's name typed in `confirm`, or with `approvals: "two-person"` a
@@ -1360,6 +1369,10 @@ and after or the policy's diff).
 - **Intent first.** Before a change, an `intent` entry is appended. If it
   cannot be written (after three tries), the change is refused with `503
   audit_unavailable` and nothing changes: no change exists without a trace.
+  Each entry is appended at the chain's head inside the store's serialised
+  transaction (`appendAuditAtHead`), so instances writing at once never
+  refuse a change for a lost race on the head; a `503` means the store
+  failed.
   After the change, a `done` entry names the intent (`applied`, or
   `refused` and why). If the done cannot be written the change stands, and
   the answer carries `x-bun-security-audit: incomplete`. `GET /audit` and

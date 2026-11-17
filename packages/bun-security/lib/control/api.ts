@@ -21,7 +21,7 @@ import {
 } from "@kingsleyweb/bun-common/lib/docs";
 import type { SecurityApiOptions } from "./options";
 import type { AuditCheckpoint } from "../store/types";
-import type { AuditVerifyDto } from "./contract/types";
+import type { AuditVerifyDto, CompiledBundleDto } from "./contract/types";
 import { csrf } from "../http/csrf";
 import { agentEventsRoute } from "./agentEvents";
 import { resolveOptions } from "./options";
@@ -91,6 +91,16 @@ export interface SecurityApi {
    * alerts `audit.verifyFailed`). Run it on a schedule.
    */
   readonly verifyAudit: () => Promise<AuditVerifyDto>;
+  /**
+   * Runs the bundle repair pass now (#847): recompiles each service bundle
+   * left behind the heads of its policies, as a publish cut off before its
+   * bundles leaves it; audited as `bundle.repair`. The API runs it at start
+   * and every `bundleRepair.interval` by itself unless `bundleRepair:
+   * false`. The bundles compiled.
+   */
+  readonly repairBundles: () => Promise<readonly CompiledBundleDto[]>;
+  /** Stops what the API runs by itself (the bundle repair pass). The store is the host's: never closed here. */
+  readonly close: () => void;
   /** Signs and writes a checkpoint of the chain's head now; `null` when the chain is empty. */
   readonly checkpointAudit: () => Promise<AuditCheckpoint | null>;
   /**
@@ -246,9 +256,51 @@ export function createSecurityApi(options: SecurityApiOptions): SecurityApi {
     sendProblem(res, new ApiProblem(500, "internal", "the request failed"));
   }) satisfies RouterErrorMiddlewareHandler);
 
+  // The bundle repair pass (#847): at start, then every interval; one pass
+  // at a time; a failing pass is logged and the next one tries again.
+  let repairing: Promise<unknown> | undefined;
+  const repairOnce = async (): Promise<readonly CompiledBundleDto[]> => {
+    const graceMs =
+      resolved.bundleRepairMs === undefined
+        ? undefined
+        : Math.min(30_000, resolved.bundleRepairMs / 2);
+    return await plane.repairBundles(graceMs === undefined ? {} : { graceMs });
+  };
+  const scheduled = (): void => {
+    if (repairing !== undefined) return;
+    repairing = repairOnce()
+      .then((compiled) => {
+        if (compiled.length > 0) {
+          logger.warn(
+            "bun-security: bundles behind their policy heads were recompiled",
+            { bundles: compiled },
+          );
+        }
+      })
+      .catch((error: unknown) => {
+        logger.error("bun-security: the bundle repair pass failed", {
+          error,
+        });
+      })
+      .finally(() => {
+        repairing = undefined;
+      });
+  };
+  let repairTimer: ReturnType<typeof setInterval> | undefined;
+  if (resolved.bundleRepairMs !== undefined) {
+    queueMicrotask(scheduled);
+    repairTimer = setInterval(scheduled, resolved.bundleRepairMs);
+    repairTimer.unref?.();
+  }
+
   return Object.freeze({
     router,
     basePath: resolved.basePath,
+    repairBundles: repairOnce,
+    close: () => {
+      if (repairTimer !== undefined) clearInterval(repairTimer);
+      repairTimer = undefined;
+    },
     plane,
     live,
     ...documents,
