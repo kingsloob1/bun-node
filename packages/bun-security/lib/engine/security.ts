@@ -937,6 +937,26 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   #lastAggregated = Number.NEGATIVE_INFINITY;
   /** Evictions of local state. */
   readonly #evictions: EvictionMonitor;
+  /** API-key list entries with their default id keyed, by the compiled entry. */
+  readonly #keyedEntries = new WeakMap<CompiledEntry, CompiledEntry>();
+  /**
+   * An API-key list entry whose id is the default, with the id keyed as
+   * requests key the key (`apiKey:` + `Decision.subject.apiKey`), so the key
+   * id never reaches a hit, `explain()` or a log (layers.md L12); any other
+   * entry as it is.
+   */
+  readonly #keyedEntry = (entry: CompiledEntry): CompiledEntry => {
+    if (entry.kind !== "apiKey" || entry.named) return entry;
+    let keyed = this.#keyedEntries.get(entry);
+    if (keyed === undefined) {
+      keyed = Object.freeze({
+        ...entry,
+        id: `apiKey:${this.#keyring.apiKey(boundKey(entry.value))}`,
+      });
+      this.#keyedEntries.set(entry, keyed);
+    }
+    return keyed;
+  };
   /** Distinct counts that fell back from the shared store. */
   readonly #distinctFallbacks: DistinctFallbacks;
   /** What each tracked decision needs at `complete()`. */
@@ -1851,6 +1871,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
           internals.mode === "dryRun",
           undefined,
           this.#options.intel,
+          false,
+          this.#keyedEntry,
         );
     const flags = flagsOf(lists, resolved.service);
     // The device cookie is issued at once, so an integration finds it as
@@ -2318,6 +2340,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
           internals.mode === "dryRun",
           undefined,
           this.#options.intel,
+          false,
+          this.#keyedEntry,
         );
     const connection: Connection = {
       subject: resolved.subject,
@@ -3521,6 +3545,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         trace,
         this.#options.intel,
         exempts(crawler, "geo"),
+        this.#keyedEntry,
       );
       if (lists.decided && ownEntry(lists.decided, stage)) {
         if (lists.decided.action === "challenge") {

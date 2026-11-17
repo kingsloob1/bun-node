@@ -813,7 +813,11 @@ stores them (layers.md L12). Tell it the key's **id** (never the key) in
   counts, the shared store, a decision's `subject.apiKey`) is keyed by
   `HMAC(secret, id)`, as usernames are. With a shared store, give every
   process the same `secret` (a store without one refuses to start). List
-  entries and `ban({ apiKey })` still name the id.
+  entries and `ban({ apiKey })` still name the id, and the engine maps it:
+  an API-key entry's default id, the `rule` of its hits and its `explain()`
+  steps, is `apiKey:` and the same HMAC as `subject.apiKey`, never the id.
+  An `id` you write on the entry is reported as written, so keep key ids out
+  of it.
 - **Per-key limits**: `key: "apiKey"` (or `["apiKey", "route"]`), and
   `apiKeyPlan` for a plan's limit, which counts only keys `identify()` puts
   on that plan:
