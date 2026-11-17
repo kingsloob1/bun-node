@@ -324,12 +324,14 @@ lost stops counting after `releaseAfter` (5 minutes). `complete()` also counts
 `server.error` (a `5xx`) for counted rules.
 
 Every table of local state (scores, ban history, in-flight requests, the
-default store's counters) is bounded by `maxKeys`; past it the oldest entry
-is dropped. A drop from the engine's own tables is counted in
+default store's counters) is bounded by `maxKeys`, per table and per process;
+past it the oldest entry is dropped. Each drop is counted in
 `security.status().state.evictions`, and a `state.evictions` warning goes to
-`onWarning` and the logger. The default store's counters are not counted
-yet: bun-common's `memoryThrottleStore` reports no drops
-([#819](https://github.com/kingsloob1/bun-node/issues/819)).
+`onWarning` and the logger, once, until a minute passes with none: a key
+rotation (a botnet, addresses in a /64) or `maxKeys` set too small. A counter
+that expired is not an eviction. A `throttleStore` you pass is yours: the
+engine counts none of its drops (bun-common's `memoryThrottleStore` reports
+them to its own `onEvict`).
 
 ## Bans
 

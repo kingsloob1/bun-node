@@ -193,12 +193,13 @@ export interface CreateSecurityOptions<TRequest = Request> {
    * The bound on each table of local state (layers.md L9.6): the offence
    * scores, in-flight requests, local distinct counts and API-key memory,
    * and the default `throttleStore`'s counters, where limits and counted
-   * rules count. Past it the oldest entry is dropped. A drop from the
-   * engine's own tables is counted in
-   * `status().state.evictions` and raises a `state.evictions` warning; the
-   * default store's counters are bounded the same way but their drops are
-   * not counted yet (bun-common's `memoryThrottleStore` reports none,
-   * kingsloob1/bun-node#819). A positive whole number. Default `100_000`.
+   * rules count. Past it the oldest entry is dropped, and each such drop is
+   * counted in `status().state.evictions` and raises a `state.evictions`
+   * warning (once, until a minute passes with none). A counter that expired
+   * is not an eviction. A `throttleStore` the app passes is its own: its
+   * drops are not counted here (bun-common's `memoryThrottleStore` reports
+   * them to its `onEvict`). A positive whole number, per table and per
+   * process. Default `100_000`.
    */
   readonly maxKeys?: number;
   /**
@@ -1033,7 +1034,20 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       ...(options.store === undefined ? {} : { store: options.store }),
       now: this.#now,
     });
-    const counters = store ?? memoryThrottleStore({ maxKeys, now: this.#now });
+    // The default store's own drops at `maxKeys` (`"cap"`, bun-common #821)
+    // are evictions like the engine's tables'; a counter that expired is
+    // not, and a store the app passed reports to the app.
+    const counters =
+      store ??
+      memoryThrottleStore({
+        maxKeys,
+        now: this.#now,
+        onEvict: (_key, reason) => {
+          if (reason === "cap") {
+            this.#evictions.evicted("rate-limit counters", this.#now());
+          }
+        },
+      });
     const stores = {
       local: counters,
       shared: shared?.throttle,

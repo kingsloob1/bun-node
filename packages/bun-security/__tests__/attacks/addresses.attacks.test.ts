@@ -113,10 +113,35 @@ describe("T-L9-2: a key-cardinality flood, 3,000 addresses probing /.env once ea
     expect(app.warnings).toEqual([]);
   });
 
-  it("plain traffic from 3,000 addresses stays within the counters store's bound, refusing no one", async () => {
-    // Nothing scores here: each address only counts in the limits' store.
-    // Its evictions are not counted (bun-common's memoryThrottleStore
-    // reports none: kingsloob1/bun-node#819), so only the bound is asserted.
+  it("plain traffic from 3,000 addresses: the default store's counters stay within maxKeys, each drop counted and warned of once, no one refused", async () => {
+    // Nothing scores here: each address only counts in the limits' store,
+    // whose drops at maxKeys the engine now counts (bun-common #821). The
+    // same run on a store of the app's own (below) gives the exact figure:
+    // its `evictions` counts its "cap" drops.
+    const flood = paced(keyCardinalityFlood({ count: 3000 }), 2);
+    const own = memoryThrottleStore({ maxKeys: 500, now: fakeClock().now });
+    const reference = await concaveApp({
+      clock: fakeClock(),
+      engine: { maxKeys: 500, throttleStore: own },
+    });
+    await reference.run(flood);
+    expect(own.evictions).toBeGreaterThan(2000);
+
+    const app = await concaveApp({
+      clock: fakeClock(),
+      engine: { maxKeys: 500 },
+    });
+    const result = await app.run(flood);
+    expect(result.byStatus).toEqual({ "200": 3000 });
+    const state = app.security!.status().state;
+    expect(state.evictions).toBe(own.evictions);
+    expect(state.warning?.message).toContain("rate-limit counters");
+    expect(
+      app.warnings.filter((warning) => warning.kind === "state.evictions"),
+    ).toHaveLength(1);
+  });
+
+  it("control: a throttleStore the app passes is its own, and the engine counts none of its drops", async () => {
     const clock = fakeClock();
     const counters = memoryThrottleStore({ maxKeys: 500, now: clock.now });
     const app = await concaveApp({
@@ -128,6 +153,19 @@ describe("T-L9-2: a key-cardinality flood, 3,000 addresses probing /.env once ea
     );
     expect(result.byStatus).toEqual({ "200": 3000 });
     expect(counters.size).toBeLessThanOrEqual(500);
+    expect(counters.evictions).toBeGreaterThan(0);
+    expect(app.security!.status().state.evictions).toBe(0);
+    expect(app.warnings).toEqual([]);
+  });
+
+  it("control: under the default bound the same traffic evicts nothing and warns of nothing", async () => {
+    const app = await concaveApp({ clock: fakeClock() });
+    const result = await app.run(
+      paced(keyCardinalityFlood({ count: 3000 }), 2),
+    );
+    expect(result.byStatus).toEqual({ "200": 3000 });
+    expect(app.security!.status().state.evictions).toBe(0);
+    expect(app.warnings).toEqual([]);
   });
 });
 
