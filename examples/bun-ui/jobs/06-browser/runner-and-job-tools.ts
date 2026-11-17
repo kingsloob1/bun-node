@@ -2022,13 +2022,22 @@ try {
     "the socket is live",
     await view.evaluate<boolean>(waitForSelector(LIVE)),
   );
+  // The log starts once the page has read it: on a busy machine the page can
+  // open after a run has written every line, and then one read brings them all.
   const liveRun = await run(tickerRunner, {
     lines: 12,
     everyMs: 400,
+    start: gate("ticker-live-start"),
     hold: gate("ticker-live"),
   });
   const liveFrom = full.logReads.length;
   await view.navigate(`${full.ui}/runners/${TICKER}?logs=${liveRun}`);
+  await waitFor("the page's first read of the live run's log", () =>
+    full.logReads
+      .slice(liveFrom)
+      .some((one) => one.path.endsWith(`/runs/${liveRun}/logs`)),
+  );
+  release("ticker-live-start");
   check(
     "the log follows by the socket's notice, the poll only a fallback",
     await notesSay(
@@ -2049,11 +2058,14 @@ try {
   const liveReads = full.logReads
     .slice(liveFrom)
     .filter((one) => one.path.endsWith(`/runs/${liveRun}/logs`));
+  // Reads before the first line (the log was still empty) have no cursor to
+  // name; once it holds lines, every read asks since= the last seq it held.
+  const firstSince = liveReads.findIndex((one) => one.query.includes("since="));
   check(
-    "they came by several reads, each after the first asking since= the last seq it held",
+    "they came by several reads, each once it held a line asking since= the last seq it held",
     liveReads.length >= 3 &&
-      !liveReads[0].query.includes("since=") &&
-      liveReads.slice(1).every((one) => one.query.includes("since=")),
+      firstSince > 0 &&
+      liveReads.slice(firstSince).every((one) => one.query.includes("since=")),
     liveReads,
   );
   release("ticker-live");
@@ -2064,10 +2076,17 @@ try {
   const polledRun = await run(tickerRunner, {
     lines: 6,
     everyMs: 400,
+    start: gate("ticker-polled-start"),
     hold: gate("ticker-polled"),
   });
   const polledFrom = socketless.logReads.length;
   await openRunner(socketless, TICKER, `?logs=${polledRun}`);
+  await waitFor("the page's first read of the polled run's log", () =>
+    socketless.logReads
+      .slice(polledFrom)
+      .some((one) => one.path.endsWith(`/runs/${polledRun}/logs`)),
+  );
+  release("ticker-polled-start");
   check(
     'the note says it is a poll: "re-read every 2 s. Live updates are not reaching this view"',
     await notesSay(
@@ -2080,16 +2099,20 @@ try {
     (await logLines(polledRun, "lines.length >= 6")).map((line) => line.text),
     Array.from({ length: 6 }, (_, index) => `step ${index + 1}`),
   );
-  check(
-    "by polled reads asking since= the cursor",
+  // The poll asks since= the cursor on its next read, every 2 s while the
+  // run goes: wait for it, rather than expect one to have come already.
+  const polledSince = () =>
     socketless.logReads
       .slice(polledFrom)
       .some(
         (one) =>
           one.path.endsWith(`/runs/${polledRun}/logs`) &&
           one.query.includes("since="),
-      ),
-  );
+      );
+  await waitFor("a polled read asking since= the cursor", polledSince, {
+    timeout: 15_000,
+  }).catch(() => undefined);
+  check("by polled reads asking since= the cursor", polledSince());
   release("ticker-polled");
   await waitFor("the polled run to finish", async () => {
     const records = await historyOf(TICKER);
