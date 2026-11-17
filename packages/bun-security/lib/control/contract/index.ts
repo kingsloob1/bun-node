@@ -5,6 +5,8 @@
  * this, never `./control`.
  */
 export {
+  AUDIT_INCOMPLETE_HEADER,
+  BREAK_GLASS_HEADER,
   BUNDLE_FORMAT,
   DEFAULT_API_PAGE_LIMIT,
   DEFAULT_SECURITY_CSRF_HEADER,
@@ -13,11 +15,13 @@ export {
   ROLE_PERMISSIONS,
   SECURITY_API_ERROR_CODES,
   SECURITY_API_PERMISSIONS,
+  SECURITY_ALERT_KINDS,
   SECURITY_API_PROTOCOL_VERSION,
   SECURITY_LIVE_EVENTS,
   SECURITY_ROLES,
 } from "./constants";
 export type {
+  SecurityAlertKind,
   SecurityApiErrorCode,
   SecurityApiPermission,
   SecurityLiveEventName,
@@ -25,6 +29,14 @@ export type {
 } from "./constants";
 export type {
   ApprovalDecisionInput,
+  AuditActorDto,
+  AuditCheckpointDto,
+  AuditEntryDto,
+  AuditProblemDto,
+  AuditTargetDto,
+  AuditVerifyDto,
+  BreakGlassLoginInput,
+  BreakGlassSessionDto,
   ApprovalDto,
   CompiledBundleDto,
   EffectivePolicyDto,
@@ -45,6 +57,7 @@ export type {
   RoleBindingDto,
   RoleBindingInput,
   RollbackInput,
+  SecurityAlertDto,
   SecurityApiMetaDto,
   SecurityApiPermissionsDto,
   SecurityLiveEventDto,

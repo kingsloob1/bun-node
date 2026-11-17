@@ -34,6 +34,8 @@ export interface ResolvedSigner {
   readonly keyId: string;
   /** Signs bytes. */
   readonly sign: (bytes: Uint8Array) => Promise<Uint8Array>;
+  /** The public half, when the private key is held here (a KMS hook's is not known). */
+  readonly publicKey?: KeyObject;
 }
 
 /** Checks `signer` and resolves it; throws a `ConfigError` for a bad one. */
@@ -83,7 +85,11 @@ export function resolveSigner(
       },
     );
   }
-  return { keyId: signer.keyId, sign: async (bytes) => sign(null, bytes, key) };
+  return {
+    keyId: signer.keyId,
+    sign: async (bytes) => sign(null, bytes, key),
+    publicKey: createPublicKey(key),
+  };
 }
 
 /** Signs `unsigned` with `signer`: the bundle with its signature. */

@@ -13,8 +13,9 @@ import type {
 import type { Operator, ResolvedSecurityApiOptions } from "./options";
 import type { ControlPlane, PublishOutcome } from "./plane";
 import type { Infer, Schema } from "./schema";
-import { sse } from "@kingsleyweb/bun-common";
+import { opaque, sse } from "@kingsleyweb/bun-common";
 import {
+  BREAK_GLASS_HEADER,
   DEFAULT_API_PAGE_LIMIT,
   SECURITY_API_PERMISSIONS,
   SECURITY_API_PROTOCOL_VERSION,
@@ -59,6 +60,7 @@ const LiveEvent: Schema<SecurityLiveEventDto> = s.object({
     "bundle.compiled",
     "approval.created",
     "approval.decided",
+    "breakGlass.used",
   ]),
   scope: s.string(),
   data: s.anyObject("what happened"),
@@ -71,6 +73,7 @@ export const LIVE_EVENTS = sse({
   "bundle.compiled": LiveEvent,
   "approval.created": LiveEvent,
   "approval.decided": LiveEvent,
+  "breakGlass.used": LiveEvent,
 });
 
 /** Every route. */
@@ -847,6 +850,217 @@ export function routes(options: ResolvedSecurityApiOptions): AnyRoute[] {
         );
       },
     },
+
+    // ── Audit (control-plane.md §6) ───────────────────────────────────────
+    {
+      method: "get",
+      path: "/audit",
+      summary:
+        "The audit log, a page at a time, filtered; each intent with its status",
+      tag: "audit",
+      query: S.AuditQuery,
+      responses: { 200: S.AuditEntries },
+      handle: async ({ plane, require, query }) => {
+        const q = query as Infer<typeof S.AuditQuery>;
+        await require("audit:read", q.scope ?? "global");
+        // A scope reads what is under it, as a role binding covers it.
+        const scopes =
+          q.scope === undefined
+            ? undefined
+            : await plane.auditScopesUnder(q.scope);
+        const page = await plane.auditPage({
+          limit: q.limit ?? DEFAULT_API_PAGE_LIMIT,
+          direction: q.direction ?? "desc",
+          ...(q.cursor === undefined ? {} : { cursor: q.cursor }),
+          ...(q.actor === undefined ? {} : { actor: q.actor }),
+          ...(q.action === undefined ? {} : { action: q.action }),
+          ...(scopes === undefined ? {} : { scopes }),
+          ...(q.since === undefined ? {} : { since: q.since }),
+          ...(q.until === undefined ? {} : { until: q.until }),
+        });
+        return pageOf(page);
+      },
+    },
+    {
+      method: "get",
+      path: "/audit/checkpoints",
+      summary: "The chain's signed checkpoints, newest first",
+      tag: "audit",
+      query: S.PageQuery,
+      responses: { 200: S.Checkpoints },
+      handle: async ({ plane, require, query }) => {
+        await require("audit:read", "global");
+        const q = query as PageQueryOf;
+        const page = await plane.store.listCheckpoints({
+          limit: q.limit ?? DEFAULT_API_PAGE_LIMIT,
+          direction: "desc",
+          ...(q.cursor === undefined ? {} : { cursor: q.cursor }),
+        });
+        return pageOf({
+          items: [...page.items],
+          ...(page.next === undefined ? {} : { next: page.next }),
+        });
+      },
+    },
+    {
+      method: "get",
+      path: "/audit/verify",
+      summary:
+        "Recomputes the chain and checks every checkpoint; names the first entry where it broke",
+      tag: "audit",
+      responses: { 200: S.AuditVerify },
+      handle: async ({ plane, require }) => {
+        await require("audit:read", "global");
+        return { status: 200, body: await plane.audit.verify() };
+      },
+    },
+    {
+      method: "get",
+      path: "/audit/export",
+      summary:
+        "The audit log as JSON Lines (a step-up), between since and until",
+      tag: "audit",
+      query: S.ExportQuery,
+      responses: { 200: { content: { "application/x-ndjson": opaque() } } },
+      handle: async ({ plane, require, query, stepUp, res }) => {
+        const q = query as Infer<typeof S.ExportQuery>;
+        await require("audit:export", "global");
+        if (!(await stepUp()) && options.guard !== "none") {
+          throw new ApiProblem(
+            403,
+            "forbidden",
+            "exporting the audit log needs a step-up",
+          );
+        }
+        await plane.audit.event("audit.export", "global", {
+          ...(q.since === undefined ? {} : { since: q.since }),
+          ...(q.until === undefined ? {} : { until: q.until }),
+        });
+        const lines: string[] = [];
+        for await (const record of plane.audit.entries({
+          ...(q.since === undefined ? {} : { since: q.since }),
+          ...(q.until === undefined ? {} : { until: q.until }),
+        })) {
+          lines.push(JSON.stringify(record));
+        }
+        res
+          .status(200)
+          .set("content-type", "application/x-ndjson")
+          .send(lines.join("\n") + (lines.length > 0 ? "\n" : ""));
+        return undefined;
+      },
+    },
+    {
+      method: "get",
+      path: "/audit/:n",
+      summary: "One audit entry",
+      tag: "audit",
+      params: S.EntryParams,
+      responses: { 200: S.AuditEntry },
+      problems: [404],
+      handle: async ({ plane, require, params }) => {
+        await require("audit:read", "global");
+        const { n } = params as { n: number };
+        const entry = await plane.auditEntry(n);
+        return { status: 200, body: entry };
+      },
+    },
+
+    // ── Break-glass (Q11) ─────────────────────────────────────────────────
+    ...(options.breakGlass === undefined
+      ? []
+      : [
+          {
+            method: "post",
+            path: "/break-glass/session",
+            summary:
+              "Signs in the break-glass account with its password and a TOTP code; a 15-minute token (audited, alerted)",
+            tag: "break-glass",
+            public: true,
+            body: S.BreakGlassBody,
+            responses: { 200: S.BreakGlassSession },
+            problems: [429],
+            handle: async ({ plane, body }) => {
+              const input = body as Infer<typeof S.BreakGlassBody>;
+              const attempt = await options.breakGlass!.login(
+                input.password,
+                input.code,
+              );
+              if (!attempt.ok) {
+                if (attempt.reason === "locked") {
+                  // While locked, attempts go to the log only: at most five
+                  // failures reach the chain per lock, whoever is trying.
+                  plane.logger.warn(
+                    "bun-security: a break-glass login was refused while locked",
+                    { lockedUntil: attempt.lockedUntil },
+                  );
+                } else {
+                  await plane.audit
+                    .event("breakGlass.failed", "global", {
+                      reason: attempt.reason,
+                      ...(attempt.locked === true ? { locked: true } : {}),
+                    })
+                    .catch((error: unknown) =>
+                      plane.logger.error(
+                        "bun-security: a break-glass failure could not be audited",
+                        { error },
+                      ),
+                    );
+                }
+                if (attempt.locked === true) {
+                  plane.alert({
+                    kind: "breakGlass.locked",
+                    severity: "critical",
+                    message:
+                      "the break-glass account is locked for 15 minutes after 5 failed attempts",
+                    detail: { lockedUntil: attempt.lockedUntil },
+                  });
+                }
+                if (attempt.reason === "locked" || attempt.locked === true) {
+                  throw new ApiProblem(
+                    429,
+                    "break_glass_locked",
+                    "the break-glass account is locked; try again later",
+                  );
+                }
+                throw new ApiProblem(
+                  401,
+                  "unauthenticated",
+                  "the break-glass password or code is wrong",
+                );
+              }
+              // No session without its audit trace.
+              await plane.audit
+                .event("breakGlass.login", "global", {
+                  expiresAt: attempt.expiresAt,
+                })
+                .catch(() => {
+                  throw new ApiProblem(
+                    503,
+                    "audit_unavailable",
+                    "the audit log cannot be written now, so the break-glass login is refused",
+                  );
+                });
+              plane.alert({
+                kind: "breakGlass.login",
+                severity: "critical",
+                message: "the break-glass account signed in",
+                detail: { expiresAt: attempt.expiresAt },
+              });
+              plane.emit("breakGlass.used", "global", {
+                expiresAt: attempt.expiresAt,
+              });
+              return {
+                status: 200,
+                body: {
+                  token: attempt.token,
+                  expiresAt: attempt.expiresAt,
+                  header: BREAK_GLASS_HEADER,
+                },
+              };
+            },
+          } satisfies AnyRoute,
+        ]),
 
     // ── Live ──────────────────────────────────────────────────────────────
     {

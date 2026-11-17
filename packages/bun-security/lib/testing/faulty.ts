@@ -18,6 +18,16 @@ export type StoreOperation =
   | "listVersions"
   | "putBundle"
   | "getBundle"
+  | "appendAudit"
+  | "getAuditHead"
+  | "listAudit"
+  | "appendCheckpoint"
+  | "listCheckpoints"
+  | "deleteAuditBefore"
+  | "incrementCounter"
+  | "getCounter"
+  | "resetCounter"
+  | "claimKey"
   | "changesSince";
 
 /** Options for {@link faultyStore}. */
@@ -64,6 +74,16 @@ export function faultyStore(
     listVersions: wrap("listVersions", store.listVersions),
     putBundle: wrap("putBundle", store.putBundle),
     getBundle: wrap("getBundle", store.getBundle),
+    appendAudit: wrap("appendAudit", store.appendAudit),
+    getAuditHead: wrap("getAuditHead", store.getAuditHead),
+    listAudit: wrap("listAudit", store.listAudit),
+    appendCheckpoint: wrap("appendCheckpoint", store.appendCheckpoint),
+    listCheckpoints: wrap("listCheckpoints", store.listCheckpoints),
+    deleteAuditBefore: wrap("deleteAuditBefore", store.deleteAuditBefore),
+    incrementCounter: wrap("incrementCounter", store.incrementCounter),
+    getCounter: wrap("getCounter", store.getCounter),
+    resetCounter: wrap("resetCounter", store.resetCounter),
+    claimKey: wrap("claimKey", store.claimKey),
     changesSince: wrap("changesSince", store.changesSince),
   });
 }

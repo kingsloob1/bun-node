@@ -26,10 +26,16 @@
  * has no drift); and, for a `multiProcess` driver, the same races from two
  * processes.
  */
-import type { SecurityStoreDriver, StoredDoc } from "../store/types";
+import type {
+  AuditInput,
+  SecurityStoreDriver,
+  StoredDoc,
+} from "../store/types";
 import process from "node:process";
 import { describe, expect, test } from "bun:test";
+import { AUDIT_GENESIS_HASH } from "../store/shared";
 import { raceStore } from "./race";
+import type { StoreCrossProcessResult } from "./race";
 
 /** What the factory answers. */
 export interface StoreConformanceInstance {
@@ -118,7 +124,7 @@ async function walk(
 /** Spawns the worker for one side of the two-process race; resolves once it is ready. */
 async function startWorker(job: Record<string, unknown>): Promise<{
   go: () => void;
-  result: Promise<{ revisions: number[]; versions: string[] }>;
+  result: Promise<StoreCrossProcessResult>;
 }> {
   const worker = new URL("./crossprocess-worker.ts", import.meta.url).pathname;
   const child = Bun.spawn({
@@ -170,7 +176,7 @@ async function startWorker(job: Record<string, unknown>): Promise<{
       const line = await nextLine();
       const code = await child.exited;
       if (code !== 0 || line === undefined) return await failed();
-      return JSON.parse(line) as { revisions: number[]; versions: string[] };
+      return JSON.parse(line) as StoreCrossProcessResult;
     })(),
   };
 }
@@ -236,6 +242,15 @@ export async function runSecurityStoreConformance(
               store.putBundle("s", { version: 1, bundle: {} }, null),
             ),
           ).toBe(true);
+          expect(
+            await rejects(() =>
+              store.appendAudit(auditInput(AUDIT_GENESIS_HASH, 1), null),
+            ),
+          ).toBe(true);
+          expect(await rejects(() => store.incrementCounter("c", 1_000))).toBe(
+            true,
+          );
+          expect(await rejects(() => store.claimKey("c", 1_000))).toBe(true);
         });
       });
       return;
@@ -720,6 +735,282 @@ export async function runSecurityStoreConformance(
       });
     });
 
+    describe("counters and claims (control-plane state shared by instances)", () => {
+      test("counts up to an expiry, starts again after it, and resets", async () => {
+        await withStore(factory, async (store) => {
+          expect(await store.getCounter("failures")).toBeUndefined();
+          expect((await store.incrementCounter("failures", 60_000)).count).toBe(
+            1,
+          );
+          expect((await store.incrementCounter("failures", 60_000)).count).toBe(
+            2,
+          );
+          const third = await store.incrementCounter("failures", 60_000);
+          expect(third.count).toBe(3);
+          expect(third.expiresAt).toBeGreaterThan(Date.now() - 1_000);
+          expect(await store.getCounter("failures")).toEqual(third);
+          // Keys are apart.
+          expect((await store.incrementCounter("other", 60_000)).count).toBe(1);
+          await store.resetCounter("failures");
+          expect(await store.getCounter("failures")).toBeUndefined();
+          await store.resetCounter("never-set");
+          // Expired: gone to a read, and the next increment starts at 1.
+          await store.incrementCounter("short", 1);
+          await store.incrementCounter("short", 1);
+          await Bun.sleep(20);
+          expect(await store.getCounter("short")).toBeUndefined();
+          expect((await store.incrementCounter("short", 60_000)).count).toBe(1);
+          expect(await rejects(() => store.incrementCounter("", 1_000))).toBe(
+            true,
+          );
+          expect(await rejects(() => store.incrementCounter("k", 0))).toBe(
+            true,
+          );
+        });
+      });
+
+      test("a claim goes to the first caller until it expires", async () => {
+        await withStore(factory, async (store) => {
+          expect(await store.claimKey("code:1", 60_000)).toBe(true);
+          expect(await store.claimKey("code:1", 60_000)).toBe(false);
+          expect(await store.claimKey("code:2", 60_000)).toBe(true);
+          expect(await store.claimKey("brief", 1)).toBe(true);
+          await Bun.sleep(20);
+          expect(await store.claimKey("brief", 60_000)).toBe(true);
+          expect(await store.claimKey("brief", 60_000)).toBe(false);
+          await store.resetCounter("code:1");
+          expect(await store.claimKey("code:1", 60_000)).toBe(true);
+        });
+      });
+
+      test(`racing increments never lose one, and racing claims have one winner (${raceSize} at once)`, async () => {
+        await withStore(factory, async (store) => {
+          const counts = await Promise.all(
+            Array.from({ length: raceSize }, () =>
+              store.incrementCounter("race", 60_000),
+            ),
+          );
+          expect(
+            counts.map((value) => value.count).sort((a, b) => a - b),
+          ).toEqual(Array.from({ length: raceSize }, (_, at) => at + 1));
+          const claims = await Promise.all(
+            Array.from({ length: raceSize }, () =>
+              store.claimKey("race-claim", 60_000),
+            ),
+          );
+          expect(claims.filter(Boolean)).toHaveLength(1);
+        });
+      });
+    });
+
+    describe("the audit chain (control-plane.md §6)", () => {
+      test("appends only on the head named, numbered without holes, the head kept", async () => {
+        await withStore(factory, async (store) => {
+          expect(await store.getAuditHead()).toBeNull();
+          const first = auditInput(AUDIT_GENESIS_HASH, 1);
+          expect(await store.appendAudit(first, null)).toMatchObject({
+            ok: true,
+            n: 1,
+          });
+          // A stale head, an empty chain's null on a chain that has one: refused, with the head.
+          const second = auditInput(first.hash, 2);
+          expect(
+            await store.appendAudit(auditInput(AUDIT_GENESIS_HASH, 9), null),
+          ).toEqual({
+            ok: false,
+            head: { n: 1, hash: first.hash },
+          });
+          expect(await store.appendAudit(second, first.hash)).toMatchObject({
+            ok: true,
+            n: 2,
+          });
+          expect(await store.getAuditHead()).toEqual({
+            n: 2,
+            hash: second.hash,
+          });
+          // An entry whose prevHash is not the head named is a caller's bug.
+          expect(
+            await rejects(() =>
+              store.appendAudit(auditInput(first.hash, 3), second.hash),
+            ),
+          ).toBe(true);
+          const { items } = await store.listAudit({ limit: 10 });
+          expect(
+            items.map((entry) => [entry.n, entry.prevHash, entry.hash]),
+          ).toEqual([
+            [1, AUDIT_GENESIS_HASH, first.hash],
+            [2, first.hash, second.hash],
+          ]);
+          expect(items[1]).toMatchObject({
+            actor: "op_2",
+            action: "service.put",
+            scope: "service:s2",
+            entry: { k: 2 },
+          });
+        });
+      });
+
+      test(`racing appenders never fork it (${raceSize} rounds)`, async () => {
+        await withStore(factory, async (store) => {
+          let head: string | null = null;
+          for (let round = 1; round <= raceSize; round++) {
+            const results = await Promise.all(
+              Array.from(
+                { length: 4 },
+                async (_, side) =>
+                  await store.appendAudit(
+                    auditInput(head ?? AUDIT_GENESIS_HASH, round * 10 + side),
+                    head,
+                  ),
+              ),
+            );
+            expect(results.filter((result) => result.ok)).toHaveLength(1);
+            head = (await store.getAuditHead())!.hash;
+          }
+          const { items } = await store.listAudit({ limit: 1_000 });
+          expect(items.map((entry) => entry.n)).toEqual(
+            Array.from({ length: raceSize }, (_, at) => at + 1),
+          );
+          expect(
+            items.every(
+              (entry, at) => at === 0 || entry.prevHash === items[at - 1]!.hash,
+            ),
+          ).toBe(true);
+        });
+      });
+
+      test("filters, pages both ways with a cursor bound to its filter, and purges only the oldest", async () => {
+        await withStore(factory, async (store) => {
+          let prev = AUDIT_GENESIS_HASH;
+          let head: string | null = null;
+          for (let i = 1; i <= 6; i++) {
+            const input = auditInput(
+              prev,
+              i,
+              i % 2 === 0 ? "op_even" : "op_odd",
+            );
+            await store.appendAudit(input, head);
+            prev = input.hash;
+            head = input.hash;
+          }
+          const evens = await store.listAudit({ limit: 2, actor: "op_even" });
+          expect(evens.items.map((entry) => entry.n)).toEqual([2, 4]);
+          const rest = await store.listAudit({
+            limit: 2,
+            actor: "op_even",
+            cursor: evens.next!,
+          });
+          expect(rest.items.map((entry) => entry.n)).toEqual([6]);
+          expect(rest.next).toBeUndefined();
+          expect(
+            await rejects(() =>
+              store.listAudit({
+                limit: 2,
+                actor: "op_odd",
+                cursor: evens.next!,
+              }),
+            ),
+          ).toBe(true);
+          expect(
+            (await store.listAudit({ limit: 2, direction: "desc" })).items.map(
+              (entry) => entry.n,
+            ),
+          ).toEqual([6, 5]);
+          expect(
+            (
+              await store.listAudit({ limit: 10, since: 3_000, until: 5_000 })
+            ).items.map((entry) => entry.n),
+          ).toEqual([3, 4]);
+          expect(
+            (await store.listAudit({ limit: 10, fromN: 5 })).items.map(
+              (entry) => entry.n,
+            ),
+          ).toEqual([5, 6]);
+          // Any of several scopes (a group and what is under it), a cursor bound to the set.
+          const some = await store.listAudit({
+            limit: 1,
+            scopes: ["service:s5", "service:s2", "service:s5"],
+          });
+          expect(some.items.map((entry) => entry.n)).toEqual([2]);
+          expect(
+            (
+              await store.listAudit({
+                limit: 1,
+                scopes: ["service:s2", "service:s5"],
+                cursor: some.next!,
+              })
+            ).items.map((entry) => entry.n),
+          ).toEqual([5]);
+          expect(
+            await rejects(() =>
+              store.listAudit({
+                limit: 1,
+                scopes: ["service:s2", "service:s6"],
+                cursor: some.next!,
+              }),
+            ),
+          ).toBe(true);
+          expect(
+            (await store.listAudit({ limit: 10, scopes: ["service:none"] }))
+              .items,
+          ).toEqual([]);
+          expect(
+            await rejects(() => store.listAudit({ limit: 10, scopes: [] })),
+          ).toBe(true);
+          expect(await store.deleteAuditBefore(3, 1)).toBe(1);
+          expect(await store.deleteAuditBefore(3, 10)).toBe(1);
+          expect(await store.deleteAuditBefore(3, 10)).toBe(0);
+          expect(
+            (await store.listAudit({ limit: 10 })).items.map(
+              (entry) => entry.n,
+            ),
+          ).toEqual([3, 4, 5, 6]);
+          expect((await store.getAuditHead())?.n).toBe(6);
+        });
+      });
+
+      test("keeps checkpoints by number, the first for a number winning", async () => {
+        await withStore(factory, async (store) => {
+          const hash = "a".repeat(64);
+          await store.appendCheckpoint({
+            n: 5,
+            hash,
+            at: 1,
+            keyId: "k",
+            signature: "s1",
+          });
+          await store.appendCheckpoint({
+            n: 5,
+            hash,
+            at: 2,
+            keyId: "k",
+            signature: "s2",
+          });
+          await store.appendCheckpoint({
+            n: 2,
+            hash,
+            at: 3,
+            keyId: "k",
+            signature: "s3",
+          });
+          const page = await store.listCheckpoints({ limit: 1 });
+          expect(page.items.map((cp) => [cp.n, cp.signature])).toEqual([
+            [2, "s3"],
+          ]);
+          expect(
+            (
+              await store.listCheckpoints({ limit: 5, cursor: page.next! })
+            ).items.map((cp) => [cp.n, cp.signature]),
+          ).toEqual([[5, "s1"]]);
+          expect(
+            (
+              await store.listCheckpoints({ limit: 5, direction: "desc" })
+            ).items.map((cp) => cp.n),
+          ).toEqual([5, 2]);
+        });
+      });
+    });
+
     describe("the change feed", () => {
       test("every write, and only writes, in order and complete", async () => {
         await withStore(factory, async (store) => {
@@ -732,6 +1023,8 @@ export async function runSecurityStoreConformance(
           await store.appendVersion("p", { id: "v2", policy: {} }, "v0"); // refused
           await store.putBundle("s", { version: 3, bundle: {} }, null);
           await store.putBundle("s", { version: 4, bundle: {} }, null); // refused
+          await store.appendAudit(auditInput(AUDIT_GENESIS_HASH, 1), null);
+          await store.appendAudit(auditInput(AUDIT_GENESIS_HASH, 1), null); // refused
           await store.delete("service", "a", 2);
           const { changes, head } = await store.changesSince(start, 100);
           expect(
@@ -741,6 +1034,7 @@ export async function runSecurityStoreConformance(
             ["service", "a", 2, false],
             ["policy", "p", 1, false],
             ["bundle", "s", 3, false],
+            ["audit", "1", 1, false],
             ["service", "a", 2, true],
           ]);
           const seqs = changes.map((c) => c.seq);
@@ -794,7 +1088,7 @@ export async function runSecurityStoreConformance(
 
     if (capabilities.multiProcess) {
       test(
-        "two processes racing the same document and head: no lost write, no fork",
+        "two processes racing the same document and head: no lost write, no fork (the audit chain too)",
         async () => {
           const harness = options.crossProcess;
           if (harness === undefined) {
@@ -833,10 +1127,41 @@ export async function runSecurityStoreConformance(
             expect(
               changes.filter((c) => c.kind === "service" && c.id === "xp"),
             ).toHaveLength(2 * raceSize);
+            // The audit chain stays one line across processes: no fork.
+            expect(
+              [...mine.audit, ...theirs.audit].sort((a, b) => a - b),
+            ).toEqual(Array.from({ length: 2 * raceSize }, (_, at) => at + 1));
+            const chain = await store.listAudit({ limit: 1_000 });
+            let previous = AUDIT_GENESIS_HASH;
+            for (const entry of chain.items) {
+              expect(entry.prevHash).toBe(previous);
+              previous = entry.hash;
+            }
+            expect((await store.getAuditHead())?.hash).toBe(previous);
           });
         },
         CROSS_PROCESS_TIMEOUT_MS,
       );
     }
   });
+}
+
+/** An audit entry on `prevHash`, its hash derived from it and `k`, by `actor`, at `k` seconds. */
+function auditInput(
+  prevHash: string,
+  k: number,
+  actor = `op_${k}`,
+): AuditInput {
+  const hash = new Bun.CryptoHasher("sha256")
+    .update(`${prevHash}|${k}|${actor}`)
+    .digest("hex");
+  return {
+    hash,
+    prevHash,
+    at: k * 1_000,
+    actor,
+    action: "service.put",
+    scope: `service:s${k}`,
+    entry: { k },
+  };
 }

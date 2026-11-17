@@ -21,7 +21,11 @@ import type {
   SqlDialect,
 } from "@kingsleyweb/bun-sql";
 import type {
+  AppendAuditResult,
   AppendResult,
+  AuditCheckpoint,
+  AuditHead,
+  AuditRecord,
   BundleInput,
   Change,
   ChangeKind,
@@ -47,7 +51,14 @@ import {
   syncSqlSchema,
 } from "@kingsleyweb/bun-sql";
 import {
+  auditCursor,
+  auditPosition,
   bundleEtag,
+  checkAuditInput,
+  checkCheckpoint,
+  checkCounter,
+  checkpointCursor,
+  checkpointPosition,
   checkBundleInput,
   checkFeedRead,
   checkId,
@@ -59,6 +70,7 @@ import {
   jsonBody,
   refuseClosed,
   refusePolicyWrite,
+  resolveAuditQuery,
   resolveQuery,
   versionCursor,
   versionPosition,
@@ -80,12 +92,24 @@ export function storeTables(prefix: string): {
   changes: string;
   /** Each service's signed bundle. */
   bundles: string;
+  /** The audit chain's entries (append-only; control-plane.md §6.2). */
+  audit: string;
+  /** The audit chain's head, one row. */
+  auditHead: string;
+  /** The audit chain's signed checkpoints. */
+  checkpoints: string;
+  /** Short-lived counters and claims shared by control-plane instances. */
+  counters: string;
 } {
   return {
     docs: `${prefix}docs`,
     versions: `${prefix}versions`,
     changes: `${prefix}changes`,
     bundles: `${prefix}bundles`,
+    audit: `${prefix}audit`,
+    auditHead: `${prefix}audit_head`,
+    checkpoints: `${prefix}audit_checkpoints`,
+    counters: `${prefix}counters`,
   };
 }
 
@@ -94,7 +118,16 @@ export function storeSchema(
   prefix: string,
   dialect: SqlDialect,
 ): SchemaDefinition {
-  const { docs, versions, changes, bundles } = storeTables(prefix);
+  const {
+    docs,
+    versions,
+    changes,
+    bundles,
+    audit,
+    auditHead,
+    checkpoints,
+    counters,
+  } = storeTables(prefix);
   const { idType, nameType, jsonType, timeType, serialType, longTextType } =
     dialect;
   return {
@@ -131,6 +164,49 @@ export function storeSchema(
           { name: "version", type: "INTEGER", suffix: "NOT NULL" },
           { name: "bundle", type: jsonType, suffix: "NOT NULL" },
           { name: "updated_at", type: timeType, suffix: "NOT NULL" },
+        ],
+      },
+      {
+        name: audit,
+        primaryKey: ["n"],
+        columns: [
+          { name: "n", type: "INTEGER", suffix: "NOT NULL" },
+          { name: "prev_hash", type: idType, suffix: "NOT NULL" },
+          { name: "hash", type: idType, suffix: "NOT NULL" },
+          { name: "at", type: timeType, suffix: "NOT NULL" },
+          { name: "actor", type: idType, suffix: "NOT NULL" },
+          { name: "action", type: idType, suffix: "NOT NULL" },
+          { name: "scope", type: idType, suffix: "NOT NULL" },
+          { name: "entry", type: jsonType, suffix: "NOT NULL" },
+        ],
+      },
+      {
+        name: auditHead,
+        primaryKey: ["id"],
+        columns: [
+          { name: "id", type: "INTEGER", suffix: "NOT NULL" },
+          { name: "n", type: "INTEGER", suffix: "NOT NULL" },
+          { name: "hash", type: idType, suffix: "NOT NULL" },
+        ],
+      },
+      {
+        name: checkpoints,
+        primaryKey: ["n"],
+        columns: [
+          { name: "n", type: "INTEGER", suffix: "NOT NULL" },
+          { name: "hash", type: idType, suffix: "NOT NULL" },
+          { name: "at", type: timeType, suffix: "NOT NULL" },
+          { name: "key_id", type: idType, suffix: "NOT NULL" },
+          { name: "signature", type: longTextType, suffix: "NOT NULL" },
+        ],
+      },
+      {
+        name: counters,
+        primaryKey: ["name"],
+        columns: [
+          { name: "name", type: idType, suffix: "NOT NULL" },
+          { name: "count", type: "INTEGER", suffix: "NOT NULL" },
+          { name: "expires_at", type: timeType, suffix: "NOT NULL" },
         ],
       },
       {
@@ -172,6 +248,16 @@ export function storeSchema(
               ],
             },
           ]),
+      {
+        name: `ix_${prefix}audit_at`,
+        table: audit,
+        columns: ["at", "n"],
+      },
+      {
+        name: `ix_${prefix}audit_actor`,
+        table: audit,
+        columns: ["actor", "n"],
+      },
       {
         name: `ix_${prefix}versions_id`,
         table: versions,
@@ -248,6 +334,40 @@ interface BundleRow {
   bundle: unknown;
   /** When it was stored. */
   updated_at: number | bigint;
+}
+
+/** A row of the audit table. */
+interface AuditRow {
+  /** The entry's number. */
+  n: number | bigint;
+  /** Its predecessor's hash. */
+  prev_hash: string;
+  /** Its hash. */
+  hash: string;
+  /** When. */
+  at: number | bigint;
+  /** Who. */
+  actor: string;
+  /** What. */
+  action: string;
+  /** Where. */
+  scope: string;
+  /** The entry, as the dialect returns JSON. */
+  entry: unknown;
+}
+
+/** A row of the checkpoints table. */
+interface CheckpointRow {
+  /** The entry it covers. */
+  n: number | bigint;
+  /** That entry's hash. */
+  hash: string;
+  /** When it was signed. */
+  at: number | bigint;
+  /** The audit key's id. */
+  key_id: string;
+  /** The signature. */
+  signature: string;
 }
 
 interface ChangeRow {
@@ -420,6 +540,19 @@ export function sqlSecurityStore(
   };
 
   /** Appends a change row with `sql`; answers its sequence number. */
+  /** The audit chain's head row. */
+  const readAuditHead = async (sql: SQL): Promise<AuditHead | null> => {
+    const rows = (await sql.unsafe(
+      `SELECT n, hash FROM ${tables.auditHead} WHERE id = 1`,
+    )) as {
+      n: number | bigint;
+      hash: string;
+    }[];
+    return rows[0] === undefined
+      ? null
+      : Object.freeze({ n: Number(rows[0].n), hash: rows[0].hash });
+  };
+
   const record = async (
     sql: SQL,
     kind: ChangeKind,
@@ -780,6 +913,272 @@ export function sqlSecurityStore(
       } satisfies StoredBundle);
     },
     ...(init.subscribe === undefined ? {} : { subscribe: init.subscribe }),
+    appendAudit: async (
+      input,
+      expectedPrevHash,
+    ): Promise<AppendAuditResult> => {
+      const entry = checkAuditInput(input, expectedPrevHash);
+      const sql = await connection();
+      return await dialect.transaction(sql, async (tx) => {
+        // The store's write lock first (Postgres: an advisory lock), so two
+        // hosts appending at once never fork the chain.
+        await init.serialize?.(tx);
+        const head = await readAuditHead(tx);
+        if ((head?.hash ?? null) !== expectedPrevHash) {
+          return Object.freeze({ ok: false as const, head });
+        }
+        const n = (head?.n ?? 0) + 1;
+        const p = new Params(dialect);
+        if (head === null) {
+          const result = await tx.unsafe(
+            dialect.insertIgnore(
+              tables.auditHead,
+              ["id", "n", "hash"],
+              [p.bind(1), p.bind(n), p.bind(entry.hash)],
+            ),
+            p.values,
+          );
+          if ((await dialect.affectedRows(result, tx)) !== 1) {
+            return Object.freeze({
+              ok: false as const,
+              head: await readAuditHead(tx),
+            });
+          }
+        } else {
+          const result = await tx.unsafe(
+            `UPDATE ${tables.auditHead} SET n = ${p.bind(n)}, hash = ${p.bind(entry.hash)}
+              WHERE id = 1 AND hash = ${p.bind(head.hash)}`,
+            p.values,
+          );
+          if ((await dialect.affectedRows(result, tx)) !== 1) {
+            return Object.freeze({
+              ok: false as const,
+              head: await readAuditHead(tx),
+            });
+          }
+        }
+        const q = new Params(dialect);
+        await tx.unsafe(
+          `INSERT INTO ${tables.audit} (n, prev_hash, hash, at, actor, action, scope, entry)
+           VALUES (${q.bind(n)}, ${q.bind(entry.prevHash)}, ${q.bind(entry.hash)}, ${q.bind(entry.at)},
+                   ${q.bind(entry.actor)}, ${q.bind(entry.action)}, ${q.bind(entry.scope)},
+                   ${q.bind(dialect.jsonIn(codec.seal(entry.entry, { field: "doc", kind: "audit", id: String(n) })))})`,
+          q.values,
+        );
+        return Object.freeze({
+          ok: true as const,
+          n,
+          seq: await record(tx, "audit", String(n), n, false),
+        });
+      });
+    },
+    getAuditHead: async () => await readAuditHead(await connection()),
+    listAudit: async (query) => {
+      const resolved = resolveAuditQuery(query);
+      const after = auditPosition(resolved);
+      const f = resolved.filter;
+      const desc = resolved.direction === "desc";
+      const sql = await connection();
+      const p = new Params(dialect);
+      const where: string[] = [];
+      if (f.actor !== "") where.push(`actor = ${p.bind(f.actor)}`);
+      if (f.action !== "") where.push(`action = ${p.bind(f.action)}`);
+      if (f.scope !== "") where.push(`scope = ${p.bind(f.scope)}`);
+      if (f.scopes !== null)
+        where.push(
+          `scope IN (${f.scopes.map((scope) => p.bind(scope)).join(", ")})`,
+        );
+      if (f.since >= 0) where.push(`at >= ${p.bind(f.since)}`);
+      if (f.until >= 0) where.push(`at < ${p.bind(f.until)}`);
+      if (f.fromN >= 0) where.push(`n >= ${p.bind(f.fromN)}`);
+      if (f.toN >= 0) where.push(`n <= ${p.bind(f.toN)}`);
+      if (after !== undefined)
+        where.push(`n ${desc ? "<" : ">"} ${p.bind(after)}`);
+      const rows = (await sql.unsafe(
+        `SELECT n, prev_hash, hash, at, actor, action, scope, entry FROM ${tables.audit}
+          ${where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`}
+          ORDER BY n ${desc ? "DESC" : "ASC"}
+          LIMIT ${resolved.limit + 1}`,
+        p.values,
+      )) as AuditRow[];
+      const items = rows.slice(0, resolved.limit).map((row): AuditRecord =>
+        Object.freeze({
+          n: Number(row.n),
+          prevHash: row.prev_hash,
+          hash: row.hash,
+          at: Number(row.at),
+          actor: row.actor,
+          action: row.action,
+          scope: row.scope,
+          entry: codec.open(dialect.jsonOut(row.entry, null), {
+            field: "doc",
+            kind: "audit",
+            id: String(row.n),
+          }),
+        }),
+      );
+      const last = items.at(-1);
+      return Object.freeze({
+        items: Object.freeze(items),
+        ...(rows.length > resolved.limit && last !== undefined
+          ? { next: auditCursor(resolved, last.n) }
+          : {}),
+      });
+    },
+    appendCheckpoint: async (checkpoint) => {
+      const cp = checkCheckpoint(checkpoint);
+      const sql = await connection();
+      await dialect.transaction(sql, async (tx) => {
+        await init.serialize?.(tx);
+        const p = new Params(dialect);
+        await tx.unsafe(
+          dialect.insertIgnore(
+            tables.checkpoints,
+            ["n", "hash", "at", "key_id", "signature"],
+            [
+              p.bind(cp.n),
+              p.bind(cp.hash),
+              p.bind(cp.at),
+              p.bind(cp.keyId),
+              p.bind(cp.signature),
+            ],
+          ),
+          p.values,
+        );
+      });
+    },
+    listCheckpoints: async (query) => {
+      const direction = query.direction ?? "asc";
+      const resolved = resolveQuery({ limit: query.limit, direction });
+      const after = checkpointPosition(query.cursor, direction);
+      const sql = await connection();
+      const p = new Params(dialect);
+      const rows = (await sql.unsafe(
+        `SELECT n, hash, at, key_id, signature FROM ${tables.checkpoints}
+          ${after === undefined ? "" : `WHERE n ${direction === "asc" ? ">" : "<"} ${p.bind(after)}`}
+          ORDER BY n ${direction === "asc" ? "ASC" : "DESC"}
+          LIMIT ${resolved.limit + 1}`,
+        p.values,
+      )) as CheckpointRow[];
+      const items = rows.slice(0, resolved.limit).map((row): AuditCheckpoint =>
+        Object.freeze({
+          n: Number(row.n),
+          hash: row.hash,
+          at: Number(row.at),
+          keyId: row.key_id,
+          signature: row.signature,
+        }),
+      );
+      const last = items.at(-1);
+      return Object.freeze({
+        items: Object.freeze(items),
+        ...(rows.length > resolved.limit && last !== undefined
+          ? { next: checkpointCursor(direction, last.n) }
+          : {}),
+      });
+    },
+    deleteAuditBefore: async (beforeN, limit) => {
+      if (
+        !Number.isSafeInteger(beforeN) ||
+        !Number.isSafeInteger(limit) ||
+        limit < 1
+      ) {
+        throw new ConfigError(
+          "security store: deleteAuditBefore takes a number and a positive limit",
+        );
+      }
+      const sql = await connection();
+      return await dialect.transaction(sql, async (tx) => {
+        await init.serialize?.(tx);
+        const p = new Params(dialect);
+        const rows = (await tx.unsafe(
+          `SELECT n FROM ${tables.audit} WHERE n < ${p.bind(beforeN)} ORDER BY n ASC LIMIT ${limit}`,
+          p.values,
+        )) as { n: number | bigint }[];
+        if (rows.length === 0) return 0;
+        const q = new Params(dialect);
+        const result = await tx.unsafe(
+          `DELETE FROM ${tables.audit} WHERE n >= ${q.bind(Number(rows[0]!.n))} AND n <= ${q.bind(Number(rows.at(-1)!.n))}`,
+          q.values,
+        );
+        return await dialect.affectedRows(result, tx);
+      });
+    },
+    // Counters and claims: one upsert each (RETURNING, on SQLite and
+    // Postgres alike), under the store's write lock where the engine has one.
+    incrementCounter: async (key, ttlMs) => {
+      checkCounter(key, ttlMs);
+      const sql = await connection();
+      return await dialect.transaction(sql, async (tx) => {
+        await init.serialize?.(tx);
+        const at = now();
+        const p = new Params(dialect);
+        const name = p.bind(key);
+        const expires = p.bind(at + ttlMs);
+        const live = p.bind(at);
+        const rows = (await tx.unsafe(
+          `INSERT INTO ${tables.counters} (name, count, expires_at) VALUES (${name}, 1, ${expires})
+            ON CONFLICT (name) DO UPDATE SET
+              count = CASE WHEN ${tables.counters}.expires_at > ${live} THEN ${tables.counters}.count + 1 ELSE 1 END,
+              expires_at = excluded.expires_at
+            RETURNING count, expires_at`,
+          p.values,
+        )) as { count: number | bigint; expires_at: number | bigint }[];
+        const row = rows[0]!;
+        return Object.freeze({
+          count: Number(row.count),
+          expiresAt: Number(row.expires_at),
+        });
+      });
+    },
+    getCounter: async (key) => {
+      checkCounter(key);
+      const sql = await connection();
+      const p = new Params(dialect);
+      const rows = (await sql.unsafe(
+        `SELECT count, expires_at FROM ${tables.counters} WHERE name = ${p.bind(key)} AND expires_at > ${p.bind(now())}`,
+        p.values,
+      )) as { count: number | bigint; expires_at: number | bigint }[];
+      const row = rows[0];
+      return row === undefined
+        ? undefined
+        : Object.freeze({
+            count: Number(row.count),
+            expiresAt: Number(row.expires_at),
+          });
+    },
+    resetCounter: async (key) => {
+      checkCounter(key);
+      const sql = await connection();
+      await dialect.transaction(sql, async (tx) => {
+        await init.serialize?.(tx);
+        const p = new Params(dialect);
+        await tx.unsafe(
+          `DELETE FROM ${tables.counters} WHERE name = ${p.bind(key)}`,
+          p.values,
+        );
+      });
+    },
+    claimKey: async (key, ttlMs) => {
+      checkCounter(key, ttlMs);
+      const sql = await connection();
+      return await dialect.transaction(sql, async (tx) => {
+        await init.serialize?.(tx);
+        const at = now();
+        const p = new Params(dialect);
+        const name = p.bind(key);
+        const expires = p.bind(at + ttlMs);
+        const live = p.bind(at);
+        const rows = (await tx.unsafe(
+          `INSERT INTO ${tables.counters} (name, count, expires_at) VALUES (${name}, 1, ${expires})
+            ON CONFLICT (name) DO UPDATE SET count = 1, expires_at = excluded.expires_at
+              WHERE ${tables.counters}.expires_at <= ${live}
+            RETURNING name`,
+          p.values,
+        )) as unknown[];
+        return rows.length === 1;
+      });
+    },
     changesSince: async (since, limit) => {
       checkFeedRead(since, limit);
       const sql = await connection();

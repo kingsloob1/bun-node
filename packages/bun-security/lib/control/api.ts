@@ -9,6 +9,7 @@ import type {
 } from "@kingsleyweb/bun-common";
 import {
   BunRouter,
+  ConfigError,
   createLogger,
   ResponseValidationError,
   resolveLogger,
@@ -19,6 +20,8 @@ import {
   generateOpenApi,
 } from "@kingsleyweb/bun-common/lib/docs";
 import type { SecurityApiOptions } from "./options";
+import type { AuditCheckpoint } from "../store/types";
+import type { AuditVerifyDto } from "./contract/types";
 import { csrf } from "../http/csrf";
 import { resolveOptions } from "./options";
 import { ControlPlane } from "./plane";
@@ -38,6 +41,23 @@ export interface SecurityApi {
   readonly openapi: () => Record<string, unknown>;
   /** The AsyncAPI 3.0 document of the live stream. */
   readonly asyncapi: () => Record<string, unknown>;
+  /**
+   * Recomputes the audit chain and checks every checkpoint, stored and
+   * read back from the sinks; names the first entry where it broke (and
+   * alerts `audit.verifyFailed`). Run it on a schedule.
+   */
+  readonly verifyAudit: () => Promise<AuditVerifyDto>;
+  /** Signs and writes a checkpoint of the chain's head now; `null` when the chain is empty. */
+  readonly checkpointAudit: () => Promise<AuditCheckpoint | null>;
+  /**
+   * Retention (a host's scheduled job, never a route): deletes audit
+   * entries older than `before` (ms), only up to the latest checkpoint
+   * older than it, so the oldest kept entry stays anchored. The purge is
+   * itself audited. How many entries went.
+   */
+  readonly purgeAudit: (options: {
+    readonly before: number;
+  }) => Promise<number>;
 }
 
 /**
@@ -63,7 +83,7 @@ export function createSecurityApi(options: SecurityApiOptions): SecurityApi {
     options.logger,
     createLogger({ name: "bun-security" }),
   );
-  const plane = new ControlPlane(resolved);
+  const plane = new ControlPlane(resolved, logger);
   const router = new BunRouter();
   const guard =
     resolved.csrf === false
@@ -129,5 +149,13 @@ export function createSecurityApi(options: SecurityApiOptions): SecurityApi {
     basePath: resolved.basePath,
     plane,
     ...documents,
+    verifyAudit: async () => await plane.audit.verify(),
+    checkpointAudit: async () => await plane.audit.checkpointNow(),
+    purgeAudit: async ({ before }: { readonly before: number }) => {
+      if (!Number.isSafeInteger(before) || before < 0) {
+        throw new ConfigError("purgeAudit(): before must be a time in ms");
+      }
+      return await plane.audit.purge(before);
+    },
   });
 }

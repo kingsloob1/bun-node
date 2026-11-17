@@ -1189,7 +1189,11 @@ and roles. It runs on an admin listener, never on a protected service's
 public one.
 
 ```ts
-import { createSecurityApi, secureAdmin } from "@kingsleyweb/bun-security/control";
+import {
+  createSecurityApi,
+  fileCheckpointSink,
+  secureAdmin,
+} from "@kingsleyweb/bun-security/control";
 import { sqliteStore } from "@kingsleyweb/bun-security/store";
 
 const api = createSecurityApi({
@@ -1198,6 +1202,10 @@ const api = createSecurityApi({
   owners: ["op_alice"],                            // the first owner, from configuration
   stepUp: { verify: (req, op) => mfa.isFresh(req, op), challenge: () => "/mfa" },
   signing: { keyId: "sk_2026_11", privateKey: process.env.BUNDLE_SIGNING_KEY! }, // Ed25519
+  audit: {
+    signing: { keyId: "ak_2026_11", privateKey: process.env.AUDIT_SIGNING_KEY! }, // another Ed25519 key
+    sinks: [fileCheckpointSink("/var/log/security/checkpoints.jsonl")],
+  },
 });
 const admin = await secureAdmin({ port: 9443, api }); // 127.0.0.1 unless told otherwise
 ```
@@ -1251,6 +1259,81 @@ const admin = await secureAdmin({ port: 9443, api }); // 127.0.0.1 unless told o
   scope; `/openapi.json` and `/asyncapi.json` document it all.
 - `./control/contract` holds the wire types, permission and role names and
   problem codes, browser-safe with no runtime import, for a UI or client.
+
+### The audit log
+
+Every change through the API is recorded in a hash chain in the store:
+each entry's hash is SHA-256 of the previous hash and the entry's
+canonical JSON (who, from which address, the request's id, the permissions
+checked, whether a step-up was proven, the target, and the state before
+and after or the policy's diff).
+
+- **Intent first.** Before a change, an `intent` entry is appended. If it
+  cannot be written (after three tries), the change is refused with `503
+  audit_unavailable` and nothing changes: no change exists without a trace.
+  After the change, a `done` entry names the intent (`applied`, or
+  `refused` and why). If the done cannot be written the change stands, and
+  the answer carries `x-bun-security-audit: incomplete`. `GET /audit` and
+  `verify` reconcile an intent with no done against the store:
+  `completed-unconfirmed` (the change is there) or `not-applied`; never
+  tampering.
+- **Checkpoints.** Every 1,000 entries or hourly (`checkpointEvery`,
+  `checkpointInterval`), the head is signed with the **audit key**, an
+  Ed25519 key of its own (the bundle key is refused), kept in the store
+  and written to each **sink**: `fileCheckpointSink(path)` (JSON Lines,
+  read back by `verify`), `webhookCheckpointSink({ url, secret })`
+  (signed `x-bun-security-signature: sha256=<hex>` over
+  `<x-bun-security-timestamp>.<body>`), or `callbackCheckpointSink({ write,
+  read? })`. One sink at least, or `allowNoExternalCheckpoints: true`. A
+  sink that fails never blocks a change: the checkpoint is retried with the
+  next, and `onAlert` hears `checkpoint.sinkFailed`.
+- **`verifyAudit()`** (and `GET /audit/verify`) recomputes the chain and
+  checks every checkpoint, stored and read back from the sinks, naming the
+  first entry where it broke: `hash-mismatch` (edited), `gap` (deleted),
+  `order` (moved), `truncated` (the end cut off), `anchor` (the oldest kept
+  entry vouched for by nothing), `checkpoint-signature` (forged) or
+  `checkpoint-mismatch`. A failure alerts `audit.verifyFailed`. Run it on a
+  schedule.
+- **Refusals**: a signed-in operator refused for a permission or a step-up
+  is recorded (`access.refused`, with the permission, scope, route and
+  target). Unauthenticated and cross-site requests are only logged, so
+  anonymous traffic cannot grow the chain.
+- **Reading**: `GET /audit` (filters `actor`, `action`, `scope` (a group
+  includes its descendant groups and their services, as a role binding
+  does), `since`, `until`; cursor pages), `/audit/:n` and `/audit/checkpoints` need
+  `audit:read` (analyst and up); `GET /audit/export` (JSON Lines, itself
+  recorded) needs `audit:export` (admin and up) and a step-up.
+- **Retention** is the host's scheduled job, never a route:
+  `api.purgeAudit({ before })` deletes entries older than `before`, only up
+  to the latest checkpoint older than it, so the oldest kept entry stays
+  anchored, and records the purge. The plan keeps 400 days.
+
+### Break-glass
+
+For when the identity provider is down during an incident, one local
+account, off unless configured:
+
+```ts
+createSecurityApi({
+  // ...
+  breakGlass: {
+    passwordHash: process.env.BREAK_GLASS_PASSWORD_HASH!, // Bun.password.hash(...)
+    totpSecret: process.env.BREAK_GLASS_TOTP_SECRET!,     // base32, an authenticator app's
+  },
+  onAlert: (alert) => pager.send(alert), // breakGlass.login is critical
+});
+```
+
+`POST /break-glass/session` with `{ password, code }` (TOTP, RFC 6238:
+SHA-1, 6 digits, 30 s, a step either side; each code once) answers a token
+valid 15 minutes, sent back in `x-bun-security-break-glass`. Its holder
+acts as `owner` on `global` (the host's `authenticate` and `authorize` are
+not asked), its step-up fresh for the first 5 minutes. Five failures lock it
+for 15 minutes. The failures and the used codes are kept in the store, so
+every control-plane instance on it shares the lock and refuses a code
+another used. Attempts while locked are logged, not audited. Every login and failure is audited; a login also alerts
+(`breakGlass.login`), goes out on `/live` (`breakGlass.used`) and is logged
+at error level. A login whose audit entry cannot be written is refused.
 
 ## Deciding and explaining
 

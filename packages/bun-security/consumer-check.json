@@ -304,7 +304,7 @@
       "types": ["IpIntel"]
     },
     {
-      "$comment": "The control plane (control-plane.md, PR-CP2): the management API, the admin listener, bundle signing, inheritance. Never imported by an enforcement point.",
+      "$comment": "The control plane (control-plane.md, PR-CP2, PR-CP3): the management API, the admin listener, bundle signing, inheritance, the audit log's sinks and the break-glass TOTP. Never imported by an enforcement point.",
       "spelling": "@kingsleyweb/bun-security/control",
       "values": [
         "createSecurityApi",
@@ -316,7 +316,12 @@
         "signBundle",
         "bundlePublicKey",
         "ControlPlane",
-        "ApiProblem"
+        "ApiProblem",
+        "auditHash",
+        "totpCode",
+        "fileCheckpointSink",
+        "webhookCheckpointSink",
+        "callbackCheckpointSink"
       ],
       "types": [
         "SecurityApi",
@@ -334,9 +339,13 @@
         "LockedOverride",
         "PolicyChange",
         "PublishOutcome",
-        "PublishRequest"
+        "PublishRequest",
+        "AuditSigning",
+        "BreakGlassOptions",
+        "CheckpointSink",
+        "WebhookCheckpointSinkOptions"
       ],
-      "snippet": "import { memoryStore } from \"@kingsleyweb/bun-security/store\";\nconst api = m.createSecurityApi({ store: memoryStore(), authenticate: () => ({ id: \"op\" }), owners: [\"op\"], approvals: \"two-person\", signing: { keyId: \"k\", sign: (bytes: Uint8Array) => bytes } });\nexport type _apiNotAny = Expect<IsAny<typeof api>>;\nexport const _base: string = api.basePath;\nconst merged = m.mergePolicies([{ scope: \"global\", policy: {} }]);\nexport const _locked: readonly t.LockedOverride[] = merged.locked;\nexport const _admin: Promise<t.AdminListener> = m.secureAdmin({ port: 0, api });"
+      "snippet": "import { memoryStore } from \"@kingsleyweb/bun-security/store\";\nconst api = m.createSecurityApi({ store: memoryStore(), authenticate: () => ({ id: \"op\" }), owners: [\"op\"], approvals: \"two-person\", signing: { keyId: \"k\", sign: (bytes: Uint8Array) => bytes }, audit: { signing: { keyId: \"ak\", sign: (bytes: Uint8Array) => bytes, publicKey: \"pem\" }, sinks: [m.fileCheckpointSink(\"./checkpoints.jsonl\")] } });\nexport const _verified: Promise<boolean> = api.verifyAudit().then((result) => result.ok);\nexport const _purged: Promise<number> = api.purgeAudit({ before: 0 });\nconst sink: t.CheckpointSink = m.callbackCheckpointSink({ write: () => {} });\nexport const _sinkName: string = sink.name;\nexport type _apiNotAny = Expect<IsAny<typeof api>>;\nexport const _base: string = api.basePath;\nconst merged = m.mergePolicies([{ scope: \"global\", policy: {} }]);\nexport const _locked: readonly t.LockedOverride[] = merged.locked;\nexport const _admin: Promise<t.AdminListener> = m.secureAdmin({ port: 0, api });"
     },
     {
       "spelling": "@kingsleyweb/bun-security/lib/control",
@@ -358,7 +367,10 @@
         "DEFAULT_SECURITY_CSRF_HEADER",
         "DEFAULT_API_PAGE_LIMIT",
         "MAX_API_PAGE_LIMIT",
-        "MAX_GROUP_DEPTH"
+        "MAX_GROUP_DEPTH",
+        "AUDIT_INCOMPLETE_HEADER",
+        "BREAK_GLASS_HEADER",
+        "SECURITY_ALERT_KINDS"
       ],
       "types": [
         "ServiceDto",
@@ -391,7 +403,17 @@
         "SecurityApiPermission",
         "SecurityRole",
         "SecurityApiErrorCode",
-        "SecurityLiveEventName"
+        "SecurityLiveEventName",
+        "SecurityAlertKind",
+        "AuditActorDto",
+        "AuditCheckpointDto",
+        "AuditEntryDto",
+        "AuditProblemDto",
+        "AuditTargetDto",
+        "AuditVerifyDto",
+        "BreakGlassLoginInput",
+        "BreakGlassSessionDto",
+        "SecurityAlertDto"
       ],
       "snippet": "export const _perm: t.SecurityApiPermission = m.SECURITY_API_PERMISSIONS[0];\nexport const _roles: readonly t.SecurityRole[] = m.SECURITY_ROLES;\nexport type _scope = Equal<t.PolicyScopeId, string>;\nexport const _page: t.PageDto<t.ServiceDto> = { items: [] };"
     },
@@ -491,7 +513,9 @@
         "DEFAULT_STORE_PREFIX",
         "DEFAULT_POLICY_POLL_MS",
         "DEFAULT_POLICY_RECONCILE_MS",
-        "postgresStore"
+        "postgresStore",
+        "AUDIT_GENESIS_HASH",
+        "MAX_AUDIT_SCOPES"
       ],
       "types": [
         "SecurityStoreDriver",
@@ -516,7 +540,14 @@
         "StoredBundle",
         "PutBundleResult",
         "ChangeKind",
-        "PostgresStoreOptions"
+        "PostgresStoreOptions",
+        "AppendAuditResult",
+        "AuditCheckpoint",
+        "AuditHead",
+        "AuditInput",
+        "AuditQuery",
+        "AuditRecord",
+        "CounterValue"
       ],
       "snippet": "const store: t.SecurityStoreDriver = m.sqliteStore({ path: \"./security.sqlite\", syncSchema: { dryRun: true } });\nconst put: Promise<t.PutResult> = store.put(\"service\", \"checkout\", { owner: \"payments\" }, null);\nconst page: Promise<t.Page<t.StoredDoc>> = store.list(\"service\", { limit: 50, sort: \"updatedAt\", direction: \"desc\" });\nconst appended: Promise<t.AppendResult> = store.appendVersion(\"checkout\", { id: \"v2\", policy: {} }, \"v1\");\nconst feed = store.changesSince(0n, 100);\nexport type _feedNotAny = Expect<IsAny<Awaited<typeof feed>>>;\nconst _seq: bigint = 0n as t.Change[\"seq\"];\nconst source: t.PolicyFromStore = { store: m.policyFile(\"./security.json\", { debounceMs: 50 }), id: \"default\", lastKnownGood: \"./lkg.json\" };\nconst _isSource: boolean = m.isPolicyFromStore(source);\nconst _caps: boolean = m.memoryStore().capabilities.readOnly;\nexport const _all = [put, page, appended];\nconst pg: t.SecurityStoreDriver = m.postgresStore({ url: \"postgres://u:p@h:5432/db\", prefix: \"app_\", max: 4, pollIntervalMs: 500 });\nexport const _pgCaps: boolean = pg.capabilities.multiHost;"
     },
