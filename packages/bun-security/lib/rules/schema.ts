@@ -453,6 +453,7 @@ const RULE_KEYS = [
   "code",
   "duration",
   "crawlers",
+  "locked",
 ];
 
 /** Checks one rule. */
@@ -518,6 +519,12 @@ function checkRule(
     issues.add(
       [...path, "weight"],
       `must be a number from 0 to 100; got ${describe(weight)}`,
+    );
+  }
+  if (value.locked !== undefined && typeof value.locked !== "boolean") {
+    issues.add(
+      [...path, "locked"],
+      `must be true or false; got ${describe(value.locked)}`,
     );
   }
   if (

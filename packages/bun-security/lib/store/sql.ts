@@ -22,16 +22,20 @@ import type {
 } from "@kingsleyweb/bun-sql";
 import type {
   AppendResult,
+  BundleInput,
   Change,
+  ChangeKind,
   DocKind,
   ListQuery,
   Page,
   PolicyVersionInput,
   PolicyVersionRecord,
+  PutBundleResult,
   PutResult,
   SecurityStoreCapabilities,
   SecurityStoreDriver,
   StoreCodec,
+  StoredBundle,
   StoredDoc,
 } from "./types";
 import { ConfigError } from "@kingsleyweb/bun-common";
@@ -43,6 +47,8 @@ import {
   syncSqlSchema,
 } from "@kingsleyweb/bun-sql";
 import {
+  bundleEtag,
+  checkBundleInput,
   checkFeedRead,
   checkId,
   checkKind,
@@ -72,11 +78,14 @@ export function storeTables(prefix: string): {
   versions: string;
   /** The change feed. */
   changes: string;
+  /** Each service's signed bundle. */
+  bundles: string;
 } {
   return {
     docs: `${prefix}docs`,
     versions: `${prefix}versions`,
     changes: `${prefix}changes`,
+    bundles: `${prefix}bundles`,
   };
 }
 
@@ -85,7 +94,7 @@ export function storeSchema(
   prefix: string,
   dialect: SqlDialect,
 ): SchemaDefinition {
-  const { docs, versions, changes } = storeTables(prefix);
+  const { docs, versions, changes, bundles } = storeTables(prefix);
   const { idType, nameType, jsonType, timeType, serialType, longTextType } =
     dialect;
   return {
@@ -112,6 +121,16 @@ export function storeSchema(
           { name: "created_at", type: timeType, suffix: "NOT NULL" },
           { name: "created_by", type: nameType },
           { name: "message", type: longTextType },
+        ],
+      },
+      {
+        name: bundles,
+        primaryKey: ["service_id"],
+        columns: [
+          { name: "service_id", type: idType, suffix: "NOT NULL" },
+          { name: "version", type: "INTEGER", suffix: "NOT NULL" },
+          { name: "bundle", type: jsonType, suffix: "NOT NULL" },
+          { name: "updated_at", type: timeType, suffix: "NOT NULL" },
         ],
       },
       {
@@ -183,6 +202,18 @@ interface VersionRow {
 }
 
 /** A stored row of the changes table. */
+/** A row of the bundles table. */
+interface BundleRow {
+  /** The service. */
+  service_id: string;
+  /** The bundle's version. */
+  version: number | bigint;
+  /** The bundle, as the dialect returns JSON. */
+  bundle: unknown;
+  /** When it was stored. */
+  updated_at: number | bigint;
+}
+
 interface ChangeRow {
   seq: number | bigint;
   kind: string;
@@ -349,7 +380,7 @@ export function sqlSecurityStore(
   /** Appends a change row with `sql`; answers its sequence number. */
   const record = async (
     sql: SQL,
-    kind: DocKind,
+    kind: ChangeKind,
     id: string,
     revision: number,
     deleted: boolean,
@@ -609,6 +640,94 @@ export function sqlSecurityStore(
           : {}),
       });
     },
+    putBundle: async (
+      serviceId,
+      bundle: BundleInput,
+      expectedVersion,
+    ): Promise<PutBundleResult> => {
+      checkId(serviceId, "a service id");
+      const input = checkBundleInput(bundle, expectedVersion);
+      const sql = await connection();
+      return await dialect.transaction(sql, async (tx) => {
+        const p = new Params(dialect);
+        const rows = (await tx.unsafe(
+          `SELECT version FROM ${tables.bundles} WHERE service_id = ${p.bind(serviceId)}`,
+          p.values,
+        )) as { version: number | bigint }[];
+        const stored = rows[0] === undefined ? null : Number(rows[0].version);
+        if (stored !== expectedVersion || input.version <= (stored ?? 0)) {
+          return Object.freeze({ ok: false as const, version: stored });
+        }
+        const body = dialect.jsonIn(
+          codec.seal(input.bundle, {
+            field: "bundle",
+            kind: "bundle",
+            id: serviceId,
+          }),
+        );
+        const q = new Params(dialect);
+        if (stored === null) {
+          const result = await tx.unsafe(
+            dialect.insertIgnore(
+              tables.bundles,
+              ["service_id", "version", "bundle", "updated_at"],
+              [
+                q.bind(serviceId),
+                q.bind(input.version),
+                q.bind(body),
+                q.bind(now()),
+              ],
+            ),
+            q.values,
+          );
+          if ((await dialect.affectedRows(result, tx)) !== 1) {
+            return Object.freeze({ ok: false as const, version: null });
+          }
+        } else {
+          const result = await tx.unsafe(
+            `UPDATE ${tables.bundles}
+                SET version = ${q.bind(input.version)}, bundle = ${q.bind(body)},
+                    updated_at = ${q.bind(now())}
+              WHERE service_id = ${q.bind(serviceId)} AND version = ${q.bind(stored)}`,
+            q.values,
+          );
+          if ((await dialect.affectedRows(result, tx)) !== 1) {
+            return Object.freeze({ ok: false as const, version: stored });
+          }
+        }
+        return Object.freeze({
+          ok: true as const,
+          seq: await record(tx, "bundle", serviceId, input.version, false),
+        });
+      });
+    },
+    getBundle: async (serviceId, ifNoneMatch) => {
+      checkId(serviceId, "a service id");
+      const sql = await connection();
+      const p = new Params(dialect);
+      const rows = (await sql.unsafe(
+        `SELECT service_id, version, bundle, updated_at FROM ${tables.bundles}
+          WHERE service_id = ${p.bind(serviceId)}`,
+        p.values,
+      )) as BundleRow[];
+      const row = rows[0];
+      if (row === undefined) return undefined;
+      const version = Number(row.version);
+      const etag = bundleEtag(version);
+      if (ifNoneMatch !== undefined && ifNoneMatch === etag)
+        return "not-modified";
+      return Object.freeze({
+        serviceId: row.service_id,
+        version,
+        etag,
+        bundle: codec.open(dialect.jsonOut(row.bundle, null), {
+          field: "bundle",
+          kind: "bundle",
+          id: row.service_id,
+        }),
+        updatedAt: Number(row.updated_at),
+      } satisfies StoredBundle);
+    },
     changesSince: async (since, limit) => {
       checkFeedRead(since, limit);
       const sql = await connection();
@@ -628,7 +747,7 @@ export function sqlSecurityStore(
           rows.map((row): Change =>
             Object.freeze({
               seq: BigInt(row.seq),
-              kind: row.kind as DocKind,
+              kind: row.kind as ChangeKind,
               id: row.id,
               revision: Number(row.revision),
               deleted: Boolean(Number(row.deleted)),

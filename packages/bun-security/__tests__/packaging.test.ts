@@ -176,6 +176,18 @@ describe("package.json exports", () => {
     }
   });
 
+  it("gives the control plane ./control, its browser-safe contract ./control/contract, and bundles ./bundle (PR-CP2)", () => {
+    for (const area of ["control", "control/contract", "bundle"]) {
+      for (const key of [`./${area}`, `./lib/${area}`]) {
+        expect(manifest.exports[key]).toEqual({
+          "@kingsleyweb/source": `./lib/${area}/index.ts`,
+          types: `./dts/${area}/index.d.ts`,
+          default: `./lib/${area}/index.ts`,
+        });
+      }
+    }
+  });
+
   it("checks every literal subpath in the consumer check", () => {
     const spellings = new Set(
       checkConfig.entries?.map((entry) => entry.spelling),

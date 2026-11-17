@@ -17,7 +17,8 @@ from a policy compiled once, before your handler sees it.
 > checks), IP intelligence (`./intel`), verified crawlers, API keys,
 > the security store (`./store`: a policy from a file or a SQLite database,
 > followed as it changes), and attack simulators for testing a policy
-> (`./testing`). The control plane follows in later PRs.
+> (`./testing`), and the control plane's management API (`./control`;
+> the agent, audit log and analytics follow in later PRs).
 
 ```sh
 bun add @kingsleyweb/bun-security
@@ -1122,6 +1123,78 @@ const { changes, head } = await store.changesSince(0n, 100);
   the `bun:test` suite every store passes (and a third-party one must), with
   a two-process race for a `multiProcess` store, and `faultyStore(store,
   { fail, delayMs })` for testing what an engine does when its store fails.
+
+## The control plane's management API
+
+`./control` is the control plane (control-plane.md in the plan): services,
+groups and sibling-service identities, a policy per scope with drafts,
+published versions and inheritance, signed bundles per service, approvals
+and roles. It runs on an admin listener, never on a protected service's
+public one.
+
+```ts
+import { createSecurityApi, secureAdmin } from "@kingsleyweb/bun-security/control";
+import { sqliteStore } from "@kingsleyweb/bun-security/store";
+
+const api = createSecurityApi({
+  store: sqliteStore({ path: "./security.sqlite" }),
+  authenticate: (req) => sessions.operatorOf(req), // your SSO or login; null for nobody
+  owners: ["op_alice"],                            // the first owner, from configuration
+  stepUp: { verify: (req, op) => mfa.isFresh(req, op), challenge: () => "/mfa" },
+  signing: { keyId: "sk_2026_11", privateKey: process.env.BUNDLE_SIGNING_KEY! }, // Ed25519
+});
+const admin = await secureAdmin({ port: 9443, api }); // 127.0.0.1 unless told otherwise
+```
+
+- **Scopes and inheritance.** A policy is kept per scope: `global`,
+  `group:<id>` (groups nest up to 4 deep) and `service:<id>`. A service's
+  effective policy is global ← its groups, outermost first ← its own:
+  objects merge by key, limits, counted rules, request rules and list
+  entries by `id` (a lower scope overrides one, or turns it off with
+  `{ id, mode: "off" }`), lists union. An item marked `locked: true` cannot
+  be overridden below it. `GET /services/:id/effective` shows the result
+  with each field's origin.
+- **Drafts and publishing.** `PUT /policies/:scope/draft` saves a draft by
+  the revision read (a stale one is a `409` with the current draft); it must
+  compile over the scopes above it. `POST /policies/:scope/publish` names
+  the head it was based on (`409` if someone published meanwhile), appends a
+  version, and recompiles and signs the bundle of every service under the
+  scope. `rollback` publishes an older version's content as a new version.
+- **Dangerous changes** (a rule from dry run to enforced on production, an
+  action raised, an allow entry added or widened, the ladder changed) need
+  the scope's name typed in `confirm`, or with `approvals: "two-person"` a
+  second operator's approval (`202` with the approval; never its author;
+  24 hours). `emergency: true` publishes at once and opens a review.
+- **Step-up**: publishing, rollback, identities and role bindings need the
+  host's fresh second factor (`stepUp.verify`; a `401` with
+  `stepUp.challenge`'s URL otherwise). Without a hook, `approvals:
+  "two-person"` makes each of them an approval; `allowWithoutStepUp: true`
+  runs without either. With none of the three, `createSecurityApi` throws.
+- **Who may do what**: `authenticate` is required. The built-in roles
+  (`viewer`, `analyst`, `operator`, `admin`, `owner`) are bound per scope in
+  the store (`/role-bindings`), a binding on a group covering its services,
+  with `owners` bound from configuration; or pass `authorize(operator,
+  permission, { scope })` and use your own model. `GET /meta/permissions`
+  answers each permission for a scope, for the UI to hide what it may not
+  use.
+- **CSRF**: every mutation carries `x-bun-security-csrf` (any value) and
+  passes the Fetch Metadata and `Origin` check (`csrf: false` for an API no
+  browser uses).
+- **Bundles**: `bun-security.bundle/1`, the effective policy signed with
+  Ed25519 over its canonical JSON, a version per service that only grows, and
+  an expiry (`bundleTtl`, 7 days) past which an EP warns but keeps
+  enforcing. `GET /services/:id/bundle` answers it with an `ETag`.
+  `verifyBundle(bundle, { [keyId]: publicKey }, { service, after })` (in `.`
+  and `./bundle`) is what an EP checks: a tampered bundle, an unknown key,
+  another service's, an older one (a replay) and one not yet valid are
+  refused. `bundlePublicKey(privateKey)` gives the PEM to deploy to EPs.
+- **Lists** are cursor pages (`limit` up to 200, `cursor` the last page's
+  `next`, a cursor of another list a `400`); `GET /live` streams
+  `policy.published`, `bundle.compiled`, `approval.created` and
+  `approval.decided` (server-sent events) to operators who may read the
+  scope; `/openapi.json` and `/asyncapi.json` document it all.
+- `./control/contract` holds the wire types, permission and role names and
+  problem codes, browser-safe with no runtime import, for a UI or client.
 
 ## Deciding and explaining
 

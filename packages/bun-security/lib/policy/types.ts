@@ -281,6 +281,13 @@ export interface LimitRule {
   /** The limit's mode: in `dryRun` it counts but never answers `429`. Default `"enforce"`. */
   readonly mode?: SecurityMode;
   /**
+   * Set at a higher scope of the control plane (global or a group): lower
+   * scopes cannot override or disable it (control-plane.md §2.2). The
+   * engine reads it as data and enforces the rule as written. Default
+   * `false`.
+   */
+  readonly locked?: boolean;
+  /**
    * Whether it applies to a verified sibling service exempt from global
    * limits (layers.md L2.4), keyed on the end user it forwards (a call that
    * forwards none counts against nobody). Default `false`.
@@ -375,6 +382,13 @@ export interface CountedRule {
   readonly weight?: number;
   /** The rule's mode: in `dryRun` it counts and records the would-be action. Default `"enforce"`. */
   readonly mode?: SecurityMode;
+  /**
+   * Set at a higher scope of the control plane (global or a group): lower
+   * scopes cannot override or disable it (control-plane.md §2.2). The
+   * engine reads it as data and enforces the rule as written. Default
+   * `false`.
+   */
+  readonly locked?: boolean;
   /**
    * Whether it counts, and its trips refuse, the end user a verified sibling
    * service forwards even when the service is exempt from counted rules and

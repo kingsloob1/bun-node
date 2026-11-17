@@ -662,6 +662,7 @@ const LIMIT_KEYS = [
   "onStoreError",
   "profile",
   "apiKeyPlan",
+  "locked",
 ];
 
 /** Checks a rule's `profile`: a profile name (`securityProfile()`'s grammar). */
@@ -716,6 +717,7 @@ function checkLimit(
     );
   }
   optionalOneOf(issues, [...path, "mode"], value.mode, MODES);
+  optionalBoolean(issues, [...path, "locked"], value.locked);
   optionalBoolean(
     issues,
     [...path, "appliesToServices"],
@@ -762,6 +764,7 @@ const COUNTED_KEYS = [
   "state",
   "onStoreError",
   "profile",
+  "locked",
 ];
 
 /** Checks one counted rule. */
@@ -803,6 +806,7 @@ function checkCountedRule(
   }
   nonNegative(issues, [...path, "weight"], value.weight);
   optionalOneOf(issues, [...path, "mode"], value.mode, MODES);
+  optionalBoolean(issues, [...path, "locked"], value.locked);
   optionalBoolean(
     issues,
     [...path, "appliesToServices"],

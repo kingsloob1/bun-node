@@ -207,6 +207,13 @@ export function policyFile(
     put: async () => refuseReadOnly(name, "put()"),
     delete: async () => refuseReadOnly(name, "delete()"),
     appendVersion: async () => refuseReadOnly(name, "appendVersion()"),
+    putBundle: async () => refuseReadOnly(name, "putBundle()"),
+    // A policy file holds one policy and no bundle: an EP reading it
+    // compiles the policy itself.
+    getBundle: async (serviceId, ifNoneMatch) => {
+      await store.connect();
+      return await inner.getBundle(serviceId, ifNoneMatch);
+    },
   };
   return Object.freeze(store);
 }
