@@ -1682,6 +1682,16 @@ Why: a distinct count (credential stuffing, spraying, the API-key many-addresses
 
 The fallbacks were visible only in a log line at most every 10 s. Now each is counted (local or not counted alike; `explain()`'s peeks are not), and the `store.distinct-fallback` warning is raised at the first one and again only after a whole minute with none, as `state.evictions` is. Its `share` is the minute's fallbacks over the distinct counts tried in the store that minute, at the moment it is raised; `minutes` and `since` are the run's. The warning in force is not kept in `status()` (the count is): say if it should be, as `state.warning` is for evictions.
 
+### 17.29 Added with the keyed API-key entry ids (#836, approved by the user, 2026-11-17)
+
+No new public name. One behaviour: an API-key list entry's default id, which is the `rule` of its hits and appears in `explain()`'s steps and in `onDecision`, is now `apiKey:` followed by the key id's HMAC under the engine's `secret`. That is the same key as `Decision.subject.apiKey`, so the key id is never reported, as §17.17 requires. Before, it was `apiKey:<the key id>`.
+- The compiler has no secret, so each engine keys the id when it matches the entry. One compiled policy in two engines with different secrets reports two ids.
+- An `id` the policy's author writes is reported as written.
+- A duplicate API-key entry is refused without echoing the id.
+- Matching is unchanged: lists, bans by key, limits and counted rules key on the subject, not on entry ids.
+
+Open, for a decision: user ids are not keyed anywhere. `Decision.subject.user`, user bans (`ban:user:u_1`, `unban("user:u_1")`, the ban log) and per-user limits all keep the app's user id in clear, by the original design: §17.17 keys API keys and S7 keys attempted usernames, but nothing keys user ids. Keying only a user entry's id would change nothing while `subject.user` is in clear. Keying user ids throughout would change bans already stored, the `unban()` handle and per-user limit keys, so it is a design change of its own.
+
 ## 18. Findings outside this plan
 
 Found while surveying; each is reported, none fixed here.

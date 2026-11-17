@@ -520,7 +520,10 @@ function checkEntry(
     if (first !== undefined) {
       issues.add(
         [...path, "id"],
-        `duplicates the id of lists[${first}]: ${JSON.stringify(id)}`,
+        typeof value.id !== "string" && value.apiKey !== undefined
+          ? // The default id is the key id: not echoed (layers.md L12).
+            `duplicates the apiKey of lists[${first}]`
+          : `duplicates the id of lists[${first}]: ${JSON.stringify(id)}`,
       );
     } else {
       ids.set(id, index);

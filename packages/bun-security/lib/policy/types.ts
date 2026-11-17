@@ -53,7 +53,11 @@ export type PolicyScope = "global" | "group" | "service";
 export interface ListEntry {
   /**
    * A stable id, unique in the policy, for merges, dry-run reports and
-   * `explain()`. Defaults to the subject (`ip:203.0.113.0/24`, `user:u_1`).
+   * `explain()`, and the `rule` of its hits. Defaults to the subject
+   * (`ip:203.0.113.0/24`, `user:u_1`), except an API key's: its default is
+   * `apiKey:` and the key id's HMAC under `createSecurity`'s `secret`, the
+   * same key as `Decision.subject.apiKey`, so the key id is never reported.
+   * An id written here is reported as written: never put a key id in it.
    */
   readonly id?: string;
   /** An IPv4 or IPv6 address or CIDR range; IPv4-mapped forms are read as IPv4. */

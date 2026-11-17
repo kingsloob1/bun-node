@@ -141,10 +141,16 @@ export function evaluateLists(
   trace?: ExplainStep[],
   intel?: IntelLookup,
   geoExempt = false,
+  relabel: (entry: CompiledEntry) => CompiledEntry = (entry) => entry,
 ): ListOutcome {
   const byAddress = address ? policy.ips.match(address) : NONE;
   const byUser = user === undefined ? undefined : policy.users.get(user);
-  const byKey = apiKey === undefined ? undefined : policy.apiKeys.get(apiKey);
+  // An API-key entry's default id names the key: the engine's `relabel`
+  // keys it before any hit, trace or explanation reports it.
+  const byKey =
+    apiKey === undefined
+      ? undefined
+      : policy.apiKeys.get(apiKey)?.map((entry) => relabel(entry));
   // Country and ASN entries (layers.md L5): the address is looked up only
   // when the policy has some.
   let byCountry: readonly CompiledEntry[] | undefined;

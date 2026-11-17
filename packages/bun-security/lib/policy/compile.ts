@@ -270,8 +270,13 @@ export interface CompiledConcurrency {
 
 /** A list entry as the engine reads it. */
 export interface CompiledEntry {
-  /** The entry's id. */
+  /**
+   * The entry's id. An API-key entry's default id is replaced, per engine,
+   * by `apiKey:<the key id's HMAC>` before anything reports it.
+   */
   readonly id: string;
+  /** Whether the policy's author wrote the id (it is then reported as written). */
+  readonly named: boolean;
   /** What kind of subject it matches; `internal` for the built-in list. */
   readonly kind: "ip" | "user" | "apiKey" | "country" | "asn" | "internal";
   /** The subject, canonical (a range as `base/bits`). */
@@ -653,6 +658,7 @@ export function compilePolicy(
       cidr,
       Object.freeze({
         id: `internal:${cidr.text}`,
+        named: true,
         kind: "internal",
         value: cidr.text,
         action: "allow",
@@ -674,6 +680,7 @@ export function compilePolicy(
     const cidr = entry.ip === undefined ? null : parseCidr(entry.ip);
     const compiled: CompiledEntry = Object.freeze({
       id: entry.id ?? defaultEntryId(entry, cidr ?? undefined),
+      named: entry.id !== undefined,
       kind:
         entry.ip !== undefined
           ? "ip"
