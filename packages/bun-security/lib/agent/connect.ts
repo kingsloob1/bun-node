@@ -788,10 +788,22 @@ export function connectAgent(options: ConnectAgentOptions): SecurityAgent {
     }
   };
 
+  /** Work in flight (a pull, a save, a heartbeat): `close()` waits for it. */
+  const inflight = new Set<Promise<unknown>>();
+  /** Tracks `work` until it settles. */
+  const track = <T>(work: Promise<T>): Promise<T> => {
+    inflight.add(work);
+    void work.then(
+      () => inflight.delete(work),
+      () => inflight.delete(work),
+    );
+    return work;
+  };
+
   /** Runs `task`, logging a failure. */
   const guard = async (what: string, task: () => Promise<void>) => {
     try {
-      await task();
+      await track(task());
     } catch (error) {
       lastError = `${what}: ${error instanceof Error ? error.message : String(error)}`;
       if (error instanceof AnswerRefused) {
@@ -990,16 +1002,28 @@ export function connectAgent(options: ConnectAgentOptions): SecurityAgent {
       nudged,
     }),
     sync: async () => {
-      await ready;
-      await sync();
+      await track(
+        (async () => {
+          await ready;
+          await sync();
+        })(),
+      );
     },
     reconcile: async () => {
-      await ready;
-      await guard("reconciling bans", () => pullBans(true));
+      await track(
+        (async () => {
+          await ready;
+          await guard("reconciling bans", () => pullBans(true));
+        })(),
+      );
     },
     heartbeat: async () => {
-      await ready;
-      await guard("a heartbeat", heartbeat);
+      await track(
+        (async () => {
+          await ready;
+          await guard("a heartbeat", heartbeat);
+        })(),
+      );
     },
     events: batcher,
     close: async () => {
@@ -1007,6 +1031,9 @@ export function connectAgent(options: ConnectAgentOptions): SecurityAgent {
       for (const timer of timers) clearTimeout(timer);
       nudgeAbort?.abort();
       batcher?.close();
+      // What was started finishes (and is saved) before close() resolves: the last known good
+      // then holds what the agent enforced (found by T1's restart case).
+      while (inflight.size > 0) await Promise.allSettled([...inflight]);
     },
   });
 }

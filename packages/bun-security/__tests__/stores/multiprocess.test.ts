@@ -23,6 +23,10 @@ import process from "node:process";
 import { RedisClient, SQL } from "bun";
 import type { Socket, TCPSocketListener } from "bun";
 import type { SecurityPolicy } from "../../lib/index";
+import {
+  credentialStuffing,
+  distributedGuessing,
+} from "../../lib/testing/index";
 import type { CacheStoreOptions } from "../../lib/stores/index";
 
 const FIXTURE = join(import.meta.dir, "..", "fixtures", "ep-process.ts");
@@ -343,6 +347,76 @@ async function loginCases(
   expect(apart.spray?.action).toBe("allow");
 }
 
+/**
+ * T-L11-1 driven by T2's simulators (PR-T1): `credentialStuffing` from one
+ * address and `distributedGuessing` on one account, their requests sent
+ * round-robin to three processes as failed sign-ins. Shared, the stuffer is
+ * banned on every process and the guessed account's next sign-in is
+ * stepped up; on three stores apart (the negative control), nothing is
+ * found, as no process alone sees enough.
+ */
+async function attackCase(
+  config: (policy: SecurityPolicy, prefix: string) => Record<string, unknown>,
+  prefix: string,
+): Promise<void> {
+  const stuffing = credentialStuffing({ count: 30, client: "203.0.113.91" });
+  const guessing = distributedGuessing({
+    username: "victim@example.org",
+    count: 12,
+    base: "198.51",
+  });
+  /** The username a simulated sign-in names. */
+  const userOf = (body: string | undefined) =>
+    (JSON.parse(body ?? "{}") as { username?: string }).username ?? "";
+  const run = async (prefixes: readonly string[]) => {
+    const list = await Promise.all(
+      prefixes.map((own) =>
+        point({ ...config(LOGIN_POLICY, own), secret: SECRET }),
+      ),
+    );
+    try {
+      let i = 0;
+      for (const request of [...stuffing.requests, ...guessing.requests]) {
+        await list[i++ % 3]?.ask({
+          op: "login",
+          username: userOf(request.body),
+          client: request.client,
+          outcome: "failure",
+        });
+      }
+      let banned: boolean[] = [];
+      const deadline = performance.now() + 5_000;
+      while (performance.now() < deadline) {
+        for (const p of list) await p.ask({ op: "flush" });
+        banned = await Promise.all(
+          list.map(async (p) =>
+            ((await p.ask({ op: "bans" })).actions as string[]).includes(
+              "ip:203.0.113.91:ban",
+            ),
+          ),
+        );
+        if (banned.every(Boolean)) break;
+        await Bun.sleep(50);
+      }
+      const next = await list[1]?.ask({
+        op: "login",
+        username: "victim@example.org",
+        client: "192.0.2.250",
+        outcome: "none",
+      });
+      return { banned, next };
+    } finally {
+      for (const p of list) await p.close();
+    }
+  };
+  const shared = await run([prefix, prefix, prefix]);
+  expect(shared.banned).toEqual([true, true, true]);
+  expect(shared.next?.tags).toEqual(["step-up"]);
+  const apart = await run([`${prefix}1`, `${prefix}2`, `${prefix}3`]);
+  expect(apart.banned).toEqual([false, false, false]);
+  expect(apart.next?.tags).toEqual([]);
+}
+
 /** The failure-rate cases' policy: the rule enforced, the other login rules off. */
 const FAILURE_RATE_POLICY: SecurityPolicy = {
   service: "auth",
@@ -438,6 +512,13 @@ describe("multi-process, one SQLite file (polled)", () => {
     await loginCases(
       (policy, prefix) => ({ ...config(policy), prefix }),
       `${PREFIX}_login_`,
+    );
+  }, 60_000);
+
+  it("T-L11-1 driven by T2's simulators: stuffing and distributed guessing across processes", async () => {
+    await attackCase(
+      (policy, prefix) => ({ ...config(policy), prefix }),
+      `${PREFIX}_attack_`,
     );
   }, 60_000);
 
@@ -694,24 +775,154 @@ if (POSTGRES_URL === undefined) {
   const postgresUrl = POSTGRES_URL;
   const prefix = `${PREFIX}_pg_`;
   describe("multi-process, Postgres (its bus)", () => {
+    /** Every table prefix this block used, dropped after it. */
+    const used = new Set<string>([prefix]);
     afterAll(async () => {
       const sql = new SQL(postgresUrl);
       try {
-        for (const table of ["entries", "tags", "stamps", "locks", "bus"]) {
-          await sql.unsafe(`DROP TABLE IF EXISTS ${prefix}${table}`);
+        for (const own of used) {
+          for (const table of ["entries", "tags", "stamps", "locks", "bus"]) {
+            await sql.unsafe(`DROP TABLE IF EXISTS ${own}${table}`);
+          }
         }
       } finally {
         await sql.close();
       }
     });
 
-    const config = (policy: SecurityPolicy) => ({
-      backend: "postgres",
-      url: postgresUrl,
-      prefix,
-      policy,
-      store: storeOptions,
+    const config = (
+      policy: SecurityPolicy,
+      url = postgresUrl,
+      own = prefix,
+    ) => {
+      used.add(own);
+      return {
+        backend: "postgres",
+        url,
+        prefix: own,
+        policy,
+        store: storeOptions,
+      };
+    };
+
+    it("is reachable", async () => {
+      const sql = new SQL({ url: postgresUrl, connectionTimeout: 5 });
+      try {
+        expect(
+          Number(
+            ((await sql.unsafe("SELECT 1 AS one")) as { one: number }[])[0]
+              ?.one,
+          ),
+        ).toBe(1);
+      } finally {
+        await sql.close();
+      }
     });
+
+    it("T-L11-1: credential stuffing and password spraying across processes on one store", async () => {
+      await loginCases(
+        (policy, own) => config(policy, postgresUrl, own),
+        `${prefix}l`,
+      );
+      for (const n of ["", "1", "2", "3"]) used.add(`${prefix}l${n}`);
+    }, 60_000);
+
+    it("T-L11-1 driven by T2's simulators: stuffing and distributed guessing across processes", async () => {
+      await attackCase(
+        (policy, own) => config(policy, postgresUrl, own),
+        `${prefix}k`,
+      );
+      for (const n of ["", "1", "2", "3"]) used.add(`${prefix}k${n}`);
+    }, 60_000);
+
+    it("a shared limit is exact across the processes, a hybrid one within its bound", async () => {
+      const list = await points(
+        3,
+        config(
+          {
+            limits: [
+              {
+                id: "hybrid",
+                limit: 30,
+                window: "1m",
+                state: "hybrid",
+                routes: ["/h"],
+              },
+              { id: "shared", limit: 30, window: "1m", routes: ["/s"] },
+            ],
+          },
+          postgresUrl,
+          `${prefix}m`,
+        ),
+      );
+      try {
+        const shared = await drive(list, 45, "198.51.100.81", "/s");
+        expect(shared.filter((a) => a === "allow")).toHaveLength(30);
+        // The hybrid bound (topologies.md §3.2): overshoot at most about rate × syncMs × nodes,
+        // the rate measured as the processes answered (syncInterval 100 ms here, 3 processes).
+        const started = performance.now();
+        const hybrid = await drive(list, 90, "198.51.100.82", "/h");
+        const seconds = (performance.now() - started) / 1000;
+        const allowed = hybrid.filter((a) => a === "allow").length;
+        const bound = 30 + Math.ceil((90 / seconds) * 0.1 * 3);
+        expect(allowed).toBeGreaterThanOrEqual(30);
+        expect(allowed).toBeLessThanOrEqual(bound);
+        // Negative control: the shared limit, on the same traffic, has no overshoot at all.
+        expect(shared.filter((a) => a === "allow").length).toBeLessThan(
+          allowed + 1,
+        );
+      } finally {
+        for (const p of list) await p.close();
+      }
+    }, 60_000);
+
+    it("when the store stops, each process counts at its local share, and returns to the shared count", async () => {
+      const target = new URL(postgresUrl);
+      const forward = proxy(target.hostname, Number(target.port || 5432));
+      const port = await forward.start();
+      const proxied = new URL(postgresUrl);
+      proxied.hostname = "127.0.0.1";
+      proxied.port = String(port);
+      const list = await points(
+        3,
+        config(
+          {
+            state: { nodes: 3 },
+            limits: [{ id: "per-ip", limit: 9, window: "1m" }],
+          },
+          proxied.toString(),
+          `${prefix}d`,
+        ),
+      );
+      try {
+        const shared = await drive(list, 12, "198.51.100.83");
+        expect(shared.filter((a) => a === "allow")).toHaveLength(9);
+        forward.stop();
+        // Down: each process at 9 ÷ 3 = 3.
+        const down = await drive(list, 15, "198.51.100.84");
+        expect(down.filter((a) => a === "allow")).toHaveLength(9);
+        const healthy = async () =>
+          (await Promise.all(list.map((p) => p.ask({ op: "status" })))).map(
+            (status) => (status.store as { healthy: boolean }).healthy,
+          );
+        expect(await healthy()).toEqual([false, false, false]);
+        await forward.start();
+        // Back once each circuit's probe succeeds: a condition, with a deadline.
+        const deadline = performance.now() + 15_000;
+        for (;;) {
+          await drive(list, 3, "198.51.100.85");
+          if ((await healthy()).every(Boolean)) break;
+          if (performance.now() > deadline)
+            throw new Error("the store did not come back");
+          await Bun.sleep(100);
+        }
+        const again = await drive(list, 12, "198.51.100.86");
+        expect(again.filter((a) => a === "allow")).toHaveLength(9);
+      } finally {
+        for (const p of list) await p.close();
+        forward.stop();
+      }
+    }, 60_000);
 
     it("a ban reaches the other processes, and state.scope keeps per-service bans in their service", async () => {
       await scopeCase(config, 1_000);
