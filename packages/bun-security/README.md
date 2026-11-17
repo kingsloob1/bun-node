@@ -27,6 +27,14 @@ Bun 1.4.2 or later. Its runtime dependencies are `@kingsleyweb/bun-common`
 and `@kingsleyweb/bun-sql` (the store's SQL layer); `./stores` needs
 `@kingsleyweb/bun-cache` (an optional peer).
 
+Runnable examples of everything below, each asserting what it shows, are in
+[`examples/bun-security`](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-security):
+`Bun.serve`, bun-common and NestJS integrations, client identity, lists and
+bans, limits, presets, request rules, deception, sign-in protection,
+challenges, IP intelligence, verified crawlers, API keys, shared stores,
+policies from a file or a store, dry run and `explain()`, and testing a
+policy with simulated attacks.
+
 ## A plain `Bun.serve`
 
 ```ts

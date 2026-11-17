@@ -64,6 +64,7 @@ export const PROJECTS = [
   "examples/bun-nest/tsconfig.json",
   "examples/bun-ui/tsconfig.json",
   "examples/bun-cache/tsconfig.json",
+  "examples/bun-security/tsconfig.json",
   "packages/bun-ui/__tests__/jobs/app/pkg/tsconfig.json",
   // The repo's view of `templates/compute-provider/`, whose own config is a
   // plugin author's (no source condition). Needs `bun install` there first.

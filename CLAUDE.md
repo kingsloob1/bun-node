@@ -131,7 +131,7 @@ bun run test               # type-check the tests, then run them in parallel —
 **Lint and format, since PR E of [bun-lint-fmt](docs/plans/bun-lint-fmt/README.md)
 §7.** The gate is `bun run lint` (`bun lint`; in a `lint` script it is the
 linter) and `bun run format:check` (`bun fmt --check`), two steps (Q6), in each
-of the 18 directories with a `lint` script (the nine packages, the five
+of the 19 directories with a `lint` script (the nine packages, the six
 `examples/*`, `playground/`, `benchmarks/`, `templates/compute-provider/` and
 `tools/vscode-bun-lint/`), `bun run lint:scripts` and
 `bun run format:check:scripts` from the root for `scripts/`, and
