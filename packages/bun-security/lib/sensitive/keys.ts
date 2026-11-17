@@ -72,6 +72,15 @@ export class Keyring {
     return this.#mac("apiKey", id);
   }
 
+  /**
+   * The key of a user id from `identify()`: its HMAC, so the id is never
+   * kept, shared or reported in clear (limits, counted rules, bans, list
+   * hits, `Decision.subject.user`), as API key ids are.
+   */
+  user(id: string): string {
+    return this.#mac("user", id);
+  }
+
   /** The key of a destination (an email address, a phone number), normalised. */
   destination(destination: string): string {
     return this.#mac("destination", normaliseDestination(destination));

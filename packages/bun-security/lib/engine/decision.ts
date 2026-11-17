@@ -47,7 +47,10 @@ export interface SubjectKeys {
   readonly address?: string;
   /** The address key: IPv4 as itself, IPv6 as its `/64` (the policy's prefix). */
   readonly ip?: string;
-  /** The user id, from `identify()`. */
+  /**
+   * The user id from `identify()`, as its HMAC under `createSecurity`'s
+   * `secret` (32 hex characters): the id itself is never kept or reported.
+   */
   readonly user?: string;
   /** The session id, from `identify()`. */
   readonly session?: string;

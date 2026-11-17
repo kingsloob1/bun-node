@@ -1680,21 +1680,25 @@ export class ControlPlane {
           `"${value}" is not an address or a CIDR range narrower than a whole family`,
         );
       }
-    } else if (only === "apiKey") {
+    } else {
       // Keyed as the engines key it: the id itself is never stored or sent.
-      if (this.options.banKeys === undefined) {
+      const keys = this.options.banKeys;
+      if (keys === undefined || !this.options.banKinds[only]) {
         throw new ApiProblem(
           400,
           "invalid_request",
-          "this control plane takes no API-key bans (bans.apiKeys: false)",
+          only === "apiKey"
+            ? "this control plane takes no API-key bans (bans.apiKeys: false)"
+            : "this control plane takes no user bans (bans.users: false)",
         );
       }
       subject = {
-        type: "apiKey",
-        value: this.options.banKeys.apiKey(boundKey(value)),
+        type: only,
+        value:
+          only === "apiKey"
+            ? keys.apiKey(boundKey(value))
+            : keys.user(boundKey(value)),
       };
-    } else {
-      subject = { type: only, value };
     }
     let expiresAt: number | null = null;
     if (input.duration !== null) {
@@ -1742,7 +1746,7 @@ export class ControlPlane {
     // What the operator typed is shown in this answer only, never stored.
     return {
       ...this.banDto(ban),
-      ...(only === "apiKey" ? { entered: { apiKey: value } } : {}),
+      ...(only === "ip" ? {} : { entered: { [only]: value } }),
     };
   }
 

@@ -112,7 +112,7 @@ describe("bans across engines", () => {
     const f = make(1, {});
     const [a] = f.members;
     a?.security.ban({ ip: "203.0.113.11" });
-    a?.security.ban({ user: "u_1", duration: null });
+    const user = a?.security.ban({ user: "u_1", duration: null });
     await a?.security.flush();
     const late = f.add();
     await late.security.ready();
@@ -121,7 +121,9 @@ describe("bans across engines", () => {
         .bans()
         .map((ban) => ban.id)
         .sort(),
-    ).toEqual(["ip:203.0.113.11", "user:u_1"]);
+    ).toEqual(["ip:203.0.113.11", user?.id].sort());
+    // Keyed by the fleet's secret: never the id.
+    expect(user?.id).toMatch(/^user:[0-9a-f]{32}$/);
   });
 
   it("a counted rule removed from a service's policy stops its bans in that service, not in another", async () => {

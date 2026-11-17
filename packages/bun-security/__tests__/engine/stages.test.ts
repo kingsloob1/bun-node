@@ -207,9 +207,10 @@ describe("evaluate(facts, { stage })", () => {
     });
     expect(decide(security, mallory, { stage: "early" }).action).toBe("allow");
     const refused = decide(security, mallory, { stage: "route" });
+    // The entry's default id is keyed, as the subject is (#842).
     expect([refused.action, refused.hits.map((hit) => hit.rule)]).toEqual([
       "block",
-      ["user:mallory"],
+      [`user:${refused.subject.user}`],
     ]);
     // An address allow is recorded once, early; the route stage keeps its effect.
     const allowed = facts({ identity: { user: "alice" } });

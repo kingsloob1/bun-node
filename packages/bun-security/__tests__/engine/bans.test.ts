@@ -336,7 +336,7 @@ describe("who bans refuse", () => {
     };
     const security = engine({ countedRules: [rule] });
     signalNow(security, facts(), "pattern.hit");
-    security.ban({ user: "kept" });
+    const kept = security.ban({ user: "kept" });
     expect(security.bans()).toHaveLength(2);
     security.load({ ladder: false, countedRules: [rule] });
     expect(security.bans()).toHaveLength(2);
@@ -344,7 +344,7 @@ describe("who bans refuse", () => {
       ladder: false,
       countedRules: [{ ...rule, mode: "dryRun" }],
     });
-    expect(security.bans().map((ban) => ban.id)).toEqual(["user:kept"]);
+    expect(security.bans().map((ban) => ban.id)).toEqual([kept.id]);
   });
 });
 

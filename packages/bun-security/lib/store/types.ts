@@ -278,9 +278,9 @@ export interface AuditQuery {
 
 /** What a ban refuses, as the control plane keeps it: the subject an EP's `ban()` takes. */
 export interface StoredBanSubject {
-  /** `ip` (an address), `cidr` (a range), `user` or `apiKey` (as `identify()` returns them). */
+  /** `ip` (an address), `cidr` (a range), `user` or `apiKey`. */
   readonly type: "ip" | "cidr" | "user" | "apiKey";
-  /** The address, range or user id (1 to 512 characters), or an API key's HMAC under the fleet's secret (32 hex characters; never the id). */
+  /** The address or range, or a user's or an API key's HMAC under the fleet's secret (32 hex characters; never the id). */
   readonly value: string;
 }
 

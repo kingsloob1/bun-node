@@ -1842,6 +1842,28 @@ No new public name. One behaviour: an API-key list entry's default id, which is 
 
 Open, for a decision: user ids are not keyed anywhere. `Decision.subject.user`, user bans (`ban:user:u_1`, `unban("user:u_1")`, the ban log) and per-user limits all keep the app's user id in clear, by the original design: §17.17 keys API keys and S7 keys attempted usernames, but nothing keys user ids. Keying only a user entry's id would change nothing while `subject.user` is in clear. Keying user ids throughout would change bans already stored, the `unban()` handle and per-user limit keys, so it is a design change of its own.
 
+### 17.31 Added with keyed user ids (#842, approved by the user, 2026-11-17)
+
+| Names | Where |
+|---|---|
+| `BanInput.userHash` (a user's key, 32 hex characters, banned as it is; mirrors `apiKeyHash`) | `.` |
+| `SecurityApiOptions.bans.users` (whether user bans are taken; default `true`; `bans.secret` is required unless `apiKeys: false` and `users: false`) | `./control` |
+| `BanDto.entered` widened to `{ apiKey?, user? }` (what the operator typed, in `POST /bans`'s answer only) | `./control` |
+| `AgentEngine.ban`'s input: `userHash` in place of `user` (the agent applies the control plane's keyed subject as it is) | `./agent` |
+| removed: `AnalyticsRecorderOptions.userKey` and `EventRingOptions.userKey` (§17.26) | `./analytics` |
+
+What changes:
+- **One rule for every identifier.** `identify()`'s `user` is keyed once per request, as `HMAC(secret, "user|" + id)` with the engine's keyring (`Keyring.user`, internal), beside `"apiKey|"` and `"username|"`. `Decision.subject.user` is that key, and so is everything the engine keeps or reports about a user: per-user limit and counted-rule keys, bans and their ids (`user:<key>`), the ban log, a user list entry's default id (`user:<key>`, as #838 did for API keys), `explain()`, `onDecision` and logs.
+- **The API still takes the id the app knows.** `ban({ user })` and `lists[].user` key it. `unban("user:<id>")` tries both the id as written and its key, so it lifts by the id the app knows or by the `Ban.id` from `bans()`. This also covers a 32-hex user id and a ban written before ids were keyed. An explicit entry `id` is reported as written.
+- **The control plane** keys a user ban's subject with `bans.secret`, shows what the operator typed only in the create answer (`entered.user`), and its store refuses a raw user subject (not 32 hex), as for API keys. The agent bans with `userHash`.
+- **Analytics: `userKey` removed** (recommended, and built). The engine's subject is already keyed, so a recorder or ring keeps `subject.user` as it is, and the `user` subject kind needs nothing of the app. Keeping `userKey` would have meant hashing a hash, and an app relying on `userKey(rawId)` to join with its own records could not get the raw id back anyway. bun-security is unpublished, so the removal breaks no release.
+- **A shared store without a secret** already refuses to start, which covers user keys too. The message now names user ids and API key ids.
+
+Migration (no release has shipped, so this matters only for data written by develop builds):
+- A user ban already in a shared store or a control-plane database under a raw id keeps its raw subject and never matches again. `unban("user:<id>")` lifts it, or it expires.
+- A control-plane store refuses to write a raw user subject, but rows already there are read as they are.
+- Per-user limit counters restart under the new keys.
+
 ## 18. Findings outside this plan
 
 Found while surveying; each is reported, none fixed here.

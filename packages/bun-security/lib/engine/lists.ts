@@ -144,9 +144,12 @@ export function evaluateLists(
   relabel: (entry: CompiledEntry) => CompiledEntry = (entry) => entry,
 ): ListOutcome {
   const byAddress = address ? policy.ips.match(address) : NONE;
-  const byUser = user === undefined ? undefined : policy.users.get(user);
-  // An API-key entry's default id names the key: the engine's `relabel`
-  // keys it before any hit, trace or explanation reports it.
+  const byUser =
+    user === undefined
+      ? undefined
+      : policy.users.get(user)?.map((entry) => relabel(entry));
+  // A user or API-key entry's default id names its subject: the engine's
+  // `relabel` keys it before any hit, trace or explanation reports it.
   const byKey =
     apiKey === undefined
       ? undefined
