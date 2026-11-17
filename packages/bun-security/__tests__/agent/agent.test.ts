@@ -7,7 +7,7 @@
  * heartbeats; the nudge. Each refusal has its negative control.
  */
 import { generateKeyPairSync, sign as edSign } from "node:crypto";
-import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { afterAll, describe, expect, it } from "bun:test";
 import {
   AGENT_SIGNATURE_HEADER,
@@ -561,5 +561,26 @@ describe("artefacts", () => {
     expect(alerts.map((alert) => [alert.kind, alert.message])).toEqual([
       ["artefact.mismatch", expect.any(String)],
     ]);
+  });
+});
+
+describe("closing", () => {
+  it("waits for a pull in flight, so the last known good holds what the agent enforced (found by T1)", async () => {
+    const cp = await controlPlane();
+    const { agent, stateFile } = agentOn(cp);
+    await agent.ready;
+    const pulling = agent.sync();
+    await agent.close();
+    const enforced = agent.status().bundle?.version ?? 0;
+    const saved = existsSync(stateFile)
+      ? ((
+          JSON.parse(readFileSync(stateFile, "utf8")) as {
+            bundle: { version: number } | null;
+          }
+        ).bundle?.version ?? 0)
+      : 0;
+    expect(saved).toBe(enforced);
+    expect(saved).toBeGreaterThan(0);
+    await pulling;
   });
 });
