@@ -10,15 +10,25 @@
 import {
   appendFile,
   mkdtemp,
+  open,
   readFile,
   readdir,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  describe,
+  expect,
+  jest,
+  spyOn,
+  test,
+} from "bun:test";
 import type { StoredEntry } from "../../lib/index";
 import { fileDriver } from "../../lib/index";
 import { runCacheDriverConformance } from "../../lib/testing/index";
@@ -73,6 +83,14 @@ await runCacheDriverConformance(
     },
   },
 );
+
+/**
+ * Lets the disk work in flight finish without a timer (fake timers stop
+ * `Bun.sleep`): real reads queue behind the bus's polls.
+ */
+async function settleDisk(path: string): Promise<void> {
+  for (let i = 0; i < 200; i++) await stat(path);
+}
 
 describe("fileDriver specifics", () => {
   const entry = (key: string, size: number): StoredEntry => ({
@@ -179,6 +197,113 @@ describe("fileDriver specifics", () => {
     }
     expect(received).toEqual(["clear:app"]);
     await unsubscribe();
+    await a.close();
+    await b.close();
+  });
+
+  test("the bus delivers each message once when ticks come faster than a poll (#833)", async () => {
+    const root = join(dir, "bus-once");
+    const a = fileDriver({ root, busPollInterval: 10 });
+    const b = fileDriver({ root, busPollInterval: 10 });
+    await a.publish!({ type: "clear", namespace: "earlier", at: Date.now() });
+    const received: string[] = [];
+    // Fake timers: five ticks fire at once, each while the polls before it
+    // are still waiting on the disk. Overlapping polls read from the same
+    // offset and each delivered the message.
+    jest.useFakeTimers();
+    try {
+      const unsubscribe = await b.subscribe!(
+        (message) => received.push(message.namespace),
+        () => {},
+      );
+      await a.publish!({ type: "clear", namespace: "app", at: Date.now() });
+      for (let tick = 0; tick < 5; tick++) jest.advanceTimersByTime(10);
+      await settleDisk(root);
+      expect(received).toEqual(["app"]);
+      await unsubscribe();
+    } finally {
+      jest.useRealTimers();
+    }
+    await a.close();
+    await b.close();
+  });
+
+  test("the bus delivers nothing once unsubscribe() resolves, not even from a poll in flight", async () => {
+    const root = join(dir, "bus-stop");
+    const a = fileDriver({ root, busPollInterval: 10 });
+    const b = fileDriver({ root, busPollInterval: 10 });
+    await a.publish!({ type: "clear", namespace: "earlier", at: Date.now() });
+    const received: string[] = [];
+    jest.useFakeTimers();
+    try {
+      const unsubscribe = await b.subscribe!(
+        (message) => received.push(message.namespace),
+        () => {},
+      );
+      await a.publish!({ type: "clear", namespace: "app", at: Date.now() });
+      // A poll starts and waits on the disk; unsubscribe while it does.
+      jest.advanceTimersByTime(10);
+      await unsubscribe();
+      await settleDisk(root);
+      expect(received).toEqual([]);
+    } finally {
+      jest.useRealTimers();
+    }
+    await a.close();
+    await b.close();
+  });
+
+  test("a short read of the bus log is read on from where it stopped: no line lost or repeated", async () => {
+    const root = join(dir, "bus-short");
+    const a = fileDriver({ root, busPollInterval: 10 });
+    const b = fileDriver({ root, busPollInterval: 10 });
+    await a.publish!({ type: "clear", namespace: "earlier", at: Date.now() });
+    // Every file handle shares one prototype: the driver's reads go through it.
+    const probe = await open(join(root, "bus.log"), "r");
+    const proto = Object.getPrototypeOf(probe) as {
+      read: (...args: unknown[]) => Promise<{ bytesRead: number }>;
+    };
+    await probe.close();
+    const read = proto.read;
+    // The first read returns half of what it asked for, ending mid-line, as
+    // a read may.
+    let short = true;
+    const spy = spyOn(proto, "read").mockImplementation(function (
+      this: unknown,
+      ...args: unknown[]
+    ) {
+      if (short && typeof args[2] === "number") {
+        short = false;
+        args[2] = Math.floor(args[2] / 2);
+      }
+      return read.apply(this, args);
+    });
+    const received: string[] = [];
+    jest.useFakeTimers();
+    try {
+      const unsubscribe = await b.subscribe!(
+        (message) => received.push(message.namespace),
+        () => {},
+      );
+      for (const namespace of ["one", "two", "three"]) {
+        await a.publish!({ type: "clear", namespace, at: Date.now() });
+      }
+      jest.advanceTimersByTime(10);
+      await settleDisk(root);
+      expect(short).toBe(false);
+      // The half read held "one" whole and part of "two".
+      expect(received).toEqual(["one"]);
+      jest.advanceTimersByTime(10);
+      await settleDisk(root);
+      expect(received).toEqual(["one", "two", "three"]);
+      jest.advanceTimersByTime(10);
+      await settleDisk(root);
+      expect(received).toEqual(["one", "two", "three"]);
+      await unsubscribe();
+    } finally {
+      jest.useRealTimers();
+      spy.mockRestore();
+    }
     await a.close();
     await b.close();
   });

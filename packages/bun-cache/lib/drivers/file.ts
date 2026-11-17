@@ -1086,57 +1086,76 @@ class FileDriver implements CacheDriver {
       // No log yet: everything published from now on is new.
     }
     let pending = "";
-    const poller = setInterval(() => {
-      void (async () => {
-        const size = await stat(path)
-          .then((info) => info.size)
-          .catch(() => 0);
-        if (size < offset) {
-          // The log was compacted: everything between is lost. That is a gap
-          // (§4.2): flush, then resume from the new end.
-          offset = size;
-          pending = "";
-          onGap();
-          return;
-        }
-        if (size === offset) {
-          return;
-        }
-        const handle = await open(path, "r");
-        let chunk: Buffer;
-        try {
-          const result = await handle.read(
-            Buffer.alloc(size - offset),
-            0,
-            size - offset,
-            offset,
-          );
-          chunk = result.buffer.subarray(0, result.bytesRead);
-        } finally {
-          await handle.close();
-        }
+    // One poll at a time: a tick that finds the last poll still reading (a
+    // slow disk, a busy loop, a short `busPollInterval`) is skipped. Two
+    // polls at once both read from the same offset and delivered the same
+    // lines twice, and the older one, finishing last, moved the offset back.
+    let polling: Promise<void> | undefined;
+    let stopped = false;
+    const poll = async (): Promise<void> => {
+      const size = await stat(path)
+        .then((info) => info.size)
+        .catch(() => 0);
+      if (size < offset) {
+        // The log was compacted: everything between is lost. That is a gap
+        // (§4.2): flush, then resume from the new end.
         offset = size;
-        pending += chunk.toString("utf8");
-        let newline = pending.indexOf("\n");
-        while (newline !== -1) {
-          const line = pending.slice(0, newline);
-          pending = pending.slice(newline + 1);
-          if (line !== "") {
-            try {
-              onMessage(JSON.parse(line) as BusMessage);
-            } catch {
-              // A torn line (a writer died mid-append): skip it.
-            }
+        pending = "";
+        onGap();
+        return;
+      }
+      if (size === offset) {
+        return;
+      }
+      const handle = await open(path, "r");
+      let chunk: Buffer;
+      try {
+        const result = await handle.read(
+          Buffer.alloc(size - offset),
+          0,
+          size - offset,
+          offset,
+        );
+        chunk = result.buffer.subarray(0, result.bytesRead);
+      } finally {
+        await handle.close();
+      }
+      // What was read, not what was asked: a short read is read on later.
+      offset += chunk.length;
+      pending += chunk.toString("utf8");
+      let newline = pending.indexOf("\n");
+      while (newline !== -1) {
+        // Unsubscribed meanwhile: deliver nothing more.
+        if (stopped) return;
+        const line = pending.slice(0, newline);
+        pending = pending.slice(newline + 1);
+        if (line !== "") {
+          try {
+            onMessage(JSON.parse(line) as BusMessage);
+          } catch {
+            // A torn line (a writer died mid-append): skip it.
           }
-          newline = pending.indexOf("\n");
         }
-      })().catch(() => undefined);
+        newline = pending.indexOf("\n");
+      }
+    };
+    const poller = setInterval(() => {
+      if (polling !== undefined || stopped) return;
+      polling = poll()
+        .catch(() => undefined)
+        .finally(() => {
+          polling = undefined;
+        });
     }, this.#options.busPollInterval);
     poller.unref?.();
     this.#pollers.add(poller);
     return async () => {
+      // Nothing is delivered once this resolves: a poll in flight stops
+      // before its next message and is waited for.
+      stopped = true;
       clearInterval(poller);
       this.#pollers.delete(poller);
+      await polling;
     };
   }
 
