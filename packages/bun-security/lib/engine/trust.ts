@@ -57,7 +57,9 @@ export type TrustWarningKind = "trust.internal" | "trust.unread-forwarding";
  * §6.2); `login.risky-success`, a login succeeding from an address with many
  * failed ones (layers.md L11.2); `policy.refused`, a version of a policy
  * followed in a security store that did not compile, and
- * `policy.unavailable`, that store failing (storage.md §6).
+ * `policy.unavailable`, that store failing (storage.md §6); and
+ * `login.failure-rate`, a `login` route's failures far above its baseline
+ * (layers.md L11.2).
  */
 export type SecurityWarningKind =
   | TrustWarningKind
@@ -68,7 +70,8 @@ export type SecurityWarningKind =
   | "login.risky-success"
   | "crawler.conflict"
   | "policy.refused"
-  | "policy.unavailable";
+  | "policy.unavailable"
+  | "login.failure-rate";
 
 /**
  * A warning (layers.md L2.5, L9.6): the trust configuration looks wrong, or

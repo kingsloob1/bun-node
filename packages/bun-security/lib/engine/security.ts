@@ -136,6 +136,8 @@ import {
 } from "../sensitive/identifiers";
 import type { CheckKind } from "../sensitive/identifiers";
 import { cookieValue, Keyring } from "../sensitive/keys";
+import type { FailureRateState } from "../sensitive/failureRate";
+import { FailureRateWatch } from "../sensitive/failureRate";
 import { LoginDefences } from "../sensitive/login";
 import { SecurityRefusal } from "../sensitive/refusal";
 import type { PolicyFromStore, PolicySourceStatus } from "../store/follow";
@@ -385,6 +387,12 @@ export interface StateStatus {
 export interface SecurityStatus {
   /** The policy in force. */
   readonly policy: CompiledPolicy;
+  /**
+   * The global failure-rate rule's routes as last read (layers.md L11.2),
+   * when its preset is on: each `login` route's failures, ratio and
+   * baseline, and whether it is tripped.
+   */
+  readonly loginFailureRate?: readonly FailureRateState[];
   /** Where the policy came from, when it is followed in a store (`createSecurity`'s `policy: { store }`). */
   readonly policySource?: PolicySourceStatus;
   /** The trust check's gauges and warnings. */
@@ -522,8 +530,9 @@ export interface Security<TRequest = Request> {
   ready: () => Promise<void>;
   /**
    * Writes what is waiting for the shared store now (ban writes, offence
-   * scores, hybrid counts) and reads the ban log. Never rejects: failures
-   * are logged and kept for later. At once without a shared store.
+   * scores, hybrid counts) and reads the ban log; and reads the
+   * failure-rate rule's counts afresh. Never rejects: failures are logged
+   * and kept for later.
    */
   flush: () => Promise<void>;
   /**
@@ -926,6 +935,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   readonly #keyring: Keyring;
   /** The login defences. */
   readonly #login: LoginDefences;
+  /** The global failure-rate rule's watch (layers.md L11.2). */
+  readonly #failureRate: FailureRateWatch;
   /** Facts an app signalled `auth.*` for (outcome inference stands aside). */
   readonly #signalled = new WeakSet<RequestFacts>();
   /** Device cookies issued for facts, until the integration sets them. */
@@ -1054,6 +1065,14 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       this.#evictions,
       this.#logger,
     );
+    this.#failureRate = new FailureRateWatch({
+      local: counters,
+      shared: shared?.throttle,
+      tripped: (state, now) => {
+        this.#failureRateTripped(state, now);
+      },
+      logger: this.#logger,
+    });
     this.#login = new LoginDefences({
       local: counters,
       shared: shared?.throttle,
@@ -1828,6 +1847,33 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   ): MaybePromise<readonly RuleHit[]> {
     if (event !== "auth.failure" && event !== "auth.success") return EMPTY;
     const login = sensitiveOf(this.#policy).login;
+    // The global failure-rate rule counts every outcome of a `login` route,
+    // the username known or not (a spray's each attempt is one).
+    const rate = login?.failureRate;
+    const counted =
+      rate === undefined || facts.profile !== "login" || flags.allowAll
+        ? undefined
+        : this.#failureRate.record(
+            rate,
+            this.#prefix,
+            requestRoute(facts).key,
+            event === "auth.failure",
+            now,
+          );
+    return then(counted, () =>
+      this.#loginOutcome(facts, event, subject, flags, now),
+    );
+  }
+
+  /** The login defences' per-username and per-address part of a signal. */
+  #loginOutcome(
+    facts: RequestFacts,
+    event: string,
+    subject: SubjectKeys,
+    flags: Flags,
+    now: number,
+  ): MaybePromise<readonly RuleHit[]> {
+    const login = sensitiveOf(this.#policy).login;
     const username = subject.username;
     if (
       login === undefined ||
@@ -1922,6 +1968,22 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   }
 
   /** Raises `login.risky-success`, at most once a minute. */
+  /** Raises `login.failure-rate` as a route's failure rate trips (layers.md L11.2). */
+  #failureRateTripped(state: FailureRateState, now: number): void {
+    const percent = (ratio: number) => `${Math.round(ratio * 100)} %`;
+    const rate = sensitiveOf(this.#policy).login?.failureRate;
+    this.#warn(
+      Object.freeze({
+        kind: "login.failure-rate",
+        message: `bun-security: sign-in failures on ${state.route} are far above its baseline (${state.failures} of ${state.attempts} attempts failed in the window, ${percent(state.ratio)}, against ${percent(state.baselineRatio)} usually): a spray or credential stuffing across many addresses${rate?.mode === "dryRun" ? '; the login.failure-rate preset runs in dry run, so the attempts are only recorded ("enforce" answers them)' : ""}`,
+        service: this.#policy.service,
+        minutes: 1,
+        share: state.ratio,
+        since: now,
+      }),
+    );
+  }
+
   #risky(now: number): void {
     if (now - this.#lastRisky < 60_000) return;
     this.#lastRisky = now;
@@ -2383,8 +2445,13 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   status(): SecurityStatus {
     const now = this.#now();
     const active = this.#bans.list(now);
+    const failureRate =
+      sensitiveOf(this.#policy).login?.failureRate === undefined
+        ? undefined
+        : this.#failureRate.status();
     return Object.freeze({
       policy: this.#policy,
+      ...(failureRate === undefined ? {} : { loginFailureRate: failureRate }),
       ...(this.#follower === undefined
         ? {}
         : { policySource: this.#follower.status() }),
@@ -2438,6 +2505,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
 
   /** Writes and reads what waits on the shared store; never rejects. */
   async #flush(): Promise<void> {
+    await this.#failureRate.refreshAll(this.#now());
     const banSync = this.#banSync;
     if (banSync === undefined) return;
     try {
@@ -3707,6 +3775,144 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     if (pass.stage === "early" || pass.route.profile !== "login")
       return undefined;
     const login = sensitiveOf(this.#policy).login;
+    return then(this.#failureRateStage(pass), () =>
+      pass.run.refused ? undefined : this.#loginStage(pass, login),
+    );
+  }
+
+  /**
+   * The global failure-rate rule on a `login` route (layers.md L11.2): while
+   * the route is tripped, the attempts it names (`to`) are answered as it
+   * says (`respond`).
+   */
+  #failureRateStage(pass: Pass): MaybePromise<void> {
+    const rate = sensitiveOf(this.#policy).login?.failureRate;
+    if (rate === undefined || pass.flags.allowAll) return undefined;
+    const state = this.#failureRate.state(
+      rate,
+      this.#prefix,
+      pass.route.key,
+      pass.now,
+    );
+    if (state?.tripped !== true) {
+      pass.trace?.push({
+        layer: "L11",
+        check: "failure-rate",
+        outcome:
+          state === undefined
+            ? "the route's failure rate has not been read yet"
+            : `the route's failure rate is under its threshold (${state.failures} failures in the window)`,
+      });
+      return undefined;
+    }
+    // A valid device cookie for the username (verified, `subject.device`)
+    // exempts the sign-in from every target, `all` and `hosting` included:
+    // the owner on a known device is never answered by the rule, as T2's
+    // step-up exemption leaves it untagged (plan §17.20, the user's
+    // decision of 2026-11-17).
+    if (pass.subject.device !== undefined) {
+      pass.trace?.push({
+        layer: "L11",
+        check: "failure-rate",
+        outcome:
+          "the route is tripped, but the request carries a valid device cookie for the username",
+      });
+      return undefined;
+    }
+    const intel = this.#intelFor(pass);
+    const record =
+      pass.address === null ? undefined : intel?.lookup(pass.address);
+    const hosting = record?.classes.includes("hosting") === true;
+    const targeted =
+      rate.to.has("all") ||
+      rate.to.has("newDevice") ||
+      (rate.to.has("hosting") && hosting);
+    if (!targeted) {
+      pass.trace?.push({
+        layer: "L11",
+        check: "failure-rate",
+        outcome: "the route is tripped, but this attempt is not one it answers",
+      });
+      return undefined;
+    }
+    const dry =
+      pass.dryPolicy ||
+      rate.mode === "dryRun" ||
+      sensitiveOf(this.#policy).login?.mode === "dryRun";
+    const why = `${state.failures} of ${state.attempts} sign-ins failed on this route in the window, ${Math.round(state.ratio * 100)} % against ${Math.round(state.baselineRatio * 100)} % usually`;
+    const answer = (
+      action: "challenge" | "block" | "tag",
+      reason: string,
+      retryAfter: number,
+    ): void => {
+      const rule = "login:failure-rate";
+      if (dry) {
+        pass.run.add({
+          layer: "L11",
+          rule,
+          action: "log",
+          wouldHaveBeen: action,
+          reason: `dry run: ${reason}`,
+        });
+      } else if (action === "tag") {
+        pass.run.add({ layer: "L11", rule, action: "tag", reason });
+        pass.run.tags.add("step-up");
+      } else {
+        pass.run.add(
+          { layer: "L11", rule, action, reason },
+          {
+            status: 429,
+            code: "rate_limited",
+            retryAfter: Math.max(1, Math.ceil(retryAfter / 1000)),
+          },
+        );
+      }
+      pass.trace?.push({
+        layer: "L11",
+        check: "failure-rate",
+        outcome: dry ? `dry run: ${reason}` : reason,
+      });
+    };
+    if (rate.respond === "challenge") {
+      answer("challenge", `${why}: challenged`, rate.window);
+      return undefined;
+    }
+    if (rate.respond === "tag") {
+      answer("tag", `${why}: step-up`, 0);
+      return undefined;
+    }
+    const key =
+      rate.limit.by === "hosting"
+        ? hosting
+          ? "hosting"
+          : undefined
+        : `asn:${record?.asn ?? "unknown"}`;
+    if (key === undefined) return undefined;
+    return then(
+      this.#failureRate.attempt(
+        rate,
+        this.#prefix,
+        pass.route.key,
+        key,
+        pass.writes,
+        pass.now,
+      ),
+      (count) => {
+        if (count <= rate.limit.attempts) return;
+        answer(
+          "block",
+          `${why}: ${count} attempts from ${key === "hosting" ? "hosting addresses" : key.replace("asn:", "AS")} in ${Math.round(rate.limit.window / 1000)} s, over its ${rate.limit.attempts}`,
+          rate.limit.window,
+        );
+      },
+    );
+  }
+
+  /** The login defences' check before the password (the lock, the challenge, the delay, `step-up`). */
+  #loginStage(
+    pass: Pass,
+    login: ReturnType<typeof sensitiveOf>["login"],
+  ): MaybePromise<void> {
     const username = pass.subject.username;
     if (login === undefined || username === undefined || pass.flags.allowAll) {
       return undefined;

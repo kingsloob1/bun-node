@@ -231,6 +231,60 @@ describe("password spraying: one password, 60 accounts, a pool of three addresse
   });
 });
 
+describe("the global failure-rate rule: a spray from a fresh address per attempt (T2's finding)", () => {
+  // 60 accounts, one password, a new address each time: no address or
+  // username repeats, so no per-key detector sees it (60 of 60 answered
+  // before the rule). One attempt every 2 s, so the engine's background read
+  // of the route's counts keeps up, as it does in time.
+  const usernames = Array.from(
+    { length: 60 },
+    (_, i) => `staff${i}@concave.example.org`,
+  );
+  const attack = passwordSpraying({
+    path: LOGIN,
+    usernames,
+    clients: 60,
+    everyMs: 2000,
+  });
+  /** The realistic policy's presets, with the rule switched as given. */
+  const presets = (setting: boolean | "enforce") => ({
+    policy: {
+      presets: {
+        not_found_per_minute: "enforce" as const,
+        "login.failure-rate": setting,
+      },
+    },
+  });
+
+  it("enforced: the attempts after its 20th failure never reach the account check", async () => {
+    const app = await concaveApp(presets("enforce"));
+    const result = await app.run(attack);
+    // The app has no challenge flow, so the rule's challenge is a 429.
+    expect(result.byStatus).toEqual({ "401": 20, "429": 40 });
+    expect(result.codes).toEqual({ rate_limited: 40 });
+    expect(result.firstRefused).toBe(20);
+    expect(app.security?.status().loginFailureRate?.[0]).toMatchObject({
+      route: `POST ${LOGIN}`,
+      tripped: true,
+    });
+  });
+
+  it("as shipped: dry run, every attempt answered, what it would do recorded", async () => {
+    const app = await concaveApp(presets(true));
+    const result = await app.run(attack);
+    expect(result.byStatus).toEqual({ "401": 60 });
+    const recorded = app.decisions.filter(({ decision }) =>
+      decision.hits.some((hit) => hit.rule === "login:failure-rate"),
+    );
+    expect(recorded).toHaveLength(40);
+  });
+
+  it("negative control: with the rule off, 60 of 60 are answered (the finding)", async () => {
+    const result = await (await concaveApp(presets(false))).run(attack);
+    expect(result.byStatus).toEqual({ "401": 60 });
+  });
+});
+
 describe("T-L11-2: enumeration by status, body and time", () => {
   const known = new Set([ALICE, "bob@concave.example.org"]);
   const attack = accountEnumeration({

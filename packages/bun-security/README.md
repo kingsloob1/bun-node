@@ -837,9 +837,9 @@ const security = createSecurity({
 A policy gets built-in rules without writing them, each with an id
 (`PRESETS` lists them), and switches each in `presets`:
 
-- `true`: on, **as it ships** (enforced, or in dry run for the one preset
-  that ships in dry run, `not_found_per_minute`). Leaving a preset out is
-  the same as `true`.
+- `true`: on, **as it ships** (enforced, or in dry run for the presets that
+  ship in dry run, `not_found_per_minute` and `login.failure-rate`). Leaving
+  a preset out is the same as `true`.
 - `"enforce"`: on and enforced, whatever mode it ships in.
 - `false`: off.
 
@@ -865,7 +865,9 @@ limits: [{ id: "per-user", limit: 300, window: "1m", key: "user" }], // replaces
   minute: a day's ban), which records the bans it would make. A verified
   crawler's not-found answers are not counted.
   `presets: { not_found_per_minute: "enforce" }` enforces it, `false` turns
-  it off.
+  it off. And `login.failure-rate`, the global failure-rate rule (see
+  [Sensitive endpoints](#sensitive-endpoints)): it records what it would
+  answer and raises its warning; `"enforce"` answers.
 - **Beside them**: `crawler`, the verified crawlers' own limit (see
   [Verified crawlers](#verified-crawlers)).
 
@@ -914,6 +916,35 @@ The login defences (`profiles.login`, on by default on routes marked
   username is not tagged, so the owner's known device signs in as usual.
 - **A success from an address with 10 failures** is tagged `risky-success`
   and raises the `login.risky-success` warning.
+- **The global failure-rate rule** (the `login.failure-rate` preset, on in
+  dry run): a spray that uses a fresh address and a fresh username for every
+  attempt repeats no key, so none of the above sees it. This counts the
+  route's sign-in outcomes across every client, in the shared store, and
+  trips when at least 20 of the last 5 minutes' attempts failed and the
+  failure ratio is 3 × the route's own baseline (the 24 hours before the
+  window, taken as at least 5 %; the threshold at most 90 %). A ratio, so a
+  surge of ordinary sign-ins trips nothing. While tripped, and for 5 minutes
+  after, it answers the attempts from a `hosting` address (IP intelligence)
+  or a new device (no device cookie for the username): `respond:
+  "challenge"` (the default), `"tag"` (`step-up`) or `"limit"` (a stricter
+  limit per ASN, or for every hosting address). A sign-in with a valid
+  device cookie for its username is never answered, whatever `to` says
+  (`all` and a hosting address included), so the owner's known device
+  keeps signing in, as with the password-spraying `step-up`. It raises the
+  `login.failure-rate` warning as it trips, and `security.status()
+  .loginFailureRate` shows each route's ratio and baseline. As it ships it
+  only records what it would answer: turn it on with
+  `presets: { "login.failure-rate": "enforce" }` once a challenge flow is
+  set up (without one, a challenge is a `429`).
+
+  ```ts
+  profiles: {
+    login: {
+      failureRate: { window: "5m", baseline: "24h", factor: 3, minFailures: 20, hold: "5m",
+        respond: "limit", to: ["hosting"], limit: { attempts: 10, window: "1m", by: "asn" } },
+    },
+  },
+  ```
 - **Outcome inference**: when the app signals neither `auth.failure` nor
   `auth.success` for a request, a `401` or `403` counts as a failure and a
   `2xx` as a success (`inferOutcome: false` turns it off).

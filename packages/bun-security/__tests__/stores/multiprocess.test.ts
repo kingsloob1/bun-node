@@ -343,6 +343,83 @@ async function loginCases(
   expect(apart.spray?.action).toBe("allow");
 }
 
+/** The failure-rate cases' policy: the rule enforced, the other login rules off. */
+const FAILURE_RATE_POLICY: SecurityPolicy = {
+  service: "auth",
+  presets: {
+    "login.account": false,
+    "login.ip": false,
+    "login.ip-failures": false,
+    "login.ip-failures-ban": false,
+    "per-ip": false,
+    "login.failure-rate": "enforce",
+  },
+  profiles: {
+    login: {
+      distinctUsernames: false,
+      distinctAddresses: false,
+      failureRate: { minFailures: 30 },
+    },
+  },
+};
+
+/**
+ * The global failure-rate rule across processes on one store (T2's
+ * finding): a spray from a fresh address per attempt, 45 failures dealt
+ * round-robin to three processes. Each saw 15, under the rule's 30; only
+ * their shared count trips it, and then every process refuses the next new
+ * device. The control: three processes each on a store of their own see 15
+ * each, and refuse nothing.
+ */
+async function failureRateCases(
+  config: (policy: SecurityPolicy, prefix: string) => Record<string, unknown>,
+  prefix: string,
+): Promise<void> {
+  const run = async (prefixes: readonly string[]) => {
+    const list = await Promise.all(
+      prefixes.map((own) =>
+        point({ ...config(FAILURE_RATE_POLICY, own), secret: SECRET }),
+      ),
+    );
+    try {
+      for (let i = 0; i < 45; i++) {
+        await list[i % 3]?.ask({
+          op: "login",
+          username: `sprayed${i}@victims.test`,
+          client: `5.1.${Math.floor(i / 200)}.${(i % 200) + 1}`,
+          outcome: "failure",
+        });
+      }
+      for (const p of list) await p.ask({ op: "flush" });
+      return await Promise.all(
+        list.map(
+          async (p, at) =>
+            (
+              await p.ask({
+                op: "login",
+                username: `next${at}@victims.test`,
+                client: `5.2.0.${at + 1}`,
+                outcome: "none",
+              })
+            ).action as string,
+        ),
+      );
+    } finally {
+      for (const p of list) await p.close();
+    }
+  };
+  expect(await run([prefix, prefix, prefix])).toEqual([
+    "block",
+    "block",
+    "block",
+  ]);
+  expect(await run([`${prefix}1`, `${prefix}2`, `${prefix}3`])).toEqual([
+    "allow",
+    "allow",
+    "allow",
+  ]);
+}
+
 const sqliteDir = mkdtempSync(join(tmpdir(), "bun-security-mp-"));
 afterAll(() => {
   rmSync(sqliteDir, { recursive: true, force: true });
@@ -361,6 +438,13 @@ describe("multi-process, one SQLite file (polled)", () => {
     await loginCases(
       (policy, prefix) => ({ ...config(policy), prefix }),
       `${PREFIX}_login_`,
+    );
+  }, 60_000);
+
+  it("the global failure-rate rule: a spray from fresh addresses trips it on the processes' shared count", async () => {
+    await failureRateCases(
+      (policy, prefix) => ({ ...config(policy), prefix }),
+      `${PREFIX}_fr_`,
     );
   }, 60_000);
 
@@ -489,6 +573,13 @@ if (REDIS_URL === undefined) {
       await loginCases(
         (policy, prefix) => config(policy, redisUrl, prefix),
         `${PREFIX}g`,
+      );
+    }, 60_000);
+
+    it("the global failure-rate rule: a spray from fresh addresses trips it on the processes' shared count", async () => {
+      await failureRateCases(
+        (policy, prefix) => config(policy, redisUrl, prefix),
+        `${PREFIX}fr`,
       );
     }, 60_000);
 

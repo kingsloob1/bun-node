@@ -93,7 +93,14 @@ export {
   type BotSignalName,
   type BotSignalsPolicy,
 } from "./engine/signals";
-export { PRESETS, PROFILE_NAMES, type Preset } from "./policy/presets";
+export {
+  DETECTOR_PRESETS,
+  PRESET_IDS,
+  PRESETS,
+  PROFILE_NAMES,
+  type Preset,
+} from "./policy/presets";
+export type { FailureRateState } from "./sensitive/failureRate";
 export type { CheckKind } from "./sensitive/identifiers";
 export { DEFAULT_DEVICE_COOKIE } from "./sensitive/keys";
 export { SecurityRefusal } from "./sensitive/refusal";
@@ -159,6 +166,8 @@ export type {
   IdentifierPolicy,
   LimitRule,
   ListAction,
+  FailureRatePolicy,
+  FailureRateTarget,
   LoginProfilePolicy,
   MessagePolicy,
   ProfilesPolicy,
