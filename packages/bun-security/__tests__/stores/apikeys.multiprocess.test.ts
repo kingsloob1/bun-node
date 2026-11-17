@@ -127,6 +127,18 @@ const POLICY: SecurityPolicy = {
   apiKeys: { manyAddresses: { limit: 5, window: "1h", action: "ban" } },
 };
 
+/**
+ * The shared store's options in these tests. Its per-call deadline is 50 ms
+ * by default, and a distinct count is two calls (`pfAdd`, then `pfCount`;
+ * on Postgres the first is a five-statement transaction, about 2 ms idle):
+ * past the deadline, a process counts on its own (`onStoreError: "local"`),
+ * sees at most three addresses, and the sixth is let through. A loaded
+ * machine (a serial run taking 260 s instead of 74) went past it once. The
+ * deadline is what is under test only in the control below; here the store
+ * is given room, so what is asserted is the shared count.
+ */
+const STORE = { timeout: "5s" } as const;
+
 /** The traffic: one key from seven addresses, round-robin over the points; the actions. */
 async function drive(points: readonly Point[]): Promise<string[]> {
   const actions: string[] = [];
@@ -161,7 +173,7 @@ describe("the many-addresses anomaly across processes", () => {
       path,
       prefix: PREFIX,
       policy: POLICY,
-      store: {},
+      store: STORE,
     });
     try {
       const actions = await drive(points);
@@ -224,7 +236,7 @@ describe("the many-addresses anomaly across processes", () => {
         url,
         prefix,
         policy: POLICY,
-        store: {},
+        store: STORE,
       });
       try {
         const actions = await drive(points);
