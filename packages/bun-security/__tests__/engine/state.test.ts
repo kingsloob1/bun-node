@@ -227,7 +227,9 @@ describe("T-L9-2: a key-cardinality flood", () => {
   it("bounds in-flight slots too, when complete() is never called", () => {
     const warnings: SecurityWarning[] = [];
     const security = createSecurity({
-      policy: {},
+      // The preset limits off, so only the in-flight table evicts (the
+      // counters' drops are counted too, since bun-common #821).
+      policy: { presets: { "per-ip": false, "per-user": false } },
       logger: () => {},
       maxKeys: 50,
       onWarning: (warning) => warnings.push(warning),
@@ -267,5 +269,64 @@ describe("T-L9-2: a key-cardinality flood", () => {
       bans: 0,
       inFlight: 0,
     });
+  });
+});
+
+describe("the default throttle store's counters (bun-common #821)", () => {
+  /** One limit keyed by the address, every preset limit off: one counter per client. */
+  const ONE_COUNTER: SecurityPolicy = {
+    presets: { "per-ip": false, "per-user": false },
+    limits: [{ id: "l", limit: 1_000, window: "1m" }],
+  };
+
+  /** An engine on the default store, quiet, collecting its warnings. */
+  const engineOf = (maxKeys: number, policy = ONE_COUNTER) => {
+    const clock = fakeClock();
+    const warnings: SecurityWarning[] = [];
+    const security = createSecurity({
+      policy,
+      now: clock.now,
+      logger: () => {},
+      maxKeys,
+      onWarning: (warning) => warnings.push(warning),
+    });
+    return { clock, warnings, security };
+  };
+
+  it("counts each counter dropped at maxKeys as an eviction, and warns once", () => {
+    const { security, warnings } = engineOf(100);
+    for (let i = 0; i < 1_000; i++) {
+      expect(decide(security, facts({ client: rotating(i) })).action).toBe(
+        "allow",
+      );
+    }
+    const state = security.status().state;
+    expect(state.evictions).toBe(900);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.message).toContain("the rate-limit counters table");
+    expect(warnings[0]?.share).toBeLessThanOrEqual(1);
+    expect(state.warning).toBe(warnings[0]);
+  });
+
+  it("does not count a counter that expired", () => {
+    const { clock, security, warnings } = engineOf(100, {
+      ...ONE_COUNTER,
+      limits: [{ id: "l", limit: 1_000, window: "1s" }],
+    });
+    for (let i = 0; i < 100; i++)
+      decide(security, facts({ client: rotating(i) }));
+    clock.advance(5_000);
+    for (let i = 100; i < 200; i++)
+      decide(security, facts({ client: rotating(i) }));
+    expect(security.status().state.evictions).toBe(0);
+    expect(warnings).toEqual([]);
+  });
+
+  it("negative control: under the bound the same flood evicts nothing and warns of nothing", () => {
+    const { security, warnings } = engineOf(2_000);
+    for (let i = 0; i < 1_000; i++)
+      decide(security, facts({ client: rotating(i) }));
+    expect(security.status().state.evictions).toBe(0);
+    expect(warnings).toEqual([]);
   });
 });

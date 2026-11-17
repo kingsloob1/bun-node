@@ -71,7 +71,9 @@ export class EvictionMonitor {
       message: `bun-security: the ${table} table is full and evicting its oldest keys: a key-rotation attack, or maxKeys set too small`,
       service: this.service(),
       minutes,
-      share: this.#evictions / Math.max(1, this.#inserts),
+      // At most 1: the default throttle store reports its drops but not its
+      // inserts, so a minute can count more evictions than new entries.
+      share: Math.min(1, this.#evictions / Math.max(1, this.#inserts)),
       since: this.#since,
     });
     this.warn(this.#warning);
