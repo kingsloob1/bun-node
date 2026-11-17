@@ -33,6 +33,7 @@ import { addAgentEventsRoute, addAgentRoutes } from "./agentRoutes";
 import { sha256Of } from "./artefacts";
 import type { SecurityApiLive } from "./live/transports";
 import { LiveHub } from "./live/hub";
+import { Alerting } from "./alerts/alerting";
 import { setLiveHooks } from "./liveHooks";
 import { createLive, isUpgrade, liveDocsRouter } from "./live/transports";
 
@@ -85,6 +86,8 @@ export interface SecurityApi {
    * live connection.
    */
   readonly live: SecurityApiLive;
+  /** Alerting, when `alerts` is set: `evaluate()`, `test(channel)`, `deadLetters()`, `stats()`, `close()`. */
+  readonly alerts: Alerting | undefined;
   /**
    * Recomputes the audit chain and checks every checkpoint, stored and
    * read back from the sinks; names the first entry where it broke (and
@@ -99,7 +102,7 @@ export interface SecurityApi {
    * false`. The bundles compiled.
    */
   readonly repairBundles: () => Promise<readonly CompiledBundleDto[]>;
-  /** Stops what the API runs by itself (the bundle repair pass). The store is the host's: never closed here. */
+  /** Stops what the API runs by itself (the bundle repair pass, alerting). The store is the host's: never closed here. */
   readonly close: () => void;
   /** Signs and writes a checkpoint of the chain's head now; `null` when the chain is empty. */
   readonly checkpointAudit: () => Promise<AuditCheckpoint | null>;
@@ -181,6 +184,10 @@ export function createSecurityApi(options: SecurityApiOptions): SecurityApi {
     addAgentEventsRoute(router, context);
     addAgentRoutes(router, context);
   }
+  const alerts =
+    options.alerts === undefined
+      ? undefined
+      : new Alerting(plane, options.alerts);
   const hub = new LiveHub(plane, { now: resolved.now });
   const live = createLive(hub, resolved);
   // CP4's stored batches and bans, to the hub.
@@ -195,7 +202,7 @@ export function createSecurityApi(options: SecurityApiOptions): SecurityApi {
     if (isUpgrade(req)) next("router");
     else next();
   });
-  for (const spec of routes(resolved, hub))
+  for (const spec of routes(resolved, hub, alerts))
     addRoute(router, spec, resolved, plane, guard);
 
   const documents = {
@@ -300,9 +307,11 @@ export function createSecurityApi(options: SecurityApiOptions): SecurityApi {
     close: () => {
       if (repairTimer !== undefined) clearInterval(repairTimer);
       repairTimer = undefined;
+      alerts?.close();
     },
     plane,
     live,
+    alerts,
     ...documents,
     verifyAudit: async () => await plane.audit.verify(),
     addArtefact: async (bytes: Uint8Array) => {

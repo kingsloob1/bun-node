@@ -598,6 +598,12 @@ export interface AgentDto {
     readonly banCount: number;
     readonly health: "ok" | "signature-failing";
     readonly lastError?: string;
+    /** The engine's warnings in force (PR-CP6): kind, since, share; at most 16. */
+    readonly warnings?: readonly {
+      readonly kind: string;
+      readonly since: number;
+      readonly share?: number;
+    }[];
   } | null;
   /** The record's revision, for rotate and revoke. */
   readonly revision: number;

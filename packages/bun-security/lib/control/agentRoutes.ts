@@ -46,6 +46,7 @@ import {
   agentEnvelope,
   agentRouteOf,
   artefactSignedBody,
+  MAX_HEARTBEAT_WARNINGS,
   notModifiedBody,
 } from "../agent/protocol";
 import type { AgentKeyBody, AgentRegistry } from "./agents";
@@ -531,7 +532,7 @@ function boundJson(
 }
 
 /** Whether `value` is a heartbeat's shape. */
-function isHeartbeat(
+export function isHeartbeat(
   value: Record<string, unknown>,
 ): value is AgentHeartbeat & Record<string, unknown> {
   const bundle = value.bundle as Record<string, unknown> | null | undefined;
@@ -553,7 +554,34 @@ function isHeartbeat(
     Number.isSafeInteger(bans.count) &&
     (value.health === "ok" || value.health === "signature-failing") &&
     (value.lastError === undefined ||
-      (typeof value.lastError === "string" && value.lastError.length <= 500))
+      (typeof value.lastError === "string" && value.lastError.length <= 500)) &&
+    (value.warnings === undefined || isWarnings(value.warnings))
+  );
+}
+
+/** A warning's kind: a dotted name. */
+const WARNING_KIND = /^[a-z][a-z0-9.-]{0,59}$/;
+
+/** Whether `value` is a heartbeat's warnings (bounded, PR-CP6). */
+function isWarnings(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_HEARTBEAT_WARNINGS &&
+    value.every((item: unknown) => {
+      if (typeof item !== "object" || item === null) return false;
+      const w = item as Record<string, unknown>;
+      return (
+        Object.keys(w).every(
+          (key) => key === "kind" || key === "since" || key === "share",
+        ) &&
+        typeof w.kind === "string" &&
+        WARNING_KIND.test(w.kind) &&
+        Number.isSafeInteger(w.since) &&
+        (w.since as number) >= 0 &&
+        (w.share === undefined ||
+          (typeof w.share === "number" && w.share >= 0 && w.share <= 1))
+      );
+    })
   );
 }
 

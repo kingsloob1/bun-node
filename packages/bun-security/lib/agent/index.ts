@@ -36,6 +36,7 @@ export {
   AGENT_SIGNATURE_HEADER,
   AGENT_SIGNATURE_WINDOW_MS,
   agentRequestId,
+  MAX_HEARTBEAT_WARNINGS,
 } from "./protocol";
 export type {
   AgentHeartbeat,
@@ -44,6 +45,7 @@ export type {
   AgentNudgeEvent,
   AgentReportedHealth,
   AgentRoute,
+  AgentWarning,
 } from "./protocol";
 export { AGENT_STATE_FORMAT } from "./state";
 export type { AgentState } from "./state";

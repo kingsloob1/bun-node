@@ -333,6 +333,15 @@ export class AgentRegistry {
       banCount: beat.bans.count,
       health: beat.health,
       ...(beat.lastError === undefined ? {} : { lastError: beat.lastError }),
+      ...(beat.warnings === undefined
+        ? {}
+        : {
+            warnings: beat.warnings.map((w) => ({
+              kind: w.kind,
+              since: w.since,
+              ...(w.share === undefined ? {} : { share: w.share }),
+            })),
+          }),
     };
     for (let attempt = 0; attempt < 2; attempt++) {
       const current = await this.plane.store.get("agentHealth", doc.id);

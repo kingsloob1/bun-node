@@ -31,6 +31,7 @@ export type DocKind =
   | "operator"
   | "roleBinding"
   | "alertChannel"
+  | "alertRule"
   | "listEntry"
   | "approval"
   | "policyDraft";
@@ -46,6 +47,7 @@ export const DOC_KINDS: readonly DocKind[] = Object.freeze([
   "operator",
   "roleBinding",
   "alertChannel",
+  "alertRule",
   "listEntry",
   "approval",
   "policyDraft",

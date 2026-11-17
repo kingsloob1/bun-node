@@ -1562,6 +1562,60 @@ analytics page charts:
   instance gets a `gap` and refetches, and the 5-connection limit is counted
   on each instance.
 
+### Alerts
+
+`createSecurityApi({ alerts: { … } })` evaluates the alert rules kept in
+the store every minute and sends what fires to its channels:
+
+```ts
+const api = createSecurityApi({
+  // …
+  alerts: {
+    email: async ({ to, subject, text }) => mailer.send({ to, subject, text }),
+    uiUrl: "https://security.example.com/ui",
+  },
+});
+```
+
+- **Rules** (`PUT /alerts/rules/:id`): a scope, a severity, the channels,
+  and a condition over the analytics counters, the bans and the agents:
+  `threshold` (a metric's sum over a window, per group with `groupBy`,
+  narrowed by `prefix`), `rate` (per minute), `baseline` (a share against
+  the same hour on earlier days), `banStorm`, `agentSilent` and
+  `agentWarning` (an enforcement point's warning: its store down, its
+  trust settings wrong, a feed not refreshing, evictions, a login failure
+  rate, distinct counts falling back). `alertRulePreset(name, …)` gives
+  the README's defaults. An alert stays open while its condition holds and
+  is sent once.
+- **Channels** (`POST /alerts/channels`): a JSON webhook signed like the
+  audit sink (`x-bun-security-timestamp`, `x-bun-security-signature:
+  sha256=<hex HMAC of "<timestamp>.<body>">`, the secret minted by the
+  control plane and shown once, behind a step-up), a Slack-compatible webhook (`{ text }`), or
+  email through your `email` hook. A channel's `receives` routes the control
+  plane's own alerts to it by kind (`breakGlass.login`, `audit.verifyFailed`,
+  …, or `*`). A URL is answered as scheme and host only.
+- **Limits**: one message a minute per alert kind on a channel, the rest in
+  a 15-minute digest; at most 60 messages an hour a channel, past which only
+  `critical` goes through. Counted in the store, so they hold across
+  instances.
+- **Delivery**: 6 tries, from 30 s doubling to an hour with jitter, then a
+  dead letter (`GET /alerts/dead-letters`, replayed with
+  `POST /alerts/dead-letters/:id/replay`); the delivery log
+  (`GET /alerts/deliveries`) and dead letters keep 30 days, 10,000 a
+  channel. In process by default; to survive a restart, pass
+  `queue: (deliver) => jobsDeliveryQueue({ queue: bunQueue, now: Date.now })`
+  and run a bun-jobs worker whose processor calls `api.alerts.deliver(job.data)`.
+- **What an alert says**: its kind, severity, scope, service, rule, route
+  template (`POST /login`), the counts against their threshold, the window, the time and a link to the
+  UI. Never a request, a user or an API key; an address only on an alert
+  about that address.
+- **Who**: `alerts:read` (an analyst) reads rules, channels (redacted),
+  open alerts, the log and dead letters; `alerts:write` (an admin) changes rules and channels, tests
+  a channel and replays.
+- **Across instances**: an alert is sent once by the instances sharing a
+  store (each send is claimed there); the open-alert list, digests,
+  in-process queue and log belong to one instance.
+
 ## Deciding and explaining
 
 ```ts

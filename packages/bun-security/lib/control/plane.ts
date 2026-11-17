@@ -203,6 +203,8 @@ function newId(prefix: string): string {
 export class ControlPlane {
   /** Live event listeners. */
   readonly #listeners = new Set<(event: SecurityLiveEventDto) => void>();
+  /** Told of every alert the control plane raises (PR-CP6). */
+  readonly #alertListeners = new Set<(alert: SecurityAlertDto) => void>();
   /** Told when an operator's access may have changed (a role binding written). */
   readonly #accessListeners = new Set<() => void>();
 
@@ -254,6 +256,22 @@ export class ControlPlane {
     } catch (error) {
       this.#logger.error("bun-security: onAlert threw", { error });
     }
+    for (const listener of [...this.#alertListeners]) {
+      try {
+        listener(out);
+      } catch (error) {
+        this.#logger.error("bun-security: an alert listener threw", { error });
+      }
+    }
+  }
+
+  /**
+   * Listens to the control plane's own alerts (CP3's, CP4's), beside the
+   * host's `onAlert`: PR-CP6's routing to channels. Answers the unsubscribe.
+   */
+  onAlert(listener: (alert: SecurityAlertDto) => void): () => void {
+    this.#alertListeners.add(listener);
+    return () => this.#alertListeners.delete(listener);
   }
 
   /** The control plane's clock, epoch ms. */

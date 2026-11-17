@@ -77,6 +77,25 @@ export function artefactSignedBody(sha256: string): string {
 /** An agent's health, as it reports it. */
 export type AgentReportedHealth = "ok" | "signature-failing";
 
+/** The most warnings a heartbeat carries (PR-CP6). */
+export const MAX_HEARTBEAT_WARNINGS = 16;
+
+/**
+ * A warning in force on the enforcement point, from its engine's
+ * `status().warnings` (PR-CP6): its kind (`store.unavailable`,
+ * `trust.internal`, `feed.refresh-failed`, `state.evictions`,
+ * `login.failure-rate`, `store.distinct-fallback`, …), since when, and its
+ * share where it has one. Never its message: that is for the host's log.
+ */
+export interface AgentWarning {
+  /** The warning's kind. */
+  readonly kind: string;
+  /** Since when, epoch ms. */
+  readonly since: number;
+  /** The last minute's share, 0 to 1, where the kind has one. */
+  readonly share?: number;
+}
+
 /** What an agent's heartbeat says (`POST /agent/heartbeat`). */
 export interface AgentHeartbeat {
   /** The route: `heartbeat`. */
@@ -97,6 +116,8 @@ export interface AgentHeartbeat {
   readonly health: AgentReportedHealth;
   /** The last failure, when not `ok`, for operators. */
   readonly lastError?: string;
+  /** The engine's warnings in force, at most {@link MAX_HEARTBEAT_WARNINGS} (PR-CP6); absent from an older agent. */
+  readonly warnings?: readonly AgentWarning[];
 }
 
 /** What the control plane answers a heartbeat. */

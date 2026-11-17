@@ -44,6 +44,7 @@ import type { AgentEventBatch, AgentEventSource } from "./events";
 import type { EventBatcher } from "./batcher";
 import type {
   AgentHeartbeat,
+  AgentWarning,
   AgentNudge,
   AgentNudgeEvent,
   AgentRoute,
@@ -62,6 +63,7 @@ import {
   agentEnvelope,
   agentRequestId,
   artefactSignedBody,
+  MAX_HEARTBEAT_WARNINGS,
   notModifiedBody,
 } from "./protocol";
 import { EMPTY_STATE, readState, writeState } from "./state";
@@ -83,6 +85,14 @@ export interface AgentEngine {
   }) => { readonly id: string };
   /** Lifts a ban by id. */
   readonly unban: (id: string, options?: { readonly by?: string }) => unknown;
+  /** The engine's state; its `warnings` go in every heartbeat (PR-CP6). Optional for a stand-in engine. */
+  readonly status?: () => {
+    readonly warnings?: readonly {
+      readonly kind: string;
+      readonly since: number;
+      readonly share?: number;
+    }[];
+  };
 }
 
 /** An alert the agent raises (a critical one means it refused something signed). */
@@ -203,6 +213,26 @@ export interface SecurityAgent {
   readonly events: EventBatcher | undefined;
   /** Stops every timer and the nudge. */
   readonly close: () => Promise<void>;
+}
+
+/** The engine's warnings in force, for a heartbeat: kind, since and share only, at most {@link MAX_HEARTBEAT_WARNINGS}. */
+function warningsOf(engine: AgentEngine): { warnings?: AgentWarning[] } {
+  let listed;
+  try {
+    listed = engine.status?.().warnings;
+  } catch {
+    return {};
+  }
+  if (listed === undefined) return {};
+  return {
+    warnings: listed.slice(0, MAX_HEARTBEAT_WARNINGS).map((warning) => ({
+      kind: warning.kind.slice(0, 60),
+      since: Math.trunc(warning.since),
+      ...(typeof warning.share === "number" && warning.share > 0
+        ? { share: Math.round(Math.min(1, warning.share) * 10_000) / 10_000 }
+        : {}),
+    })),
+  };
 }
 
 /** This protocol's version, sent in heartbeats. */
@@ -773,6 +803,7 @@ export function connectAgent(options: ConnectAgentOptions): SecurityAgent {
       bans: { seq: String(banSeq), count: applied.size },
       health: health(),
       ...(lastError === null ? {} : { lastError: lastError.slice(0, 500) }),
+      ...warningsOf(options.security),
     };
     const answer = await call(
       AGENT_ROUTES.heartbeat,

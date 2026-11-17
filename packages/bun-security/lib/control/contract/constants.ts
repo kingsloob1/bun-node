@@ -48,6 +48,8 @@ export const SECURITY_API_PERMISSIONS = /* @__PURE__ */ Object.freeze([
   "bans:write",
   "analytics:read",
   "events:read",
+  "alerts:read",
+  "alerts:write",
 ] as const);
 
 /** A permission's name. */
@@ -87,6 +89,7 @@ export const ROLE_PERMISSIONS: Readonly<
     "audit:read",
     "agents:read",
     "events:read",
+    "alerts:read",
   ] as const),
   operator: /* @__PURE__ */ Object.freeze([
     "policy:draft",
@@ -99,6 +102,7 @@ export const ROLE_PERMISSIONS: Readonly<
     "policy:publish",
     "audit:export",
     "agents:write",
+    "alerts:write",
   ] as const),
   owner: /* @__PURE__ */ Object.freeze(["roles:read", "roles:write"] as const),
 });
