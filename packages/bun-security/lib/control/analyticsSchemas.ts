@@ -155,6 +155,13 @@ export const EventView: Schema<SecurityEventViewDto> = s.object({
   asn: s.optional(s.int({ min: 0 })),
   latencyMs: s.optional(s.number({ min: 0 })),
   status: s.optional(s.int({ min: 100, max: 999 })),
+  sampleRate: s.optional(
+    s.number({
+      min: 0,
+      max: 1,
+      description: "on a sampled allow: the share of allows kept",
+    }),
+  ),
   sample: s.optional(s.json("the redacted request (events:read)")),
 });
 

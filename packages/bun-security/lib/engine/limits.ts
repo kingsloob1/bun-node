@@ -244,8 +244,11 @@ export class Limiter {
     limit: CompiledLimit,
     key: string,
     peek: boolean,
+    /** What this count costs; default the limit's own (an assumed count, the control plane's test). */
+    cost?: number,
   ): MaybePromise<LimitCount> {
     const keys = { [limit.id]: key };
+    const options = cost === undefined ? undefined : { cost };
     const read = (results: ThrottleResult[]): LimitCount => {
       const result = results[0];
       return result === undefined
@@ -261,7 +264,9 @@ export class Limiter {
       const fallback = this.#fallback(built, limit);
       let counted: MaybePromise<ThrottleResult[]>;
       try {
-        counted = peek ? fallback.peekCount(keys) : fallback.count(keys);
+        counted = peek
+          ? fallback.peekCount(keys)
+          : fallback.count(keys, options);
       } catch {
         return UNCOUNTED;
       }
@@ -279,7 +284,7 @@ export class Limiter {
     try {
       counted = peek
         ? built.handler.peekCount(keys)
-        : built.handler.count(keys);
+        : built.handler.count(keys, options);
     } catch (error) {
       return failed(error);
     }

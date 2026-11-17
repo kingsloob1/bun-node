@@ -50,6 +50,7 @@ export const SECURITY_API_PERMISSIONS = /* @__PURE__ */ Object.freeze([
   "events:read",
   "alerts:read",
   "alerts:write",
+  "rules:test",
 ] as const);
 
 /** A permission's name. */
@@ -90,6 +91,7 @@ export const ROLE_PERMISSIONS: Readonly<
     "agents:read",
     "events:read",
     "alerts:read",
+    "rules:test",
   ] as const),
   operator: /* @__PURE__ */ Object.freeze([
     "policy:draft",

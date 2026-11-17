@@ -110,3 +110,18 @@ export type {
   AlertSeverity,
   OpenAlertDto,
 } from "./alerts";
+export { RULE_TEST_LIMITS } from "./ruleTest";
+export type {
+  ImpactRuleDto,
+  ImpactTransitionDto,
+  RuleEvaluability,
+  RuleImpactDto,
+  RuleImpactInput,
+  RuleLabelDto,
+  RuleTestAction,
+  RuleTestHitDto,
+  RuleTestHopDto,
+  RuleTestInput,
+  RuleTestResultDto,
+  RuleTestStepDto,
+} from "./ruleTest";

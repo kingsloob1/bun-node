@@ -103,6 +103,8 @@ export interface SecurityEventViewDto {
   readonly asn?: number;
   /** The decision's latency, ms. */
   readonly latencyMs?: number;
+  /** On a sampled allow: the share of allows kept (`0.001` by default). */
+  readonly sampleRate?: number;
   /** The answer's status. */
   readonly status?: number;
   /** The redacted request (`events:read`, the REST reads only). */

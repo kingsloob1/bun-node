@@ -286,6 +286,7 @@ export function createEventRing(options: EventRingOptions): EventRing {
             ? {}
             : { latencyMs: extras.latencyMs }),
           ...(extras.status === undefined ? {} : { status: extras.status }),
+          ...(decision.action === "allow" ? { sampleRate: sampleAllows } : {}),
           ...(extras.sample === undefined ? {} : { sample: extras.sample }),
         }),
       );

@@ -500,6 +500,13 @@ export interface SecurityEvent {
   readonly asn?: number;
   /** How long the decision took, milliseconds. */
   readonly latencyMs?: number;
+  /**
+   * On a sampled `allow`: the share of allows kept (the ring's
+   * `sampleAllows`, `0.001` by default), stamped since PR-CP7 so a reader
+   * knows what one stored allow stands for. Absent on every other action
+   * (each is offered) and on allows stored before.
+   */
+  readonly sampleRate?: number;
   /** The status the request was answered with, when known. */
   readonly status?: number;
   /** The redacted request sample and anything else recorded: a JSON value the store keeps as given. */
