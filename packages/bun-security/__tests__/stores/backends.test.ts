@@ -195,8 +195,14 @@ for (const backend of backends) {
     const stores: SharedStateStore[] = [];
     const engines: Security[] = [];
 
-    /** A store on the backend: its own driver and cache, as another process has. */
-    const store = (namespace = "bun-security"): SharedStateStore => {
+    /**
+     * A store on the backend: its own driver and cache, as another process
+     * has. `syncInterval` is how often a hybrid limit syncs on its own.
+     */
+    const store = (
+      namespace = "bun-security",
+      syncInterval: `${number}ms` | `${number}m` = "100ms",
+    ): SharedStateStore => {
       const driver = backend.make();
       drivers.push(driver);
       const made = cacheStore(createCache({ driver, logger: quiet }), {
@@ -207,18 +213,22 @@ for (const backend of backends) {
         timeout: "3s",
         pollInterval: "200ms",
         reconcileInterval: "500ms",
-        syncInterval: "100ms",
+        syncInterval,
         logger: quiet,
       });
       stores.push(made);
       return made;
     };
 
-    /** An engine on its own store. */
-    const engine = (policy: SecurityPolicy, namespace?: string): Security => {
+    /** An engine on its own store; see {@link store} for `syncInterval`. */
+    const engine = (
+      policy: SecurityPolicy,
+      namespace?: string,
+      syncInterval?: `${number}ms` | `${number}m`,
+    ): Security => {
       const security = createSecurity({
         policy,
-        store: store(namespace),
+        store: store(namespace, syncInterval),
         secret: "the-backends-secret-of-at-least-32-bytes",
         logger: quiet,
       });
@@ -348,12 +358,18 @@ for (const backend of backends) {
       const policy: SecurityPolicy = {
         limits: [{ id: "h", limit: 10, window: "1m", state: "hybrid" }],
       };
-      const a = engine(policy, "hybrid");
-      const b = engine(policy, "hybrid");
+      // The syncs are the test's own (`flush()`): with the 100 ms background
+      // sync, a first loop slower than that (a loaded machine, a slow
+      // backend) merged the two engines' counts mid-loop, and the second
+      // engine blocked before its sixth request, as a hybrid limit should
+      // once synced. The pauses prove the loop's speed no longer matters.
+      const a = engine(policy, "hybrid", "1m");
+      const b = engine(policy, "hybrid", "1m");
       const client = facts({ client: "198.51.100.53" });
       for (let i = 0; i < 6; i++) {
         expect((await a.evaluate(client)).action).toBe("allow");
         expect((await b.evaluate(client)).action).toBe("allow");
+        await Bun.sleep(40);
       }
       await a.flush();
       await b.flush();
