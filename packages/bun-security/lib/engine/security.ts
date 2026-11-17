@@ -129,7 +129,7 @@ import type { CrawlerRequest } from "../crawlers/request";
 import { CrawlerVerifier } from "../crawlers/verify";
 import type { CrawlerResolver } from "../crawlers/verify";
 import { TrustMonitor } from "./trust";
-import { DistinctCounts } from "./distinct";
+import { DistinctCounts, DistinctFallbacks } from "./distinct";
 import { sensitiveOf } from "../sensitive/compile";
 import {
   IDENTIFIER_MESSAGE,
@@ -172,8 +172,9 @@ export interface CreateSecurityOptions<TRequest = Request> {
    */
   readonly onDecision?: (decision: Decision, facts: RequestFacts) => void;
   /**
-   * Called with each warning as it is raised: the trust check's (layers.md
-   * L2.5) and `state.evictions` (layers.md L9.6).
+   * Called with each warning as it is raised: every
+   * `SecurityWarningKind`, such as the trust check's (layers.md L2.5),
+   * `state.evictions` (layers.md L9.6) and `store.distinct-fallback`.
    */
   readonly onWarning?: (warning: SecurityWarning) => void;
   /**
@@ -362,6 +363,14 @@ export interface SharedStoreStatus {
   readonly reconciledAt: number | undefined;
   /** Offence scores and ban histories waiting to sync. */
   readonly pendingScores: number;
+  /**
+   * Distinct counts (credential stuffing, spraying, the API-key
+   * many-addresses check) that fell back from the store since the engine
+   * started: counted in this process (`onStoreError: "local"`) or not at
+   * all (`"open"`). Each run of them raises a `store.distinct-fallback`
+   * warning.
+   */
+  readonly distinctFallbacks: number;
 }
 
 /** The engine's local state, for {@link Security.status}. */
@@ -928,6 +937,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   #lastAggregated = Number.NEGATIVE_INFINITY;
   /** Evictions of local state. */
   readonly #evictions: EvictionMonitor;
+  /** Distinct counts that fell back from the shared store. */
+  readonly #distinctFallbacks: DistinctFallbacks;
   /** What each tracked decision needs at `complete()`. */
   readonly #contexts = new WeakMap<Decision, Context>();
   /** Whether closed. */
@@ -1015,6 +1026,10 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       (warning) => this.#warn(warning),
       () => this.#policy.service,
     );
+    this.#distinctFallbacks = new DistinctFallbacks(
+      (warning) => this.#warn(warning),
+      () => this.#policy.service,
+    );
     for (const [name, value] of [
       ["maxPendingVerifications", options.maxPendingVerifications],
       ["verifyTimeoutMs", options.verifyTimeoutMs],
@@ -1076,7 +1091,13 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     this.#keyring = new Keyring(options.secret);
     this.#apiKeys = new ApiKeyWatch(
       shared,
-      new DistinctCounts(shared, maxKeys, this.#evictions, this.#logger),
+      new DistinctCounts(
+        shared,
+        maxKeys,
+        this.#evictions,
+        this.#logger,
+        this.#distinctFallbacks,
+      ),
       maxKeys,
       this.#evictions,
       this.#logger,
@@ -1097,6 +1118,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         maxKeys,
         this.#evictions,
         this.#logger,
+        this.#distinctFallbacks,
       ),
       ban: (write, now) => {
         this.#writeBan(write, now);
@@ -2509,6 +2531,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       banCursor: bans.cursor,
       reconciledAt: bans.reconciledAt,
       pendingScores: this.#scoreSync?.pending ?? 0,
+      distinctFallbacks: this.#distinctFallbacks.total,
     });
   }
 

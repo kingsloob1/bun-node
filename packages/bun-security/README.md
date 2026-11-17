@@ -537,8 +537,14 @@ await security.ready(); // the fleet's bans loaded before the first request
   least 1); `open` lets it through, recording the failure; `closed` (limits
   only) answers `503` with `Retry-After: 5`. Every store call has a timeout
   (`timeout`, 50 ms) and a circuit breaker (`circuit`, 5 failures, 30 s), so a
-  dead store costs a request its fallback, not a wait. After 30 s of failure
-  the engine raises a `store.unavailable` warning.
+  dead store costs a request its fallback, not a wait. A distinct count's
+  calls (`pfAdd`, `pfCount`: credential stuffing, spraying and the API-key
+  many-addresses check) have their own, longer deadline (`distinctTimeout`,
+  250 ms, or `timeout` when that is longer), since a count that falls back
+  sees only its own process's traffic: every such fallback is counted in
+  `status().state.store.distinctFallbacks` and raises a
+  `store.distinct-fallback` warning, once, until a minute passes with none.
+  After 30 s of failure the engine raises a `store.unavailable` warning.
 - **Bans** are always looked up in memory. A ban (and a lift) is written to
   the store's ban log and announced on the cache's own bus (`cacheBusOf`:
   Redis's pub/sub, Postgres's `LISTEN`; another with `bus`, none with

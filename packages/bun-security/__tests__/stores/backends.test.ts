@@ -30,7 +30,7 @@ import {
   sqliteDriver,
 } from "@kingsleyweb/bun-cache";
 import type { CacheDriver } from "@kingsleyweb/bun-cache";
-import { DistinctCounts } from "../../lib/engine/distinct";
+import { DistinctCounts, DistinctFallbacks } from "../../lib/engine/distinct";
 import { EvictionMonitor } from "../../lib/engine/state";
 import { createSecurity } from "../../lib/index";
 import type {
@@ -383,17 +383,23 @@ for (const backend of backends) {
         () => {},
         () => undefined,
       );
+      const fallbacks = new DistinctFallbacks(
+        () => {},
+        () => undefined,
+      );
       const one = new DistinctCounts(
         store("distinct"),
         10,
         monitor,
         noopLogger,
+        fallbacks,
       );
       const two = new DistinctCounts(
         store("distinct"),
         10,
         monitor,
         noopLogger,
+        fallbacks,
       );
       const count = {
         key: "user:alice",

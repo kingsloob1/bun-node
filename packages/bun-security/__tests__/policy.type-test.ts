@@ -149,6 +149,7 @@ assertType<
     | "bans.aggregated"
     | "canary.used"
     | "store.unavailable"
+    | "store.distinct-fallback"
     | "login.risky-success"
     | "crawler.conflict"
     | "policy.refused"

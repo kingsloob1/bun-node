@@ -8,8 +8,8 @@
  * - **Limits** count through bun-cache's `cacheThrottleStore`, in one round
  *   trip on Redis and the SQL engines, by the store's clock; `hybrid`
  *   limits through a {@link hybridThrottleStore} in front of it.
- * - **Everything** goes through a per-call timeout (50 ms by default) and a
- *   circuit breaker (5 failures, 30 s), so a sick store costs a request its
+ * - **Everything** goes through a per-call timeout (50 ms by default; 250 ms
+ *   for a distinct count's `pfAdd` and `pfCount`) and a circuit breaker (5 failures, 30 s), so a sick store costs a request its
  *   fallback, never a wait (topologies.md §6.1). A read the cache answered
  *   with a miss because its driver failed (bun-cache's default policy, its
  *   `error` event, its open circuit) is a failure here, never "no bans".
@@ -36,6 +36,9 @@ import { cacheThrottleStore } from "@kingsleyweb/bun-cache/throttle";
 import { SharedStoreError, StoreGuard } from "../engine/shared";
 import type { SharedStateStore } from "../engine/shared";
 import { hybridThrottleStore } from "./hybrid";
+
+/** The default {@link CacheStoreOptions.distinctTimeout}, in milliseconds, when `timeout` is shorter. */
+const DEFAULT_DISTINCT_TIMEOUT = 250;
 
 /** The default {@link CacheStoreOptions.namespace}. */
 export const DEFAULT_STORE_NAMESPACE = "bun-security";
@@ -66,6 +69,19 @@ export interface CacheStoreOptions {
     | false;
   /** A store call slower than this fails (the rule falls back). Default `"50ms"`. */
   readonly timeout?: Duration;
+  /**
+   * A distinct count's store call (`pfAdd`, `pfCount`) slower than this
+   * fails, and the count falls back to its `onStoreError` (the credential
+   * stuffing and spraying counts and the API-key many-addresses check count
+   * in this process, which sees only its own traffic). Longer than
+   * `timeout`, because a count missed is an attack missed, where a limit
+   * missed is one request counted locally, and because a distinct count is
+   * a write and a read that a SQL engine does in a transaction. A request
+   * that counts waits for both calls, so a store slower than this costs it
+   * up to twice this before the circuit opens. Default the larger of
+   * `"250ms"` and `timeout`.
+   */
+  readonly distinctTimeout?: Duration;
   /** The circuit breaker: `failures` in a row (default 5) open it for `cooldown` (default `"30s"`). */
   readonly circuit?: {
     /** Failures in a row that open the circuit. A positive whole number. Default `5`. */
@@ -184,8 +200,16 @@ export function cacheStore(
     );
   }
   const now = options.now ?? Date.now;
+  const timeout = durationOption(options.timeout, 50, "timeout", 1, 60_000);
+  const distinctTimeout = durationOption(
+    options.distinctTimeout,
+    Math.max(DEFAULT_DISTINCT_TIMEOUT, timeout),
+    "distinctTimeout",
+    1,
+    60_000,
+  );
   const guard = new StoreGuard({
-    timeout: durationOption(options.timeout, 50, "timeout", 1, 60_000),
+    timeout,
     failures,
     cooldown: durationOption(
       options.circuit?.cooldown,
@@ -309,8 +333,13 @@ export function cacheStore(
         await checked(() => view.touch(key, ttl));
       }),
     pfAdd: (key, elements, ttl) =>
-      guard.run("pfAdd", () => view.pfAdd(key, elements, { ttl })),
-    pfCount: (key) => guard.run("pfCount", () => view.pfCount(key)),
+      guard.run(
+        "pfAdd",
+        () => view.pfAdd(key, elements, { ttl }),
+        distinctTimeout,
+      ),
+    pfCount: (key) =>
+      guard.run("pfCount", () => view.pfCount(key), distinctTimeout),
     ...(bus === undefined
       ? {}
       : {

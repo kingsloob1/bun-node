@@ -54,7 +54,8 @@ export type TrustWarningKind = "trust.internal" | "trust.unread-forwarding";
  * `bans.aggregated`, the ban table full and widening new address bans
  * (layers.md L4); `canary.used`, a canary credential used (layers.md L8);
  * `store.unavailable`, the shared store failing for 30 s (topologies.md
- * §6.2); `login.risky-success`, a login succeeding from an address with many
+ * §6.2); `store.distinct-fallback`, a distinct count falling back from the
+ * shared store (layers.md L9.2, L11.2); `login.risky-success`, a login succeeding from an address with many
  * failed ones (layers.md L11.2); `policy.refused`, a version of a policy
  * followed in a security store that did not compile, and
  * `policy.unavailable`, that store failing (storage.md §6); and
@@ -67,6 +68,7 @@ export type SecurityWarningKind =
   | "bans.aggregated"
   | "canary.used"
   | "store.unavailable"
+  | "store.distinct-fallback"
   | "login.risky-success"
   | "crawler.conflict"
   | "policy.refused"
@@ -90,8 +92,9 @@ export interface SecurityWarning {
   /** The suspicious minutes in a row so far. */
   readonly minutes: number;
   /**
-   * The last minute's share, 0 to 1: of requests (the trust check), or of
-   * new keys that evicted another (`state.evictions`).
+   * The last minute's share, 0 to 1: of requests (the trust check), of
+   * new keys that evicted another (`state.evictions`), or of distinct counts
+   * tried in the shared store that fell back (`store.distinct-fallback`).
    */
   readonly share: number;
   /** The first suspicious minute's start, epoch milliseconds. */

@@ -1,19 +1,24 @@
 /**
- * Why `apikeys.multiprocess.test.ts` gives its shared store a 5 s deadline:
- * the many-addresses check counts addresses in the shared store, and a call
- * past the store's per-call deadline falls back to the process's own count
- * (`onStoreError: "local"`), which never sees the whole fleet's traffic. A
- * loaded machine pushed a Postgres call past the default 50 ms once, and the
- * sixth address was let through. Here three engines in one process stand in
- * for three processes (each counts locally on its own), over one shared
- * store whose `pfAdd` takes 30 ms: with a 5 ms deadline the anomaly is never
- * found (the failure, reproduced), with 5 s it is (the fix).
+ * The distinct counts' own deadline (`cacheStore`'s `distinctTimeout`): the
+ * many-addresses check counts addresses in the shared store, and a call past
+ * the deadline falls back to the process's own count (`onStoreError:
+ * "local"`), which never sees the whole fleet's traffic. A loaded machine
+ * pushed a Postgres call past the general 50 ms once, and the sixth address
+ * was let through. Here three engines in one process stand in for three
+ * processes (each counts locally on its own), over one shared store whose
+ * `pfAdd` is slow: past the deadline the anomaly is never found, and every
+ * fallback is counted in `status()` and warned of; within it, it is found.
  */
 import { afterAll, describe, expect, it } from "bun:test";
+import type { CacheStoreOptions } from "../../lib/stores/index";
 import { createCache, memoryDriver } from "@kingsleyweb/bun-cache";
 import type { CacheDriver } from "@kingsleyweb/bun-cache";
 import { createSecurity } from "../../lib/index";
-import type { Security, SecurityPolicy } from "../../lib/index";
+import type {
+  Security,
+  SecurityPolicy,
+  SecurityWarning,
+} from "../../lib/index";
 import { cacheStore } from "../../lib/stores/index";
 import { facts } from "../helpers";
 
@@ -40,14 +45,15 @@ function slowDriver(delay: number): CacheDriver {
   });
 }
 
-/** Three engines sharing one store on `driver`, with the store's per-call deadline. */
+/** Three engines sharing one store on `driver`, with the store's `options`; the warnings they raised. */
 function fleet(
   driver: CacheDriver,
-  timeout: `${number}ms` | `${number}s`,
+  options: Pick<CacheStoreOptions, "timeout" | "distinctTimeout"> = {},
+  warnings: SecurityWarning[] = [],
 ): Security[] {
   return [0, 1, 2].map(() => {
     const store = cacheStore(createCache({ driver, logger: () => {} }), {
-      timeout,
+      ...options,
       logger: () => {},
     });
     const security = createSecurity({
@@ -55,6 +61,7 @@ function fleet(
       policy: POLICY,
       store,
       logger: () => {},
+      onWarning: (warning) => warnings.push(warning),
     });
     opened.push(store, { close: () => security.close() });
     return security;
@@ -79,9 +86,38 @@ async function drive(engines: readonly Security[]): Promise<string[]> {
   return actions;
 }
 
-describe("the shared store's deadline and the many-addresses check", () => {
-  it("past the deadline each engine counts on its own, and the sixth address is let through (the failure)", async () => {
-    const engines = fleet(slowDriver(30), "5ms");
+/** Each engine's distinct-count fallbacks, from `status()`. */
+const fallbacksOf = (engines: readonly Security[]): (number | undefined)[] =>
+  engines.map((engine) => engine.status().state.store?.distinctFallbacks);
+
+/** The `store.distinct-fallback` warnings among `warnings`. */
+const fallbackWarnings = (warnings: readonly SecurityWarning[]) =>
+  warnings.filter((warning) => warning.kind === "store.distinct-fallback");
+
+/** Seven addresses: the sixth is the first past the limit of five. */
+const FOUND = ["allow", "allow", "allow", "allow", "allow", "ban"];
+
+describe("the distinct counts' deadline and the many-addresses check", () => {
+  it("under the default, a 30 ms store counts in the store: the sixth address is found", async () => {
+    const warnings: SecurityWarning[] = [];
+    const engines = fleet(slowDriver(30), {}, warnings);
+    for (const engine of engines) await engine.ready();
+    expect((await drive(engines)).slice(0, 6)).toEqual(FOUND);
+    expect(fallbacksOf(engines)).toEqual([0, 0, 0]);
+    expect(fallbackWarnings(warnings)).toEqual([]);
+  });
+
+  it("under the default, an 80 ms store still counts in the store: past the general 50 ms, within the distinct counts' 250 ms", async () => {
+    const warnings: SecurityWarning[] = [];
+    const engines = fleet(slowDriver(80), {}, warnings);
+    for (const engine of engines) await engine.ready();
+    expect((await drive(engines)).slice(0, 6)).toEqual(FOUND);
+    expect(fallbacksOf(engines)).toEqual([0, 0, 0]);
+  });
+
+  it("a store slower than the deadline falls back: each engine counts on its own, the sixth address is let through, and it is counted and warned of once per engine", async () => {
+    const warnings: SecurityWarning[] = [];
+    const engines = fleet(slowDriver(30), { distinctTimeout: "5ms" }, warnings);
     for (const engine of engines) await engine.ready();
     expect(await drive(engines)).toEqual([
       "allow",
@@ -92,19 +128,44 @@ describe("the shared store's deadline and the many-addresses check", () => {
       "allow",
       "allow",
     ]);
+    // Seven requests round-robin over three engines: 3, 2 and 2 fallbacks.
+    expect(fallbacksOf(engines)).toEqual([3, 2, 2]);
+    const raised = fallbackWarnings(warnings);
+    expect(raised).toHaveLength(3);
+    for (const warning of raised) {
+      expect(warning.message).toContain("counting in this process");
+      expect(warning.share).toBe(1);
+    }
   });
 
-  it("with room, the shared count finds it from the sixth address (the fix)", async () => {
-    const engines = fleet(slowDriver(30), "5s");
+  it("a slow store past the default falls back too (the default is a deadline, not a wait)", async () => {
+    const warnings: SecurityWarning[] = [];
+    const engines = fleet(slowDriver(400), {}, warnings);
     for (const engine of engines) await engine.ready();
-    const actions = await drive(engines);
-    expect(actions.slice(0, 5)).toEqual([
-      "allow",
-      "allow",
-      "allow",
-      "allow",
-      "allow",
-    ]);
-    expect(actions[5]).toBe("ban");
+    const started = performance.now();
+    expect((await drive(engines)).includes("ban")).toBe(false);
+    // Seven requests, each waiting one 250 ms deadline on pfAdd, not 400 ms.
+    expect(performance.now() - started).toBeLessThan(7 * 400);
+    expect(fallbacksOf(engines)).toEqual([3, 2, 2]);
+    expect(fallbackWarnings(warnings)).toHaveLength(3);
+  }, 15_000);
+
+  it("a longer general timeout lengthens the distinct counts' deadline with it", async () => {
+    const engines = fleet(slowDriver(300), { timeout: "5s" });
+    for (const engine of engines) await engine.ready();
+    expect((await drive(engines)).slice(0, 6)).toEqual(FOUND);
+    expect(fallbacksOf(engines)).toEqual([0, 0, 0]);
+  }, 15_000);
+
+  it("refuses a distinctTimeout without its unit or out of range", () => {
+    const cache = createCache({ driver: memoryDriver(), logger: () => {} });
+    expect(() =>
+      cacheStore(cache, {
+        distinctTimeout: 250 as unknown as `${number}ms`,
+      }),
+    ).toThrow("distinctTimeout must be a duration with its unit");
+    expect(() => cacheStore(cache, { distinctTimeout: "61s" })).toThrow(
+      "distinctTimeout must be from 1 ms to 60000 ms",
+    );
   });
 });

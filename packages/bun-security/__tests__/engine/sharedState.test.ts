@@ -11,9 +11,14 @@ import { createCache, memoryDriver } from "@kingsleyweb/bun-cache";
 import { faulty } from "@kingsleyweb/bun-cache/testing";
 import { BanTable, mergeBans } from "../../lib/engine/bans";
 import type { Ban } from "../../lib/engine/bans";
-import { DistinctCounts, MAX_LOCAL_ELEMENTS } from "../../lib/engine/distinct";
+import {
+  DistinctCounts,
+  DistinctFallbacks,
+  MAX_LOCAL_ELEMENTS,
+} from "../../lib/engine/distinct";
 import { StoreGuard } from "../../lib/engine/shared";
 import { EvictionMonitor } from "../../lib/engine/state";
+import type { SecurityWarning } from "../../lib/engine/trust";
 import { cacheStore } from "../../lib/stores/index";
 import { fakeClock, randomWord, seededRandom } from "../helpers";
 import { quiet } from "../stores/fleet";
@@ -188,8 +193,28 @@ describe("distinct counts", () => {
     () => undefined,
   );
 
+  /** A fallback monitor, and the warnings it raised. */
+  const watch = (): {
+    fallbacks: DistinctFallbacks;
+    warnings: SecurityWarning[];
+  } => {
+    const warnings: SecurityWarning[] = [];
+    const fallbacks = new DistinctFallbacks(
+      (warning) => warnings.push(warning),
+      () => "svc",
+    );
+    return { fallbacks, warnings };
+  };
+
   it("count distinct elements per key and window in this process, bounded", () => {
-    const counts = new DistinctCounts(undefined, 10, monitor, noopLogger);
+    const { fallbacks, warnings } = watch();
+    const counts = new DistinctCounts(
+      undefined,
+      10,
+      monitor,
+      noopLogger,
+      fallbacks,
+    );
     const add = (element: string, now: number) =>
       counts.add(
         {
@@ -210,6 +235,9 @@ describe("distinct counts", () => {
       void add(`u${i}`, 60_001);
     }
     expect(add("again", 60_002)).toBe(MAX_LOCAL_ELEMENTS);
+    // Counting in this process by choice is no fallback.
+    expect(fallbacks.total).toBe(0);
+    expect(warnings).toEqual([]);
   });
 
   it("count in the shared store across processes, falling back to this process (or not counting) when it fails", async () => {
@@ -217,8 +245,9 @@ describe("distinct counts", () => {
     const stores = [0, 1].map(() =>
       cacheStore(createCache({ driver, logger: quiet }), { logger: quiet }),
     );
+    const { fallbacks, warnings } = watch();
     const [a, b] = stores.map(
-      (store) => new DistinctCounts(store, 10, monitor, noopLogger),
+      (store) => new DistinctCounts(store, 10, monitor, noopLogger, fallbacks),
     );
     if (a === undefined || b === undefined) throw new Error("two");
     const count = {
@@ -240,6 +269,38 @@ describe("distinct counts", () => {
         0,
       ),
     ).toBeUndefined();
+    // Both fallbacks counted, one warning for the run of them; the peek is
+    // explain()'s and counts nothing.
+    expect(fallbacks.total).toBe(2);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({
+      kind: "store.distinct-fallback",
+      service: "svc",
+      minutes: 1,
+      // Raised at the first fallback: one of the four counts tried so far.
+      share: 1 / 4,
+      since: 0,
+    });
+    expect(warnings[0]?.message).toContain("counting in this process");
     for (const store of stores) await store.close();
+  });
+
+  it("warn once per run of fallbacks: again only after a minute with none", () => {
+    const { fallbacks, warnings } = watch();
+    const fail = (now: number) => {
+      fallbacks.attempted(now);
+      fallbacks.fellBack("store", "not counted", now);
+    };
+    fail(1_000);
+    fail(30_000);
+    fail(61_000); // the next minute: the same run
+    fail(150_000); // the minute after that: still the same run
+    expect(warnings).toHaveLength(1);
+    expect(fallbacks.total).toBe(4);
+    // 180,000 to 239,999 had none: a new run, a new warning.
+    fail(240_000);
+    expect(warnings).toHaveLength(2);
+    expect(warnings[1]).toMatchObject({ minutes: 1, since: 240_000 });
+    expect(fallbacks.total).toBe(5);
   });
 });
