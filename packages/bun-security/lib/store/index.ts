@@ -29,9 +29,17 @@ export { postgresStore } from "./postgres";
 export type { PostgresStoreOptions } from "./postgres";
 export { sqliteStore } from "./sqlite";
 export type { SqliteStoreOptions } from "./sqlite";
-export { DOC_KINDS, MAX_PAGE_LIMIT } from "./types";
+export { DOC_KINDS, MAX_AUDIT_SCOPES, MAX_PAGE_LIMIT } from "./types";
+export { AUDIT_GENESIS_HASH } from "./shared";
 export type {
+  AppendAuditResult,
   AppendResult,
+  AuditCheckpoint,
+  AuditHead,
+  AuditInput,
+  AuditQuery,
+  AuditRecord,
+  CounterValue,
   BundleInput,
   Change,
   ChangeKind,

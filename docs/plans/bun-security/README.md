@@ -37,7 +37,7 @@ rule: no benchmarks or speed comparisons without the user's yes).
 |---|---|
 | This plan and its sub-plans | **approved** by the user on 2026-11-07 (above) |
 | M1, the engine | **started 2026-11-15** at the user's go-ahead. **PR-S1 merged** (#789, 2026-11-16): `packages/bun-security` with the packaging recipe, the policy format (`compilePolicy`, `securityPolicySchema`, explicit units), the engine (`createSecurity`: `evaluate`, `explain`, `load`, `status`, `close`), L2 on the trust-proxy foundation with service identity and the L2.5 trust check, L3 lists (CIDR trie, the `internal` list, allow guards), memory state, and `./serve` (`withSecurity`, `hardenServe`). **PR-S2 merged** (#793, 2026-11-16): the policy format's `version`, L9 limits on the throttle foundation (policy-driven, composite keys, several per route, `throttled` events, dry run), counted rules, L1 per-IP concurrency and the in-flight cap, L14 outcome signals (`complete`, `signal`). **PR-S3 merged** (#796, 2026-11-16): L4 bans (manual `ban`/`unban`/`bans`, merge rules, the `maxActive` bound with /24 and /48 widening), the offence score and escalation ladder, L6 (the canonical path in `facts.path`, the shape refusals, the duplicate-`Host` refusal), L8 (honeypot routes, canary credentials, trap fields), and the `policy.newer` issue code. **PR-S5 built** on `feat/bun-security-s5` (2026-11-16), not yet merged: `./http` (`installSecurity` on P2's hooks with the boot self-test, the route stage `securityMiddleware`, `securityProfile`, router-not-found marking, L13 `securityHeaders`, `csrf` and stack-trace scrubbing) and two-stage evaluation (`evaluate(facts, { stage })`) across S2's and S3's layers. **PR-S6 built** on `feat/bun-security-s6` (2026-11-16), not yet merged: bun-nest's `./security` (`SecurityModule.forRoot`/`forRootAsync`, `SecurityGuard` as `APP_GUARD` with declared dependencies, `@SecurityProfile`, `@SkipSecurity`, `@InjectSecurity`, the boot self-test, a cold-boot test) on a new `addBeforeReadHook` on bun-nest's adapter. **PR-S8 built** on `feat/bun-security-s8` (2026-11-16), not yet merged: L7 request rules (`requestRules`: the rule language, safe matchers, the glob matcher, the regex validator with T-L7-1's step-count proof, the managed probe set, staged early or route, hits feeding `pattern.hit`/`probe.hit` (since PR-T2 `rule.hit`/`probe.hit`) and the ladder, a verified-crawler hook for PR-S12). **PR-S4 built** on `feat/bun-security-s4` (2026-11-16), not merged: `./stores` over bun-cache (`cacheStore`, `hybridThrottleStore`), limits' and counted rules' `state` (`local`/`shared`/`hybrid`) and `onStoreError` (`local` at the local share, `open`, `closed`), the ban stream (a log over the store, the bus's nudge, a 5 s poll, the 60 s reconcile, a snapshot), offence scores and the ladder's history synced, distinct counts over `pfAdd`/`pfCount` (for PR-S7), WebSocket message limits (`messages`, `socket()`, `./http`'s `securityWebSocket`), and the limits counted through the throttle's `count()`/`peekCount()` (#791). **PR-S9 built** on `feat/bun-security-s9` (2026-11-16), not yet merged: L10 challenges (`./challenge`: `challenges()` with clearance cookies and header tokens, the ALTCHA-compatible `powChallenge`, `turnstile`, `hcaptcha`, the challenge page under a strict CSP), every `challenge` action made real in its own stage with the fall-back to `block` kept for an engine without a flow, and L10.1 bot signals (`botSignals`). **PR-S7 built** on `feat/bun-security-s7` (2026-11-16), not merged: L11's sensitive endpoints (route profiles `login`, `mfa`, `otp`, `reset`, `signup` scoping rules; the attempted `username` and `destination` keyed by HMAC under `createSecurity`'s `secret`; the login defences: progressive delay, challenge, soft lock, device cookies, distinct usernames per address and addresses per username over the S4 distinct counts, `risky-success`, outcome inference; `uniformAuthResponse()`; identifier patterns and `security.check()` with the breached-password hook) and the **presets** (`per-ip` and `per-user` on, enforced; the profiles' rules on, on their routes; `not_found_per_minute` off), overridable by id. **PR-S10 built** on `feat/bun-security-s10` (2026-11-16), not yet merged: L5 IP intelligence (`./intel`: our own MMDB reader `openMmdb`, `ipIntel` with country and ASN from operator-supplied databases, range feeds as classes with the refresh job, minimum entry counts and the last good copy kept), `country`/`asn` list entries, `country`/`asn`/`class` request-rule conditions and `botSignals.classes`. **PR-S12 built** on `feat/bun-security-s12` (2026-11-16), not yet merged: L3.2 verified crawlers (the registry, `ranges` and forward-confirmed `rdns` verification with its cache and bounds, the `crawlers` option and its nine exemptions, the crawler limit, `crawler.spoofed`, the conflict check, `crawlerFeeds()` in `./intel`), S8's crawler hook filled, and the managed probe set and `not_found_per_minute` on by default in dry run. **PR-S11 built** on `feat/bun-security-s11` (2026-11-16), not yet merged: L12 v1 (API keys keyed by HMAC, per-key and per-plan limits, the new-ASN and many-addresses anomalies on S4's shared state and S10's intel, `onKeyCompromised`, `revokeApiKey()`). **PR-T2 built** on `feat/bun-security-t2` (2026-11-16), not yet merged: `./testing`'s attack simulators (§11.2) and the runner, and end-to-end attack tests (`__tests__/attacks/`) against ConcaveHR's request path (§12) on `installSecurity`, closing T-L13-1 and T-INT-1 end to end. **The global failure-rate rule merged** (#824, 2026-11-17): layers.md L11.2's global failure ratio, which T2's attack suite showed missing (a spray from a fresh address per attempt answered 60 of 60), as the `login.failure-rate` preset, on in dry run (§17.20). **The eviction wiring built** on `feat/bun-security-evictions` (2026-11-17), not yet merged: the default throttle store's drops at `maxKeys` (bun-common's `onEvict`, #821, `"cap"` only) counted in `status().state.evictions` and the `state.evictions` warning, and the failure-rate rule's example (§17.21). Every other PR of M1 not started |
-| M2, the control plane | **started 2026-11-17** (the user: M2 and M3 finished before anything is published). **PR-CP2 built** on `feat/bun-security-cp2` (2026-11-17), not yet merged: `./control` (`createSecurityApi`, `secureAdmin`) with services, groups, service identities, drafts, versions and inheritance with locked items, Ed25519-signed bundles (`verifyBundle` in `.`), dangerous-change confirmation and two-person approvals, step-up, the built-in RBAC, CSRF, the live stream and the OpenAPI and AsyncAPI documents; `./control/contract`, browser-safe; bundles in the store (§17.22) |
+| M2, the control plane | **started 2026-11-17** (the user: M2 and M3 finished before anything is published). **PR-CP2 merged** (#828, 2026-11-17): `./control` (`createSecurityApi`, `secureAdmin`) with services, groups, service identities, drafts, versions and inheritance with locked items, Ed25519-signed bundles (`verifyBundle` in `.`), dangerous-change confirmation and two-person approvals, step-up, the built-in RBAC, CSRF, the live stream and the OpenAPI and AsyncAPI documents; `./control/contract`, browser-safe; bundles in the store (§17.22). **PR-CP3 built** on `feat/bun-security-cp3` (2026-11-17), not yet merged: the audit log (a hash chain over every change, recorded intent first; Ed25519 checkpoints under a key of its own, in the store and in file, webhook or callback sinks; `verifyAudit()` naming where the chain broke, and reconciling an intent with no done; `/audit` routes, export, `purgeAudit`), its records in the store (memory, SQLite, Postgres under D2's lock), break-glass (Q11) and `onAlert` (§17.24) |
 | ConcaveHR's write-up of its defence | **folded in** (§12, received 2026-11-07): every layer mapped, its lessons carried into the design and §14 |
 | Foundations built beside this plan (§2.6) | the **trust-proxy client IP**, merged 2026-11-07, #653, and the **throttle plugin**, merged 2026-11-08 as T1 #654, T2 #655 and T3 #656 (follow-ups #669, #670, #672, #673, #675, #703), both requested by the user. bun-security builds on them (§20 lists what it needs from them) |
 | Storage drivers for durable state ([`storage.md`](storage.md)) | added 2026-11-07 at the user's request. **PR-D0a merged** (#816, 2026-11-16): `@kingsleyweb/bun-sql`; D0 split into D0a, D0b and D0c (§15.1a, §17.16), D0b and D0c deferred. **PR-D1 merged** (#818, 2026-11-16): `./store` (the driver interface with revisions, policy versions and the change feed; `memoryStore`, `sqliteStore` on bun-sql, the read-only `policyFile`), `./testing` (`runSecurityStoreConformance`, `faultyStore`), and `createSecurity({ policy: { store } })` following a stored policy with a last known good (§17.18). **PR-D2 merged** (#829, 2026-11-17): `postgresStore` on D1's SQL core, its feed pushed by `LISTEN`/`NOTIFY` (polling while `LISTEN` cannot be set up), writers serialised by a transaction-scoped advisory lock so the change sequence commits in order (§17.23). **PR-D3 built** on `feat/bun-security-d3` (2026-11-17), not yet merged: bun-cache's `./encryption` (its envelope for one value: `sealField`, `openField`, `fieldKeyRing`, `fieldKeyId`, under labels of its own), and bun-security's `./sealing` (`sealedFields`, a `StoreCodec` sealing named fields bound to their table, kind, id, version and path, with key rotation, and `resealStore`), with the default sealed fields of §17.25 |
@@ -1550,6 +1550,108 @@ validator checks it.
 | the feed's `NOTIFY` channel `<prefix>changes` (payload: the change's sequence number); the advisory lock key `(0x62736563, hashtext(prefix))`; the index `ix_<prefix>docs_id` (Postgres only) | Postgres |
 
 How the change sequence stays safe (storage.md §3.1, PR-D2): every mutating transaction first takes a transaction-scoped advisory lock (`pg_advisory_xact_lock`, one key per table prefix), before it touches a row, so writers commit one at a time and their sequence numbers commit in order; a reader at the feed's head never skips one. Chosen over a transaction-id watermark (`pg_snapshot_xmin`), which would let writers run in parallel but let any long transaction anywhere in the database hold the whole feed back, and over a sequence-table row lock, which is the same serialisation with a table to keep. The cost is that one store's writes run one at a time, which configuration written by people never notices. Proved by a test that pauses a writer inside its transaction after its number is taken: without the lock (the negative control), a reader at the head skips its change for good; with it, the later writer waits and the reader sees both, in order. CIDR queries (`inet`): no store operation needs one yet (list entries are documents), so `cidrQuery` stays `false`; the column and its query come with the operation that needs them.
+
+### 17.24 Added with PR-CP3 (approved by the user, 2026-11-17)
+
+| Names | Where |
+|---|---|
+| `createSecurityApi`'s options `audit` (`signing`: `{ keyId, privateKey }` or `{ keyId, sign, publicKey }`; `sinks`; `allowNoExternalCheckpoints` (default `false`); `checkpointEvery` (default 1,000); `checkpointInterval` (default `"1h"`); `previousKeys` (retired audit keys' public halves by id)), required; `breakGlass` (`passwordHash`, `totpSecret`, `id` (default `break-glass`)); `onAlert(alert)`; `Operator.sessionId`; `SecurityApi.verifyAudit()`, `checkpointAudit()`, `purgeAudit({ before })`; `ControlPlane.audit` (the log: `intent`, `done`, `event`, `verify`, `reconcile`, `describe`, `entries`, `checkpointNow`, `purge`), `ControlPlane.auditPage`, `auditEntry`, `alert`, `emit` | `./control` |
+| `fileCheckpointSink(path)`, `webhookCheckpointSink({ url, secret, fetch, timeoutMs, read })`, `callbackCheckpointSink({ name, write, read })`, `auditHash(prevHash, entry)`, `totpCode(secret, counter)`; types `AuditSigning`, `CheckpointSink` (`name`, `write`, `read?`), `WebhookCheckpointSinkOptions`, `BreakGlassOptions` | `./control` |
+| constants `BREAK_GLASS_HEADER` (`x-bun-security-break-glass`), `AUDIT_INCOMPLETE_HEADER` (`x-bun-security-audit`, value `incomplete`), `SECURITY_ALERT_KINDS`; types `SecurityAlertKind`, `SecurityAlertDto` (`kind`, `severity` `info`/`warning`/`critical`, `message`, `at`, `detail`), `AuditActorDto` (`kind` `operator`/`break-glass`/`system`), `AuditTargetDto`, `AuditEntryDto`, `AuditCheckpointDto`, `AuditProblemDto`, `AuditVerifyDto`, `BreakGlassLoginInput`, `BreakGlassSessionDto` | `./control/contract` (browser-safe) |
+| permissions `audit:read` (analyst and up), `audit:export` (admin and up); problem codes `audit_unavailable` (`503`), `break_glass_locked` (`429`); the live event `breakGlass.used`; alert kinds `breakGlass.login`, `breakGlass.locked`, `audit.verifyFailed`, `approval.emergency`, `policy.dangerous`, `checkpoint.sinkFailed` | values |
+| audit actions `service.put`, `service.delete`, `group.put`, `group.delete`, `serviceIdentity.put`, `serviceIdentity.delete`, `policy.draft`, `policy.publish`, `policy.rollback`, `approval.open`, `approval.approve`, `approval.reject`, `roleBinding.create`, `roleBinding.delete`, `audit.purge`, `audit.export`, `breakGlass.login`, `breakGlass.failed`; phases `intent`, `done`, `event`; a done's `outcome` `applied`/`refused`; an intent's status `done`, `completed-unconfirmed`, `not-applied`; `verify`'s reasons `hash-mismatch`, `gap`, `order`, `anchor`, `truncated`, `checkpoint-signature`, `checkpoint-mismatch`; its `external` `none-configured`, `checked`, `write-only` | the log |
+| routes `GET /audit?limit&cursor&direction&actor&action&scope&since&until`, `GET /audit/checkpoints`, `GET /audit/verify`, `GET /audit/export?since&until` (`application/x-ndjson`), `GET /audit/:n`, `POST /break-glass/session` (only with `breakGlass`) | the API |
+| the webhook sink's headers `x-bun-security-timestamp` and `x-bun-security-signature: sha256=<hex HMAC-SHA256 of "<timestamp>.<body>">`; a checkpoint's signed bytes, the canonical JSON of `{ n, hash, at }` (signature base64) | wire |
+| the store's `appendAudit(input, expectedPrevHash)`, `getAuditHead()`, `listAudit(query)`, `appendCheckpoint(checkpoint)` (the first for a number wins), `listCheckpoints(query)`, `deleteAuditBefore(beforeN, limit)`; `AUDIT_GENESIS_HASH` (64 zeros); types `AuditInput`, `AuditRecord`, `AuditHead`, `AppendAuditResult`, `AuditQuery`, `AuditCheckpoint`; the change kind `audit`; tables `<prefix>audit`, `<prefix>audit_head`, `<prefix>audit_checkpoints`, indexes `ix_<prefix>audit_at`, `ix_<prefix>audit_actor`; cursor prefixes `sa1.` and `sc1.`; `faultyStore` operations `appendAudit`, `getAuditHead`, `listAudit`, `appendCheckpoint`, `listCheckpoints`, `deleteAuditBefore` | `./store`, `./testing` |
+
+Decided with them (the user, 2026-11-17):
+
+- **Q1, the audit key**: a separate, required Ed25519 key for checkpoints;
+  `createSecurityApi` refuses one equal to the bundle key (by id or by
+  public key).
+- **Q2 and Q7, sinks**: at least one external sink is required, or
+  `allowNoExternalCheckpoints: true` (then `verify` reports
+  `external: "none-configured"`). File, signed-webhook and callback sinks
+  are built, each with an optional `read()` that `verify` uses. A sink
+  outage never blocks a change: the change lands, the checkpoint is retried
+  with the next one (at most 100 waiting per sink, in this process), and
+  `checkpoint.sinkFailed` alerts.
+- **Q3, retention**: 400 days, by a host-scheduled `purgeAudit({ before })`,
+  never a route, only up to a checkpoint so the oldest kept entry stays
+  anchored, and itself audited.
+- **Q4, permissions**: `audit:read` from analyst up; `audit:export` from
+  admin up, with a step-up.
+- **Q5, break-glass (Q11)**: a `Bun.password` hash and a TOTP secret
+  (RFC 6238: SHA-1, 6 digits, 30 s, ±1 step), from the environment; a
+  15-minute HMAC-signed token in `x-bun-security-break-glass`; single-use
+  codes; 5 failures lock it for 15 minutes; it acts as `owner` on `global`,
+  its step-up counted fresh for 5 minutes; every login and failure audited;
+  a login also raises an alert, a live event and an error-level log line.
+- **Q6, alerts**: an `onAlert` hook with the kinds above (`policy.dangerous`
+  added beside the five proposed, for a dangerous change published).
+- **Q8, intent first** (changed by the user from the proposal): before a
+  change, an `intent` entry (the action, scope, target and intended
+  after-state or diff) is appended; if that fails after bounded retries
+  (three), the change is refused with `503` and nothing changes. After the
+  change, a `done` entry references the intent; if it fails, the change
+  stands and the answer carries `x-bun-security-audit: incomplete`.
+  `verify` and `GET /audit` reconcile an intent with no done against the
+  store (the version exists; the document's revision reached the one
+  intended; a deleted document is gone) as `completed-unconfirmed` or
+  `not-applied`, never as tampering. Proved by tests: the intent failing
+  refuses the change (a negative control shows recording after the change
+  leaves it with no trace), a done failing, and both reconciliations.
+
+Built on these choices, for review: an entry's hashed body carries its
+indexed columns (time, actor, action, scope), so editing a column is a
+`hash-mismatch` too. A refused change (a `409`, a `422`) is recorded as an
+intent and a `refused` done; a request refused before the change is tried
+is recorded only when a signed-in operator lacked a permission or a
+step-up (below); an invalid body is not. A checkpoint is
+signed over `{ n, hash, at }` and stored before the sinks are written; the
+Postgres store takes D2's advisory lock in the same transaction as each
+audit append, checkpoint and purge (a test holds a change in its
+transaction: with the lock the audit append and checkpoint wait; without it,
+the negative control, they pass), and the conformance kit's two-process
+race appends to the chain from both sides and checks it is one line. Draft changes are recorded as
+a diff from the previous draft, publishes as a diff from the head, other
+documents with their before and after.
+
+The user approved these names and the four choices above as built
+(2026-11-17), and decided three changes, made in the same PR:
+
+- **Break-glass state is in the shared store.** The failure counter (an
+  atomic increment with an expiry, 15 minutes after the last failure) and
+  the used TOTP codes (a set-if-absent with a TTL) are kept in the store,
+  so every control-plane instance on it shares the lock and refuses a code
+  another used. The store gains counters and claims for it, with
+  conformance cases on memory, SQLite and Postgres (the writes under D2's
+  lock, proved like the audit append). Tested with two `createSecurityApi`
+  instances on one store (one memory store, two SQLite store objects on
+  one file, two Postgres store objects on one prefix): five failures spread
+  across them lock both, and a code used on one is refused on the other;
+  the negative control is two separate stores. Attempts while locked go to
+  the log only, so at most five failures per lock reach the chain.
+- **Refusals of signed-in operators are audited.** An authenticated
+  operator refused for a missing permission (`403 forbidden`) or a failed
+  step-up (`401 step_up_required`) becomes an `access.refused` event,
+  outcome `refused`, with the permission, the scope, the route and its
+  target. Unauthenticated requests and CSRF refusals stay out of the chain
+  (anonymous traffic must not grow it): they are logged (`info`). The
+  control plane has no metrics surface yet; counting them waits for one.
+- **`/audit?scope=` includes descendants**, as role bindings do: a group
+  reads itself, its descendant groups and every service in any of them; a
+  service reads itself. A reader bound to a group is refused a sibling
+  group (`403`), and sees none of its entries. Entries of a group or
+  service deleted since are not matched by a group's filter (it is computed
+  from the groups and services that exist now).
+
+Added with those changes (approved by the user, 2026-11-17):
+
+| Names | Where |
+|---|---|
+| the store's `incrementCounter(key, ttlMs)` → `CounterValue` (`count`, `expiresAt`), `getCounter(key)`, `resetCounter(key)`, `claimKey(key, ttlMs)` → `boolean`; the table `<prefix>counters` (`name`, `count`, `expires_at`); `AuditQuery.scopes` (1 to `MAX_AUDIT_SCOPES`, 5,000); `faultyStore` operations `incrementCounter`, `getCounter`, `resetCounter`, `claimKey` | `./store`, `./testing` |
+| the audit action `access.refused` (`reason` `forbidden` or `step_up_required`, `permission`, `route`, `target`); the store keys `breakGlass:<id>:failures` and `breakGlass:<id>:code:<step>`; `ControlPlane.logger`, `ControlPlane.auditScopesUnder(scope)` | the log, `./control` |
 
 ### 17.25 Added with PR-D3 (approved by the user, 2026-11-17)
 

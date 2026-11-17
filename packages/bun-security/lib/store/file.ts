@@ -208,6 +208,27 @@ export function policyFile(
     delete: async () => refuseReadOnly(name, "delete()"),
     appendVersion: async () => refuseReadOnly(name, "appendVersion()"),
     putBundle: async () => refuseReadOnly(name, "putBundle()"),
+    appendAudit: async () => refuseReadOnly(name, "appendAudit()"),
+    appendCheckpoint: async () => refuseReadOnly(name, "appendCheckpoint()"),
+    deleteAuditBefore: async () => refuseReadOnly(name, "deleteAuditBefore()"),
+    incrementCounter: async () => refuseReadOnly(name, "incrementCounter()"),
+    resetCounter: async () => refuseReadOnly(name, "resetCounter()"),
+    claimKey: async () => refuseReadOnly(name, "claimKey()"),
+    // A policy file keeps no counters.
+    getCounter: async () => undefined,
+    // A policy file has no audit chain: these read the empty one.
+    getAuditHead: async () => {
+      await store.connect();
+      return await inner.getAuditHead();
+    },
+    listAudit: async (query) => {
+      await store.connect();
+      return await inner.listAudit(query);
+    },
+    listCheckpoints: async (query) => {
+      await store.connect();
+      return await inner.listCheckpoints(query);
+    },
     // A policy file holds one policy and no bundle: an EP reading it
     // compiles the policy itself.
     getBundle: async (serviceId, ifNoneMatch) => {

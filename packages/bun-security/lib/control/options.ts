@@ -7,10 +7,17 @@ import type { BunRequest, Duration, LoggerLike } from "@kingsleyweb/bun-common";
 import { ConfigError, toDurationMs } from "@kingsleyweb/bun-common";
 import type { SecurityStoreDriver } from "../store/types";
 import type { SecurityApiPermission } from "./contract/constants";
-import type { PolicyScopeId } from "./contract/types";
+import type { PolicyScopeId, SecurityAlertDto } from "./contract/types";
 import type { BundleSigner, ResolvedSigner } from "./signing";
+import type { BreakGlassOptions } from "./audit/breakglass";
+import type { AuditSigner, AuditSigning } from "./audit/keys";
+import type { CheckpointSink } from "./audit/sinks";
+import type { KeyObject } from "node:crypto";
+import { createPublicKey } from "node:crypto";
 import { DEFAULT_SECURITY_CSRF_HEADER } from "./contract/constants";
 import { resolveSigner } from "./signing";
+import { BreakGlass } from "./audit/breakglass";
+import { resolveAuditSigner } from "./audit/keys";
 
 /** Who is calling, as the host's `authenticate` says. */
 export interface Operator {
@@ -18,6 +25,8 @@ export interface Operator {
   readonly id: string;
   /** Their display name. */
   readonly name?: string;
+  /** The host's session id, recorded in audit entries (never a secret: an id, not the cookie). */
+  readonly sessionId?: string;
 }
 
 /** What a permission is checked on: a scope. */
@@ -72,6 +81,25 @@ export interface SecurityApiOptions {
   readonly signing: BundleSigner;
   /** How long a bundle is valid before an EP warns. Default `"7d"`. */
   readonly bundleTtl?: Duration;
+  /** The audit log (control-plane.md §6). Required. */
+  readonly audit: {
+    /** The audit key, distinct from the bundle key: `{ keyId, privateKey }` or `{ keyId, sign, publicKey }`. */
+    readonly signing: AuditSigning;
+    /** Where every checkpoint is also written; at least one unless `allowNoExternalCheckpoints`. */
+    readonly sinks?: readonly CheckpointSink[];
+    /** Run with no external sink (development, tests); `verify` then says none is configured. Default `false`. */
+    readonly allowNoExternalCheckpoints?: boolean;
+    /** A checkpoint every this many entries. Default 1,000. */
+    readonly checkpointEvery?: number;
+    /** A checkpoint when the last is older than this. Default `"1h"`. */
+    readonly checkpointInterval?: Duration;
+    /** Retired audit keys' public halves (PEM), by key id, still accepted on their checkpoints. */
+    readonly previousKeys?: Readonly<Record<string, string | KeyObject>>;
+  };
+  /** The break-glass account (Q11), opt-in: a password hash and a TOTP secret from the environment. */
+  readonly breakGlass?: BreakGlassOptions;
+  /** Called with each alert (break-glass login, a broken chain, an emergency, a failing sink); PR-CP6 routes them to channels. */
+  readonly onAlert?: (alert: SecurityAlertDto) => void;
   /** Where the API is mounted. Default `/security/api`. */
   readonly basePath?: string;
   /**
@@ -122,6 +150,23 @@ export interface ResolvedSecurityApiOptions {
   readonly signer: ResolvedSigner;
   /** In milliseconds. */
   readonly bundleTtlMs: number;
+  /** The audit log's settings, resolved. */
+  readonly audit: {
+    /** The audit key. */
+    readonly signer: AuditSigner;
+    /** The sinks. */
+    readonly sinks: readonly CheckpointSink[];
+    /** A checkpoint every this many entries. */
+    readonly checkpointEvery: number;
+    /** A checkpoint when the last is older than this, ms. */
+    readonly checkpointIntervalMs: number;
+    /** Retired keys, by id. */
+    readonly previousKeys: ReadonlyMap<string, KeyObject>;
+  };
+  /** The break-glass account, when configured. */
+  readonly breakGlass: BreakGlass | undefined;
+  /** Raises an alert (logged as well). */
+  readonly onAlert: (alert: SecurityAlertDto) => void;
   /** Normalised: a leading slash, no trailing one. */
   readonly basePath: string;
   /** The CSRF settings, or `false`. */
@@ -227,6 +272,8 @@ export function resolveOptions(
     }
     csrf = { header, origins: [...(options.csrf?.origins ?? [])] };
   }
+  const signer = resolveSigner(options.signing);
+  const now = options.now ?? Date.now;
   return {
     store: options.store,
     authenticate: options.authenticate,
@@ -239,7 +286,7 @@ export function resolveOptions(
       options.approvalTtl ?? "24h",
       "createSecurityApi(): approvalTtl",
     ),
-    signer: resolveSigner(options.signing),
+    signer,
     bundleTtlMs: toDurationMs(
       options.bundleTtl ?? "7d",
       "createSecurityApi(): bundleTtl",
@@ -250,6 +297,61 @@ export function resolveOptions(
       title: options.docs?.title ?? "bun-security management API",
       version: options.docs?.version ?? "1",
     },
-    now: options.now ?? Date.now,
+    now,
+    audit: resolveAudit(options.audit, signer),
+    breakGlass:
+      options.breakGlass === undefined
+        ? undefined
+        : new BreakGlass(options.breakGlass, options.store, now),
+    onAlert: options.onAlert ?? (() => {}),
+  };
+}
+
+/** Checks the audit options. */
+function resolveAudit(
+  audit: SecurityApiOptions["audit"] | undefined,
+  bundle: ResolvedSigner,
+): ResolvedSecurityApiOptions["audit"] {
+  if (typeof audit !== "object" || audit === null) {
+    throw new ConfigError(
+      "createSecurityApi(): audit is required: { signing, sinks } (control-plane.md §6); the control plane never runs unaudited",
+    );
+  }
+  const signer = resolveAuditSigner(audit.signing, bundle);
+  const sinks = [...(audit.sinks ?? [])];
+  for (const sink of sinks) {
+    if (typeof sink?.write !== "function" || typeof sink.name !== "string") {
+      throw new ConfigError(
+        "createSecurityApi(): audit.sinks holds something that is not a checkpoint sink",
+      );
+    }
+  }
+  if (sinks.length === 0 && audit.allowNoExternalCheckpoints !== true) {
+    throw new ConfigError(
+      "createSecurityApi(): audit.sinks needs at least one external checkpoint sink (fileCheckpointSink, webhookCheckpointSink, callbackCheckpointSink); allowNoExternalCheckpoints: true runs without",
+    );
+  }
+  const every = audit.checkpointEvery ?? 1_000;
+  if (!Number.isSafeInteger(every) || every < 1) {
+    throw new ConfigError(
+      "createSecurityApi(): audit.checkpointEvery must be a positive whole number",
+    );
+  }
+  const previousKeys = new Map<string, KeyObject>();
+  for (const [keyId, key] of Object.entries(audit.previousKeys ?? {})) {
+    previousKeys.set(
+      keyId,
+      typeof key === "string" ? createPublicKey(key) : key,
+    );
+  }
+  return {
+    signer,
+    sinks,
+    checkpointEvery: every,
+    checkpointIntervalMs: toDurationMs(
+      audit.checkpointInterval ?? "1h",
+      "createSecurityApi(): audit.checkpointInterval",
+    ),
+    previousKeys,
   };
 }

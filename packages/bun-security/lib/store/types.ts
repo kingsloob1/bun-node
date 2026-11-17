@@ -192,8 +192,112 @@ export type PutBundleResult =
       readonly version: number | null;
     };
 
-/** What a {@link Change} names: a document's kind, or `bundle` for a service's bundle. */
-export type ChangeKind = DocKind | "bundle";
+/** What a {@link Change} names: a document's kind, `bundle` for a service's bundle, `audit` for an audit entry. */
+export type ChangeKind = DocKind | "bundle" | "audit";
+
+/**
+ * An audit entry to append (control-plane.md §6): the control plane
+ * computes its hash over its predecessor's; the store keeps the chain
+ * linear (`expectedPrevHash`) and the columns it filters on.
+ */
+export interface AuditInput {
+  /** `SHA-256(prevHash || canonical JSON of entry)`, hex. */
+  readonly hash: string;
+  /** The hash of the entry before it (64 zeros for the first). */
+  readonly prevHash: string;
+  /** When, epoch milliseconds. */
+  readonly at: number;
+  /** Who: the operator's id, `break-glass`, or `system`. */
+  readonly actor: string;
+  /** What (`policy.publish`, `service.put`, `breakGlass.login`). */
+  readonly action: string;
+  /** The scope it acted on (`global`, `group:<id>`, `service:<id>`). */
+  readonly scope: string;
+  /** The entry, a JSON value: what the hash covers. */
+  readonly entry: unknown;
+}
+
+/** An audit entry as stored. */
+export interface AuditRecord extends AuditInput {
+  /** Its number: 1 for the first, one more for each after, never reused. */
+  readonly n: number;
+}
+
+/** The audit chain's head. */
+export interface AuditHead {
+  /** The last entry's number. */
+  readonly n: number;
+  /** The last entry's hash. */
+  readonly hash: string;
+}
+
+/** What {@link SecurityStoreDriver.appendAudit} answers. */
+export type AppendAuditResult =
+  | {
+      /** Appended. */
+      readonly ok: true;
+      /** The entry's number. */
+      readonly n: number;
+      /** The change the append wrote. */
+      readonly seq: bigint;
+    }
+  | {
+      /** Refused: the head is not the one named. */
+      readonly ok: false;
+      /** The head as it is now (`null`: an empty chain). */
+      readonly head: AuditHead | null;
+    };
+
+/** An audit list's query: a page by number, filtered. */
+export interface AuditQuery {
+  /** The most entries a page holds, 1 to {@link MAX_PAGE_LIMIT}. */
+  readonly limit: number;
+  /** The previous page's `next`, bound to the same filter and direction. */
+  readonly cursor?: string;
+  /** `asc` (oldest first, the default) or `desc`. */
+  readonly direction?: "asc" | "desc";
+  /** Only entries by this actor. */
+  readonly actor?: string;
+  /** Only entries of this action. */
+  readonly action?: string;
+  /** Only entries on this scope. */
+  readonly scope?: string;
+  /** Only entries on one of these scopes (a group and what is under it), 1 to {@link MAX_AUDIT_SCOPES}. */
+  readonly scopes?: readonly string[];
+  /** Only entries at or after this time, epoch milliseconds. */
+  readonly since?: number;
+  /** Only entries before this time. */
+  readonly until?: number;
+  /** Only entries numbered at least this. */
+  readonly fromN?: number;
+  /** Only entries numbered at most this. */
+  readonly toN?: number;
+}
+
+/** A short-lived counter's value. */
+export interface CounterValue {
+  /** How many increments since it started. */
+  readonly count: number;
+  /** When it expires, epoch milliseconds. */
+  readonly expiresAt: number;
+}
+
+/** The most scopes an audit query's `scopes` names. */
+export const MAX_AUDIT_SCOPES = 5_000;
+
+/** A signed checkpoint of the audit chain (control-plane.md §6.2). */
+export interface AuditCheckpoint {
+  /** The entry it covers: the chain up to and including it. */
+  readonly n: number;
+  /** That entry's hash. */
+  readonly hash: string;
+  /** When it was signed, epoch milliseconds. */
+  readonly at: number;
+  /** The audit key's id. */
+  readonly keyId: string;
+  /** The Ed25519 signature over `{ n, hash, at }`'s canonical JSON, base64. */
+  readonly signature: string;
+}
 
 /** One entry of the change feed. */
 export interface Change {
@@ -337,6 +441,55 @@ export interface SecurityStoreDriver {
     serviceId: string,
     ifNoneMatch?: string,
   ) => Promise<StoredBundle | "not-modified" | undefined>;
+
+  /**
+   * Appends an audit entry only if the chain's head hash is
+   * `expectedPrevHash` (`null`: the chain is empty) and the entry's
+   * `prevHash` is it (storage.md §3.2): two writers never fork the chain.
+   * It appends an `audit` change.
+   */
+  appendAudit: (
+    entry: AuditInput,
+    expectedPrevHash: string | null,
+  ) => Promise<AppendAuditResult>;
+  /** The chain's head, or `null` when it has never had an entry. Kept after a purge. */
+  getAuditHead: () => Promise<AuditHead | null>;
+  /** A page of audit entries by number, filtered. */
+  listAudit: (query: AuditQuery) => Promise<Page<AuditRecord>>;
+  /** Stores a checkpoint; a second one for the same number is ignored. */
+  appendCheckpoint: (checkpoint: AuditCheckpoint) => Promise<void>;
+  /** A page of checkpoints by number. */
+  listCheckpoints: (query: {
+    /** The page size. */
+    readonly limit: number;
+    /** The previous page's `next`. */
+    readonly cursor?: string;
+    /** `asc` (default) or `desc`. */
+    readonly direction?: "asc" | "desc";
+  }) => Promise<Page<AuditCheckpoint>>;
+  /**
+   * Retention only (control-plane.md §6.2, never an API route): deletes up
+   * to `limit` entries numbered below `beforeN`, oldest first; how many.
+   */
+  deleteAuditBefore: (beforeN: number, limit: number) => Promise<number>;
+
+  /**
+   * Adds one to the short-lived counter `key` and sets its expiry `ttlMs`
+   * from now; an expired or absent one starts again at 1. Atomic across
+   * every client of the store (control-plane state shared by instances:
+   * the break-glass failures).
+   */
+  incrementCounter: (key: string, ttlMs: number) => Promise<CounterValue>;
+  /** The counter `key`, or `undefined` when absent or expired. */
+  getCounter: (key: string) => Promise<CounterValue | undefined>;
+  /** Removes the counter `key` (a claim too); absent is fine. */
+  resetCounter: (key: string) => Promise<void>;
+  /**
+   * Claims `key` for `ttlMs` when no live claim holds it: `true` for the
+   * first caller, `false` for every other until it expires. Atomic across
+   * every client (single-use codes).
+   */
+  claimKey: (key: string, ttlMs: number) => Promise<boolean>;
 
   /** The changes after `seq`, oldest first, at most `limit`, and the feed's head. */
   changesSince: (

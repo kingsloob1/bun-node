@@ -18,6 +18,14 @@ import type { Operator, ResolvedSecurityApiOptions } from "./options";
 import type { ControlPlane } from "./plane";
 import type { Schema } from "./schema";
 import { ApiProblem } from "./problems";
+import { randomUUID } from "node:crypto";
+import type { AuditRequestContext } from "./audit/context";
+import { auditContext, breakGlassOperators } from "./audit/context";
+import { BREAK_GLASS_STEP_UP_MS } from "./audit/breakglass";
+import {
+  AUDIT_INCOMPLETE_HEADER,
+  BREAK_GLASS_HEADER,
+} from "./contract/constants";
 import { Problem } from "./schemas";
 
 /** What a handler gets. */
@@ -80,12 +88,17 @@ export interface RouteSpec<P, Q, B> {
   >;
   /** The problem statuses it may answer, besides 400, 401 and 500. */
   readonly problems?: readonly number[];
+  /** Taken without an operator (the break-glass login); the CSRF check still applies. */
+  readonly public?: boolean;
   /** Handles it. */
   readonly handle: (context: RouteContext<P, Q, B>) => Promise<RouteAnswer>;
 }
 
 /** The operator authenticated for a request. */
 const OPERATORS = new WeakMap<Request, Operator>();
+
+/** A break-glass session's login time, by its operator object, for step-up. */
+const BREAK_GLASS_SESSIONS = new WeakMap<Operator, number>();
 
 /** The methods that change something. */
 const MUTATIONS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
@@ -107,18 +120,41 @@ export function addRoute<P, Q, B>(
   csrf: CsrfGuard | undefined,
 ): void {
   const authenticate: RouterHandler = async (req, res, next) => {
-    let operator: Operator | null;
-    try {
-      operator = await options.authenticate(req);
-    } catch (error) {
-      next(error instanceof Error ? error : new Error(String(error)));
-      return;
+    let operator: Operator | null = null;
+    const token = req.request.headers.get(BREAK_GLASS_HEADER);
+    if (spec.public === true) {
+      // No operator: only the CSRF check below.
+    } else if (token !== null && options.breakGlass !== undefined) {
+      // A break-glass session: the host's identity provider is not asked.
+      const session = options.breakGlass.session(token);
+      if (session !== undefined) {
+        operator = { id: options.breakGlass.id, name: "break-glass" };
+        breakGlassOperators.add(operator);
+        BREAK_GLASS_SESSIONS.set(operator, session.iat);
+      }
+    } else {
+      try {
+        operator = await options.authenticate(req);
+      } catch (error) {
+        next(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
     }
     if (
-      operator === null ||
-      typeof operator?.id !== "string" ||
-      operator.id === ""
+      spec.public !== true &&
+      (operator === null ||
+        typeof operator?.id !== "string" ||
+        operator.id === "")
     ) {
+      // Never in the audit chain (anonymous traffic must not grow it): the log only.
+      plane.logger.info(
+        "bun-security api: refused an unauthenticated request",
+        {
+          method: req.method,
+          path: req.path,
+          address: req.ip ?? null,
+        },
+      );
       sendProblem(
         res,
         new ApiProblem(
@@ -129,13 +165,20 @@ export function addRoute<P, Q, B>(
       );
       return;
     }
-    OPERATORS.set(req.request, operator);
+    if (operator !== null) OPERATORS.set(req.request, operator);
     if (MUTATIONS.has(req.method) && options.csrf !== false) {
       const refusal = csrf?.check(req);
       if (
         refusal !== undefined ||
         !req.request.headers.has(options.csrf.header)
       ) {
+        // A forged request is not the operator's act: the log only, never the chain.
+        plane.logger.info("bun-security api: refused a request as cross-site", {
+          method: req.method,
+          path: req.path,
+          address: req.ip ?? null,
+          reason: refusal ?? "no CSRF header",
+        });
         sendProblem(
           res,
           new ApiProblem(
@@ -158,7 +201,27 @@ export function addRoute<P, Q, B>(
     responses[status] ??= { content: { "application/problem+json": Problem } };
 
   const handler: RouterHandler = async (req, res, next) => {
-    const operator = OPERATORS.get(req.request)!;
+    const operator = OPERATORS.get(req.request) ?? { id: "anonymous" };
+    const breakGlassAt = BREAK_GLASS_SESSIONS.get(operator);
+    const audit: AuditRequestContext = {
+      actor: {
+        id: operator.id,
+        kind:
+          breakGlassAt !== undefined
+            ? "break-glass"
+            : spec.public === true
+              ? "system"
+              : "operator",
+      },
+      address: req.ip ?? null,
+      sessionId: operator.sessionId ?? null,
+      requestId: req.request.headers.get("x-request-id") ?? randomUUID(),
+      permissions: [],
+      stepUp: false,
+      incomplete: false,
+    };
+    /** The permission and scope a `require` refused, for the refusal's entry. */
+    let denied: { permission: string; scope: string } | undefined;
     const context: RouteContext<P, Q, B> = {
       req,
       res,
@@ -168,7 +231,9 @@ export function addRoute<P, Q, B>(
       operator,
       plane,
       require: async (permission, scope) => {
+        audit.permissions.push(`${permission} ${scope}`);
         if (!(await plane.can(operator, permission, scope))) {
+          denied = { permission, scope };
           throw new ApiProblem(
             403,
             "forbidden",
@@ -177,9 +242,20 @@ export function addRoute<P, Q, B>(
         }
       },
       stepUp: async () => {
+        // A break-glass login is a fresh second factor (TOTP) for 5 minutes.
+        if (
+          breakGlassAt !== undefined &&
+          options.now() - breakGlassAt <= BREAK_GLASS_STEP_UP_MS
+        ) {
+          audit.stepUp = true;
+          return true;
+        }
         if (options.guard === "none") return true;
         if (options.guard === "approvals") return false;
-        if (await options.stepUp!.verify(req, operator)) return true;
+        if (await options.stepUp!.verify(req, operator)) {
+          audit.stepUp = true;
+          return true;
+        }
         throw new ApiProblem(
           401,
           "step_up_required",
@@ -191,7 +267,11 @@ export function addRoute<P, Q, B>(
       },
     };
     try {
-      const answer = await spec.handle(context);
+      const answer = await auditContext.run(
+        audit,
+        async () => await spec.handle(context),
+      );
+      if (audit.incomplete) res.set(AUDIT_INCOMPLETE_HEADER, "incomplete");
       if (answer === undefined) return;
       for (const [name, value] of Object.entries(answer.headers ?? {}))
         res.set(name, value);
@@ -201,6 +281,35 @@ export function addRoute<P, Q, B>(
         res.status(answer.status).json(answer.body as never);
       }
     } catch (error) {
+      if (
+        error instanceof ApiProblem &&
+        (error.code === "forbidden" || error.code === "step_up_required") &&
+        OPERATORS.has(req.request)
+      ) {
+        // A signed-in operator refused (a permission, a step-up): in the chain.
+        await auditContext
+          .run(
+            audit,
+            async () =>
+              await plane.audit.event(
+                "access.refused",
+                denied?.scope ?? "global",
+                {
+                  outcome: "refused",
+                  reason: error.code,
+                  permission: denied?.permission ?? null,
+                  route: `${req.method} ${spec.path}`,
+                  target: { ...(req.params as Record<string, string>) },
+                },
+              ),
+          )
+          .catch((failure: unknown) =>
+            plane.logger.error(
+              "bun-security api: a refusal could not be audited",
+              { error: failure },
+            ),
+          );
+      }
       next(error instanceof Error ? error : new Error(String(error)));
     }
   };

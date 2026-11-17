@@ -4,6 +4,7 @@
  */
 import type { SecurityStoreDriver } from "../store/types";
 import type { StoreCrossProcessJob } from "./crossprocess-worker";
+import { AUDIT_GENESIS_HASH } from "../store/shared";
 
 /** What the worker won. */
 export interface StoreCrossProcessResult {
@@ -11,11 +12,14 @@ export interface StoreCrossProcessResult {
   readonly revisions: number[];
   /** The version ids its appends added. */
   readonly versions: string[];
+  /** The audit entries its appends added, by number. */
+  readonly audit: number[];
 }
 
 /**
- * Wins `count` writes of one document and `count` appends to one policy,
- * each read-then-compare-and-set, retried on a refusal. The kit's own side
+ * Wins `count` writes of one document, `count` appends to one policy and
+ * `count` audit entries, each read-then-compare-and-set, retried on a
+ * refusal. The kit's own side
  * runs the same function.
  */
 export async function raceStore(
@@ -46,5 +50,27 @@ export async function raceStore(
     if (result.ok) versions.push(id);
     await Bun.sleep(0);
   }
-  return { revisions, versions };
+  const audit: number[] = [];
+  while (audit.length < job.count) {
+    const head = await store.getAuditHead();
+    const prevHash = head?.hash ?? AUDIT_GENESIS_HASH;
+    const hash = new Bun.CryptoHasher("sha256")
+      .update(`${prevHash}|${job.side}|${audit.length}`)
+      .digest("hex");
+    const result = await store.appendAudit(
+      {
+        hash,
+        prevHash,
+        at: audit.length,
+        actor: job.side,
+        action: "race",
+        scope: "global",
+        entry: { side: job.side, k: audit.length },
+      },
+      head?.hash ?? null,
+    );
+    if (result.ok) audit.push(result.n);
+    await Bun.sleep(0);
+  }
+  return { revisions, versions, audit };
 }

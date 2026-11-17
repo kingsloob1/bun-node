@@ -11,7 +11,11 @@ import type { SecurityStoreDriver } from "../../lib/store/index";
 import { SQL } from "bun";
 import { afterEach, describe, expect, it } from "bun:test";
 import { createSecurity } from "../../lib/index";
-import { postgresStore, storeTables } from "../../lib/store/index";
+import {
+  AUDIT_GENESIS_HASH,
+  postgresStore,
+  storeTables,
+} from "../../lib/store/index";
 import { changeChannel, postgresInit } from "../../lib/store/postgres";
 import { sqlSecurityStore } from "../../lib/store/sql";
 import { facts } from "../helpers";
@@ -163,6 +167,95 @@ if (await postgresAvailable()) {
       expect(new Set(seen).size).toBe(100);
       expect(seen).toHaveLength(100);
     });
+  });
+
+  describe("postgres: the audit chain takes the same lock", () => {
+    /** An audit entry on the genesis. */
+    const firstEntry = () => ({
+      hash: "1".repeat(64),
+      prevHash: AUDIT_GENESIS_HASH,
+      at: 1,
+      actor: "alice",
+      action: "service.put",
+      scope: "service:a",
+      entry: { k: 1 },
+    });
+    /** A checkpoint (the store keeps it; signatures are the log's business). */
+    const checkpoint = {
+      n: 1,
+      hash: "1".repeat(64),
+      at: 2,
+      keyId: "ak",
+      signature: "c2ln",
+    };
+
+    for (const serialize of [true, false]) {
+      it(`${serialize ? "with" : "negative control: without"} the lock, an audit append, a checkpoint, a counter and a claim ${serialize ? "wait for" : "pass"} a change held in its transaction`, async () => {
+        const { store, release, recorded } = gated(serialize);
+        await store.connect();
+        const slow = store.put("service", "a", {}, null);
+        await recorded;
+        let appended = false;
+        let checkpointed = false;
+        const append = store.appendAudit(firstEntry(), null).then((result) => {
+          appended = true;
+          return result;
+        });
+        const stored = store.appendCheckpoint(checkpoint).then(() => {
+          checkpointed = true;
+        });
+        // The break-glass state's writes take it too.
+        let counted = false;
+        let claimed = false;
+        const counter = store
+          .incrementCounter("bg:failures", 60_000)
+          .then(() => {
+            counted = true;
+          });
+        const claim = store.claimKey("bg:code:1", 60_000).then(() => {
+          claimed = true;
+        });
+        try {
+          if (serialize) {
+            // Held at the lock for as long as the change is held.
+            await Bun.sleep(300);
+            expect([appended, checkpointed, counted, claimed]).toEqual([
+              false,
+              false,
+              false,
+              false,
+            ]);
+          } else {
+            // Through while the change is still held (however long a new
+            // connection takes on a busy machine).
+            await Promise.race([
+              Promise.all([append, stored, counter, claim]),
+              Bun.sleep(5_000),
+            ]);
+            expect([appended, checkpointed, counted, claimed]).toEqual([
+              true,
+              true,
+              true,
+              true,
+            ]);
+          }
+        } finally {
+          // Never leave the held transaction open for the next case.
+          release();
+        }
+        const [put, audit] = await Promise.all([
+          slow,
+          append,
+          stored,
+          counter,
+          claim,
+        ]);
+        expect(put.ok && audit.ok).toBe(true);
+        // With the lock, the feed numbers the audit change after the held one.
+        if (serialize && put.ok && audit.ok)
+          expect(audit.seq > put.seq).toBe(true);
+      }, 15_000);
+    }
   });
 
   describe("postgres: the pushed feed", () => {

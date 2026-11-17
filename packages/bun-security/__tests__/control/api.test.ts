@@ -6,6 +6,7 @@
  * rollback, the built-in RBAC, the live stream and the documents. Each
  * behaviour has its refusal beside it.
  */
+import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "bun:test";
 import { ConfigError } from "@kingsleyweb/bun-common";
 import { createSecurityApi } from "../../lib/control/index";
@@ -20,6 +21,13 @@ const base = () => ({
   owners: ["x"],
   allowWithoutStepUp: true,
   signing: { keyId: "k", sign: () => new Uint8Array(64) },
+  audit: {
+    signing: {
+      keyId: "ak",
+      privateKey: generateKeyPairSync("ed25519").privateKey,
+    },
+    allowNoExternalCheckpoints: true,
+  },
 });
 
 describe("createSecurityApi's options", () => {
@@ -901,6 +909,11 @@ describe("the documents", () => {
       "/approvals/{id}/reject",
       "/role-bindings",
       "/role-bindings/{id}",
+      "/audit",
+      "/audit/checkpoints",
+      "/audit/verify",
+      "/audit/export",
+      "/audit/{n}",
       "/live",
     ]) {
       expect(paths).toContain(path);

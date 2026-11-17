@@ -7,6 +7,19 @@
 export { secureAdmin, isPrivateBind } from "./admin";
 export type { AdminListener, AdminMount, SecureAdminOptions } from "./admin";
 export { createSecurityApi } from "./api";
+export { auditHash } from "./audit/log";
+export { totpCode } from "./audit/breakglass";
+export type { BreakGlassOptions } from "./audit/breakglass";
+export type { AuditSigning } from "./audit/keys";
+export {
+  callbackCheckpointSink,
+  fileCheckpointSink,
+  webhookCheckpointSink,
+} from "./audit/sinks";
+export type {
+  CheckpointSink,
+  WebhookCheckpointSinkOptions,
+} from "./audit/sinks";
 export type { SecurityApi } from "./api";
 export { dangerousChanges } from "./dangerous";
 export { diffPolicies, mergePolicies } from "./merge";

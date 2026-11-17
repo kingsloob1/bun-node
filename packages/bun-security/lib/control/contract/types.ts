@@ -4,6 +4,7 @@
  * any typed client. The server's schemas are checked against them.
  */
 import type {
+  SecurityAlertKind,
   SecurityApiErrorCode,
   SecurityApiPermission,
   SecurityLiveEventName,
@@ -406,4 +407,157 @@ export interface SecurityLiveEventDto {
   readonly data: Readonly<Record<string, unknown>>;
   /** When, epoch milliseconds. */
   readonly at: number;
+}
+
+/** Who an audit entry names (control-plane.md §6.1). */
+export interface AuditActorDto {
+  /** The operator's id, `break-glass`, or `system` (a host's own call, a purge). */
+  readonly id: string;
+  /** What kind of actor. */
+  readonly kind: "operator" | "break-glass" | "system";
+}
+
+/** Where an intent's change was to land, so a missing "done" can be reconciled. */
+export interface AuditTargetDto {
+  /** A document kind (`service`, `policyDraft`, …), or `version` for a policy version. */
+  readonly kind: string;
+  /** Its id (a version's id for `version`). */
+  readonly id: string;
+  /** The scope, for a version. */
+  readonly scope?: string;
+  /** The revision it would have once written; absent for a delete or a version. */
+  readonly revision?: number;
+  /** Whether the change deletes it. */
+  readonly deleted?: boolean;
+}
+
+/**
+ * One audit entry (control-plane.md §6.1). A change is two: an `intent`
+ * appended before it, and a `done` naming the intent after it; an `event`
+ * (a break-glass login, an export, a purge) stands alone.
+ */
+export interface AuditEntryDto {
+  /** Its number in the chain. */
+  readonly n: number;
+  /** When, epoch milliseconds. */
+  readonly at: number;
+  /** `SHA-256(prevHash || canonical JSON of entry)`, hex. */
+  readonly hash: string;
+  /** The entry before it's hash. */
+  readonly prevHash: string;
+  /** Who. */
+  readonly actor: string;
+  /** What (`service.put`, `policy.publish`, `approval.approve`, `breakGlass.login`, …). */
+  readonly action: string;
+  /** The scope it acted on. */
+  readonly scope: string;
+  /** `intent`, `done` or `event`. */
+  readonly phase: "intent" | "done" | "event";
+  /**
+   * For an intent: `done` when its done entry exists; otherwise, reconciled
+   * against the store, `completed-unconfirmed` (the change is there) or
+   * `not-applied` (it is not). Never tampering.
+   */
+  readonly status?: "done" | "completed-unconfirmed" | "not-applied";
+  /** The entry as hashed: actor, address, session, request id, permission, step-up, approval, target, before and after or a diff, outcome. */
+  readonly entry: Readonly<Record<string, unknown>>;
+}
+
+/** A signed checkpoint of the chain. */
+export interface AuditCheckpointDto {
+  /** The entry it covers. */
+  readonly n: number;
+  /** That entry's hash. */
+  readonly hash: string;
+  /** When it was signed. */
+  readonly at: number;
+  /** The audit key's id. */
+  readonly keyId: string;
+  /** The Ed25519 signature, base64. */
+  readonly signature: string;
+}
+
+/** Where `verify` found the chain broken. */
+export interface AuditProblemDto {
+  /** The first entry (or checkpoint) affected. */
+  readonly n: number;
+  /**
+   * `hash-mismatch` (an entry edited), `gap` (one deleted), `order` (moved
+   * or reordered), `anchor` (the oldest retained entry not covered by a
+   * checkpoint), `truncated` (the end cut off), `checkpoint-signature` (a
+   * forged checkpoint), `checkpoint-mismatch` (a checkpoint disagreeing
+   * with the chain).
+   */
+  readonly reason:
+    | "hash-mismatch"
+    | "gap"
+    | "order"
+    | "anchor"
+    | "truncated"
+    | "checkpoint-signature"
+    | "checkpoint-mismatch";
+  /** What was found, for a person. */
+  readonly detail: string;
+  /** Where the checkpoint came from, for a checkpoint problem: `store` or a sink's name. */
+  readonly source?: string;
+}
+
+/** `GET /audit/verify`: the chain recomputed and its checkpoints checked. */
+export interface AuditVerifyDto {
+  /** No problem found. */
+  readonly ok: boolean;
+  /** Entries checked. */
+  readonly checked: number;
+  /** The oldest retained entry's number, `null` with none. */
+  readonly first: number | null;
+  /** The last entry's number, `null` with none. */
+  readonly last: number | null;
+  /** Checkpoints checked, and the latest one's number. */
+  readonly checkpoints: {
+    readonly checked: number;
+    readonly latest: number | null;
+  };
+  /** The external sinks: `none-configured`, `checked` (one or more read back), or `write-only` (none readable). */
+  readonly external: "none-configured" | "checked" | "write-only";
+  /** Every problem, the first one first. */
+  readonly problems: readonly AuditProblemDto[];
+  /** Intents with no done entry, reconciled against the store (never tampering). */
+  readonly unconfirmed: readonly {
+    readonly n: number;
+    readonly action: string;
+    readonly scope: string;
+    readonly status: "completed-unconfirmed" | "not-applied";
+  }[];
+}
+
+/** An alert raised through `onAlert` (until PR-CP6 routes them to channels). */
+export interface SecurityAlertDto {
+  /** Which. */
+  readonly kind: SecurityAlertKind;
+  /** How bad. */
+  readonly severity: "info" | "warning" | "critical";
+  /** What happened, for a person. */
+  readonly message: string;
+  /** When, epoch milliseconds. */
+  readonly at: number;
+  /** Details: the scope, the audit entry's number, the sink. */
+  readonly detail: Readonly<Record<string, unknown>>;
+}
+
+/** What `POST /break-glass/session` takes. */
+export interface BreakGlassLoginInput {
+  /** The break-glass password. */
+  readonly password: string;
+  /** The current TOTP code. */
+  readonly code: string;
+}
+
+/** What `POST /break-glass/session` answers. */
+export interface BreakGlassSessionDto {
+  /** The token, to send in `x-bun-security-break-glass`. */
+  readonly token: string;
+  /** When it expires, epoch milliseconds (15 minutes). */
+  readonly expiresAt: number;
+  /** The header to send it in. */
+  readonly header: string;
 }

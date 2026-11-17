@@ -11,7 +11,12 @@
  * one process, not for a long-lived fleet.
  */
 import type {
+  CounterValue,
+  AppendAuditResult,
   AppendResult,
+  AuditCheckpoint,
+  AuditHead,
+  AuditRecord,
   BundleInput,
   Change,
   ChangeKind,
@@ -27,8 +32,16 @@ import type {
   StoredBundle,
   StoredDoc,
 } from "./types";
+import { ConfigError } from "@kingsleyweb/bun-common";
 import {
+  auditCursor,
+  auditPosition,
   bundleEtag,
+  checkAuditInput,
+  checkCheckpoint,
+  checkCounter,
+  checkpointCursor,
+  checkpointPosition,
   checkBundleInput,
   checkFeedRead,
   checkId,
@@ -40,6 +53,7 @@ import {
   jsonBody,
   refuseClosed,
   refusePolicyWrite,
+  resolveAuditQuery,
   resolveQuery,
   versionCursor,
   versionPosition,
@@ -84,11 +98,16 @@ function compareDocs(
 export function memoryStore(
   options: MemoryStoreOptions = {},
 ): SecurityStoreDriver {
+  /** Short-lived counters and claims, by key. */
+  const counters = new Map<string, CounterValue>();
   const now = options.now ?? Date.now;
   const name = options.name ?? "memory";
   const docs = new Map<DocKind, Map<string, StoredDoc>>();
   const versions = new Map<string, PolicyVersionRecord[]>();
   const bundles = new Map<string, StoredBundle>();
+  const audit: AuditRecord[] = [];
+  const checkpoints = new Map<number, AuditCheckpoint>();
+  let auditHead: AuditHead | null = null;
   const changes: Change[] = [];
   const listeners = new Set<(head: bigint) => void>();
   let seq = 0n;
@@ -330,6 +349,142 @@ export function memoryStore(
         return "not-modified";
       }
       return Object.freeze({ ...found, bundle: copy(found.bundle) });
+    },
+    appendAudit: async (
+      input,
+      expectedPrevHash,
+    ): Promise<AppendAuditResult> => {
+      refuseClosed(name, closed);
+      const entry = checkAuditInput(input, expectedPrevHash);
+      if ((auditHead?.hash ?? null) !== expectedPrevHash) {
+        return Object.freeze({ ok: false, head: auditHead });
+      }
+      const n = (auditHead?.n ?? 0) + 1;
+      audit.push(Object.freeze({ ...entry, n }));
+      auditHead = Object.freeze({ n, hash: entry.hash });
+      return Object.freeze({
+        ok: true,
+        n,
+        seq: record("audit", String(n), n, false),
+      });
+    },
+    getAuditHead: async () => {
+      refuseClosed(name, closed);
+      return auditHead;
+    },
+    listAudit: async (query) => {
+      refuseClosed(name, closed);
+      const resolved = resolveAuditQuery(query);
+      const after = auditPosition(resolved);
+      const f = resolved.filter;
+      const desc = resolved.direction === "desc";
+      const matching = audit.filter(
+        (entry) =>
+          (f.actor === "" || entry.actor === f.actor) &&
+          (f.action === "" || entry.action === f.action) &&
+          (f.scope === "" || entry.scope === f.scope) &&
+          (f.scopes === null || f.scopes.includes(entry.scope)) &&
+          (f.since < 0 || entry.at >= f.since) &&
+          (f.until < 0 || entry.at < f.until) &&
+          (f.fromN < 0 || entry.n >= f.fromN) &&
+          (f.toN < 0 || entry.n <= f.toN),
+      );
+      if (desc) matching.reverse();
+      const rest =
+        after === undefined
+          ? matching
+          : matching.filter((entry) =>
+              desc ? entry.n < after : entry.n > after,
+            );
+      const items = rest
+        .slice(0, resolved.limit)
+        .map((entry) => Object.freeze({ ...entry, entry: copy(entry.entry) }));
+      const last = items.at(-1);
+      return Object.freeze({
+        items,
+        ...(rest.length > resolved.limit && last !== undefined
+          ? { next: auditCursor(resolved, last.n) }
+          : {}),
+      });
+    },
+    appendCheckpoint: async (checkpoint) => {
+      refuseClosed(name, closed);
+      const cp = checkCheckpoint(checkpoint);
+      if (!checkpoints.has(cp.n)) checkpoints.set(cp.n, Object.freeze(cp));
+    },
+    listCheckpoints: async (query) => {
+      refuseClosed(name, closed);
+      const direction = query.direction ?? "asc";
+      const resolved = resolveQuery({ limit: query.limit, direction });
+      const after = checkpointPosition(query.cursor, direction);
+      const all = [...checkpoints.values()].sort((a, b) =>
+        direction === "asc" ? a.n - b.n : b.n - a.n,
+      );
+      const rest =
+        after === undefined
+          ? all
+          : all.filter((cp) =>
+              direction === "asc" ? cp.n > after : cp.n < after,
+            );
+      const items = rest.slice(0, resolved.limit);
+      const last = items.at(-1);
+      return Object.freeze({
+        items,
+        ...(rest.length > resolved.limit && last !== undefined
+          ? { next: checkpointCursor(direction, last.n) }
+          : {}),
+      });
+    },
+    deleteAuditBefore: async (beforeN, limit) => {
+      refuseClosed(name, closed);
+      if (
+        !Number.isSafeInteger(beforeN) ||
+        !Number.isSafeInteger(limit) ||
+        limit < 1
+      ) {
+        throw new ConfigError(
+          "security store: deleteAuditBefore takes a number and a positive limit",
+        );
+      }
+      let deleted = 0;
+      while (deleted < limit && audit.length > 0 && audit[0]!.n < beforeN) {
+        audit.shift();
+        deleted++;
+      }
+      return deleted;
+    },
+    incrementCounter: async (key, ttlMs) => {
+      refuseClosed(name, closed);
+      checkCounter(key, ttlMs);
+      const at = now();
+      const current = counters.get(key);
+      const count =
+        current !== undefined && current.expiresAt > at ? current.count + 1 : 1;
+      const value = Object.freeze({ count, expiresAt: at + ttlMs });
+      counters.set(key, value);
+      return value;
+    },
+    getCounter: async (key) => {
+      refuseClosed(name, closed);
+      checkCounter(key);
+      const current = counters.get(key);
+      return current !== undefined && current.expiresAt > now()
+        ? current
+        : undefined;
+    },
+    resetCounter: async (key) => {
+      refuseClosed(name, closed);
+      checkCounter(key);
+      counters.delete(key);
+    },
+    claimKey: async (key, ttlMs) => {
+      refuseClosed(name, closed);
+      checkCounter(key, ttlMs);
+      const at = now();
+      const current = counters.get(key);
+      if (current !== undefined && current.expiresAt > at) return false;
+      counters.set(key, Object.freeze({ count: 1, expiresAt: at + ttlMs }));
+      return true;
     },
     changesSince: async (since, limit) => {
       refuseClosed(name, closed);

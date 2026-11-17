@@ -7,6 +7,11 @@
 import type { Schema } from "./schema";
 import type {
   ApprovalDecisionInput,
+  AuditCheckpointDto,
+  AuditEntryDto,
+  AuditVerifyDto,
+  BreakGlassLoginInput,
+  BreakGlassSessionDto,
   ApprovalDto,
   EffectivePolicyDto,
   GroupDto,
@@ -418,3 +423,143 @@ export const Versions = page(Version);
 export const Approvals = page(Approval);
 /** A page of bindings. */
 export const Bindings = page(Binding);
+
+// ── Audit (PR-CP3) ──────────────────────────────────────────────────────────
+
+/** `GET /audit`'s query. */
+export const AuditQuery = s.query({
+  limit: s.optional(
+    s.int({
+      min: 1,
+      max: MAX_API_PAGE_LIMIT,
+      description: "the page size (default 50)",
+    }),
+  ),
+  cursor: s.optional(
+    s.string({ max: 2_000, description: "the previous page's next" }),
+  ),
+  direction: s.optional(
+    s.enum(["asc", "desc"], "newest first (desc, the default) or oldest first"),
+  ),
+  actor: s.optional(
+    s.string({ min: 1, max: 200, description: "only this operator's entries" }),
+  ),
+  action: s.optional(
+    s.string({
+      min: 1,
+      max: 200,
+      description: "only this action (service.put)",
+    }),
+  ),
+  scope: s.optional(Scope),
+  since: s.optional(
+    s.int({ min: 0, description: "only entries at or after (ms)" }),
+  ),
+  until: s.optional(s.int({ min: 0, description: "only entries before (ms)" })),
+});
+
+/** `GET /audit/export`'s query. */
+export const ExportQuery = s.query({
+  since: s.optional(
+    s.int({ min: 0, description: "only entries at or after (ms)" }),
+  ),
+  until: s.optional(s.int({ min: 0, description: "only entries before (ms)" })),
+});
+
+/** `GET /audit/:n`'s parameters. */
+export const EntryParams = s.query({
+  n: s.int({ min: 1, description: "the entry's number" }),
+});
+
+/** An audit entry. */
+export const AuditEntry: Schema<AuditEntryDto> = s.object({
+  n: s.int({ min: 1 }),
+  at: s.int({ min: 0 }),
+  hash: s.string(),
+  prevHash: s.string(),
+  actor: s.string(),
+  action: s.string(),
+  scope: s.string(),
+  phase: s.enum(["intent", "done", "event"]),
+  status: s.optional(s.enum(["done", "completed-unconfirmed", "not-applied"])),
+  entry: s.anyObject(
+    "the hashed entry: who, from where, what, before and after",
+  ),
+});
+
+/** A page of audit entries. */
+export const AuditEntries = page(AuditEntry);
+
+/** A signed checkpoint. */
+export const Checkpoint: Schema<AuditCheckpointDto> = s.object({
+  n: s.int({ min: 1 }),
+  hash: s.string(),
+  at: s.int({ min: 0 }),
+  keyId: s.string(),
+  signature: s.string(),
+});
+
+/** A page of checkpoints. */
+export const Checkpoints = page(Checkpoint);
+
+/** What `verify` answers. */
+export const AuditVerify: Schema<AuditVerifyDto> = s.object({
+  ok: s.boolean(),
+  checked: s.int({ min: 0 }),
+  first: s.nullable(s.int({ min: 1 })),
+  last: s.nullable(s.int({ min: 1 })),
+  checkpoints: s.object({
+    checked: s.int({ min: 0 }),
+    latest: s.nullable(s.int({ min: 1 })),
+  }),
+  external: s.enum(["none-configured", "checked", "write-only"]),
+  problems: s.array(
+    s.object({
+      n: s.int({ min: 1 }),
+      reason: s.enum([
+        "hash-mismatch",
+        "gap",
+        "order",
+        "anchor",
+        "truncated",
+        "checkpoint-signature",
+        "checkpoint-mismatch",
+      ]),
+      detail: s.string(),
+      source: s.optional(s.string()),
+    }),
+    1_000_000,
+  ),
+  unconfirmed: s.array(
+    s.object({
+      n: s.int({ min: 1 }),
+      action: s.string(),
+      scope: s.string(),
+      status: s.enum(["completed-unconfirmed", "not-applied"]),
+    }),
+    1_000_000,
+  ),
+});
+
+/** The break-glass login's body. */
+export const BreakGlassBody: Schema<BreakGlassLoginInput> = s.object({
+  password: s.string({
+    min: 1,
+    max: 1_000,
+    description: "the break-glass password",
+  }),
+  code: s.string({
+    min: 6,
+    max: 6,
+    description: "the authenticator's current code",
+  }),
+});
+
+/** A break-glass session. */
+export const BreakGlassSession: Schema<BreakGlassSessionDto> = s.object({
+  token: s.string({
+    description: "send it back in the header named by header",
+  }),
+  expiresAt: s.int({ min: 0 }),
+  header: s.string(),
+});

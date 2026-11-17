@@ -40,6 +40,8 @@ export const SECURITY_API_PERMISSIONS = /* @__PURE__ */ Object.freeze([
   "approvals:read",
   "roles:read",
   "roles:write",
+  "audit:read",
+  "audit:export",
 ] as const);
 
 /** A permission's name. */
@@ -72,13 +74,17 @@ export const ROLE_PERMISSIONS: Readonly<
     "bundles:read",
     "approvals:read",
   ] as const),
-  analyst: /* @__PURE__ */ Object.freeze(["identities:read"] as const),
+  analyst: /* @__PURE__ */ Object.freeze([
+    "identities:read",
+    "audit:read",
+  ] as const),
   operator: /* @__PURE__ */ Object.freeze(["policy:draft"] as const),
   admin: /* @__PURE__ */ Object.freeze([
     "services:write",
     "groups:write",
     "identities:write",
     "policy:publish",
+    "audit:export",
   ] as const),
   owner: /* @__PURE__ */ Object.freeze(["roles:read", "roles:write"] as const),
 });
@@ -99,6 +105,8 @@ export const SECURITY_API_ERROR_CODES = /* @__PURE__ */ Object.freeze([
   "approval_closed",
   "self_approval",
   "not_modified",
+  "audit_unavailable",
+  "break_glass_locked",
   "internal",
 ] as const);
 
@@ -111,7 +119,27 @@ export const SECURITY_LIVE_EVENTS = /* @__PURE__ */ Object.freeze([
   "bundle.compiled",
   "approval.created",
   "approval.decided",
+  "breakGlass.used",
 ] as const);
+
+/** The alerts the control plane raises through `onAlert` (README §9.3; channels come with PR-CP6). */
+export const SECURITY_ALERT_KINDS = /* @__PURE__ */ Object.freeze([
+  "breakGlass.login",
+  "breakGlass.locked",
+  "audit.verifyFailed",
+  "approval.emergency",
+  "policy.dangerous",
+  "checkpoint.sinkFailed",
+] as const);
+
+/** An alert's kind. */
+export type SecurityAlertKind = (typeof SECURITY_ALERT_KINDS)[number];
+
+/** The header a break-glass session's token travels in. */
+export const BREAK_GLASS_HEADER = "x-bun-security-break-glass";
+
+/** The header an answer carries (`incomplete`) when its change landed but its audit "done" entry could not be written. */
+export const AUDIT_INCOMPLETE_HEADER = "x-bun-security-audit";
 
 /** A live event's name. */
 export type SecurityLiveEventName = (typeof SECURITY_LIVE_EVENTS)[number];

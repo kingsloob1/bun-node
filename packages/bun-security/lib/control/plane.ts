@@ -10,8 +10,11 @@ import type {
   Page,
   PolicyVersionRecord,
   StoredDoc,
+  AuditQuery,
 } from "../store/types";
-import { ConfigError } from "@kingsleyweb/bun-common";
+import { MAX_AUDIT_SCOPES } from "../store/types";
+import type { Logger } from "@kingsleyweb/bun-common";
+import { ConfigError, noopLogger } from "@kingsleyweb/bun-common";
 import type { SecurityApiPermission, SecurityRole } from "./contract/constants";
 import type {
   ApprovalDto,
@@ -26,6 +29,8 @@ import type {
   PublishResultDto,
   RoleBindingDto,
   RoleBindingInput,
+  AuditEntryDto,
+  SecurityAlertDto,
   SecurityLiveEventDto,
   ServiceDto,
   ServiceIdentityDto,
@@ -42,8 +47,11 @@ import {
 } from "./contract/constants";
 import { validatePolicy } from "../policy/schema";
 import { dangerousChanges } from "./dangerous";
-import { mergePolicies } from "./merge";
+import { diffPolicies, mergePolicies } from "./merge";
 import { ApiProblem, conflict, notFound } from "./problems";
+import { AuditLog } from "./audit/log";
+import { breakGlassOperators } from "./audit/context";
+import type { AuditIntentInput } from "./audit/log";
 import { ENTITY_ID, groupScope, parseScope, serviceScope } from "./scopes";
 import { signBundle } from "./signing";
 
@@ -173,7 +181,94 @@ export class ControlPlane {
   /**
    * @param options The API's resolved options.
    */
-  constructor(private readonly options: ResolvedSecurityApiOptions) {}
+  /** The audit log. */
+  readonly audit: AuditLog;
+  /** Where failures are logged. */
+  readonly #logger: Logger;
+
+  /**
+   * @param options The API's resolved options.
+   * @param logger Where failures are logged.
+   */
+  constructor(
+    private readonly options: ResolvedSecurityApiOptions,
+    logger: Logger = noopLogger,
+  ) {
+    this.#logger = logger;
+    this.audit = new AuditLog({
+      store: options.store,
+      signer: options.audit.signer,
+      previousKeys: options.audit.previousKeys,
+      sinks: options.audit.sinks,
+      checkpointEvery: options.audit.checkpointEvery,
+      checkpointIntervalMs: options.audit.checkpointIntervalMs,
+      now: options.now,
+      alert: (alert) => this.#alert(alert),
+      logger,
+    });
+  }
+
+  /** Raises an alert: the host's `onAlert`, and the log. */
+  #alert(alert: Omit<SecurityAlertDto, "at">): void {
+    const out: SecurityAlertDto = { ...alert, at: this.options.now() };
+    const fields = { kind: out.kind, detail: out.detail };
+    if (out.severity === "critical")
+      this.#logger.error(`bun-security: ${out.message}`, fields);
+    else this.#logger.warn(`bun-security: ${out.message}`, fields);
+    try {
+      this.options.onAlert(out);
+    } catch (error) {
+      this.#logger.error("bun-security: onAlert threw", { error });
+    }
+  }
+
+  /** Where the control plane logs. */
+  get logger(): Logger {
+    return this.#logger;
+  }
+
+  /** Raises an alert from outside (break-glass, verify). */
+  alert(alert: Omit<SecurityAlertDto, "at">): void {
+    this.#alert(alert);
+  }
+
+  /** Emits a live event from outside (break-glass). */
+  emit(
+    event: SecurityLiveEventDto["event"],
+    scope: PolicyScopeId,
+    data: JsonObject,
+  ): void {
+    this.#emit(event, scope, data);
+  }
+
+  /**
+   * Runs a change between its audit intent and done (the user's rule,
+   * PR-CP3): no intent, no change (a \`503\`); a refused change's done
+   * says why; a done that cannot be written leaves the change standing.
+   */
+  async #audited<T>(
+    intent: AuditIntentInput,
+    run: () => Promise<T>,
+    done: (result: T) => JsonObject = () => ({}),
+  ): Promise<T> {
+    const handle = await this.audit.intent(intent);
+    let result: T;
+    try {
+      result = await run();
+    } catch (error) {
+      await this.audit.done(handle, "refused", {
+        reason: error instanceof ApiProblem ? error.code : "error",
+      });
+      throw error;
+    }
+    await this.audit.done(handle, "applied", done(result));
+    return result;
+  }
+
+  /** A document's current body, for an entry's before. */
+  async #before(kind: StoredDoc["kind"], id: string): Promise<unknown> {
+    return (await this.store.get(kind, id).catch(() => undefined))?.doc;
+  }
 
   /** The store. */
   get store() {
@@ -283,7 +378,7 @@ export class ControlPlane {
   }
 
   /** Creates (`revision` absent) or updates a service; its bundle is recompiled. */
-  async putService(
+  async #putServiceNow(
     id: string,
     input: ServiceInput,
     create: boolean,
@@ -325,7 +420,7 @@ export class ControlPlane {
   }
 
   /** Deletes a service at `revision`. */
-  async deleteService(id: string, revision: number): Promise<void> {
+  async #deleteServiceNow(id: string, revision: number): Promise<void> {
     if (!(await this.store.delete("service", id, revision))) {
       const current = await this.store.get("service", id);
       if (current === undefined) throw notFound(`service "${id}"`);
@@ -406,7 +501,7 @@ export class ControlPlane {
   }
 
   /** Creates or updates a group; every service under it is recompiled. */
-  async putGroup(
+  async #putGroupNow(
     id: string,
     input: GroupInput,
     create: boolean,
@@ -440,7 +535,7 @@ export class ControlPlane {
   }
 
   /** Deletes a group at `revision`; refused while a service or group names it. */
-  async deleteGroup(id: string, revision: number): Promise<void> {
+  async #deleteGroupNow(id: string, revision: number): Promise<void> {
     const services = await this.#all("service");
     const groups = await this.#all("group");
     if (
@@ -495,7 +590,7 @@ export class ControlPlane {
   }
 
   /** Creates (`revision` null) or updates an identity; the services it may call are recompiled. */
-  async putIdentity(
+  async #putIdentityNow(
     id: string,
     input: ServiceIdentityInput,
     revision: number | null,
@@ -548,7 +643,7 @@ export class ControlPlane {
   }
 
   /** Deletes an identity at `revision`. */
-  async deleteIdentity(id: string, revision: number): Promise<void> {
+  async #deleteIdentityNow(id: string, revision: number): Promise<void> {
     const current = await this.store.get("serviceIdentity", id);
     if (current === undefined) throw notFound(`service identity "${id}"`);
     if (!(await this.store.delete("serviceIdentity", id, revision))) {
@@ -641,7 +736,7 @@ export class ControlPlane {
    * layered over the scopes above it must compile, and must not override a
    * locked item.
    */
-  async putDraft(
+  async #putDraftNow(
     scope: PolicyScopeId,
     policy: JsonObject,
     revision: number | null,
@@ -1007,7 +1102,7 @@ export class ControlPlane {
    * scope's name typed in `confirm`; `forceApproval` (no step-up hook)
    * opens one whatever the change.
    */
-  async publish(
+  async #publishNow(
     scope: PolicyScopeId,
     policy: JsonObject,
     request: PublishRequest,
@@ -1015,6 +1110,7 @@ export class ControlPlane {
     context: {
       readonly approved?: ApprovalDto;
       readonly forceApproval?: boolean;
+      readonly versionId?: string;
     } = {},
   ): Promise<PublishOutcome> {
     await this.checkScope(scope);
@@ -1068,7 +1164,7 @@ export class ControlPlane {
         );
       }
     }
-    const id = newId("pv");
+    const id = context.versionId ?? newId("pv");
     const appended = await this.store.appendVersion(
       scope,
       { id, policy, createdBy: operator.id, message: request.message ?? "" },
@@ -1086,6 +1182,20 @@ export class ControlPlane {
     }
     const bundles = await this.recompileUnder(scope);
     const version = await this.getVersion(scope, id);
+    if (dangerous.length > 0) {
+      this.#alert({
+        kind:
+          request.emergency === true
+            ? "approval.emergency"
+            : "policy.dangerous",
+        severity: request.emergency === true ? "critical" : "info",
+        message:
+          request.emergency === true
+            ? `an emergency publish of ${scope} went out with dangerous changes; a second operator must review it`
+            : `a dangerous change of ${scope} was published`,
+        detail: { scope, version: id, dangerous: dangerous.slice(0, 20) },
+      });
+    }
     this.#emit("policy.published", scope, {
       version: id,
       number: version.number,
@@ -1145,14 +1255,14 @@ export class ControlPlane {
   }
 
   /** Opens an approval. */
-  async #openApproval(
+  async #openApprovalNow(
     input: Omit<
       ApprovalBody,
       "createdAt" | "expiresAt" | "decidedBy" | "decidedAt" | "reason"
     >,
+    id: string,
   ): Promise<ApprovalDto> {
     const now = this.options.now();
-    const id = newId("ap");
     const body: ApprovalBody = {
       ...input,
       createdAt: now,
@@ -1172,7 +1282,7 @@ export class ControlPlane {
   }
 
   /** Opens an approval for an action that needs a second operator because no step-up hook is configured. */
-  async requestApproval(
+  async #requestApprovalNow(
     action: ApprovalDto["action"],
     scope: PolicyScopeId,
     operator: Operator,
@@ -1228,7 +1338,7 @@ export class ControlPlane {
    * operator who is not its author. A `review` (an emergency publish's)
    * is closed by approving it.
    */
-  async decide(
+  async #decideNow(
     id: string,
     revision: number,
     approve: boolean,
@@ -1356,9 +1466,10 @@ export class ControlPlane {
   }
 
   /** Binds a role. */
-  async createBinding(
+  async #createBindingNow(
     input: RoleBindingInput,
     operator: Operator,
+    id: string,
   ): Promise<RoleBindingDto> {
     if (!SECURITY_ROLES.includes(input.role)) {
       throw new ApiProblem(
@@ -1368,7 +1479,6 @@ export class ControlPlane {
       );
     }
     await this.checkScope(input.scope);
-    const id = newId("rb");
     const body: BindingBody = {
       operator: input.operator,
       role: input.role,
@@ -1381,7 +1491,7 @@ export class ControlPlane {
   }
 
   /** Removes a binding at `revision`. */
-  async deleteBinding(id: string, revision: number): Promise<void> {
+  async #deleteBindingNow(id: string, revision: number): Promise<void> {
     if (!(await this.store.delete("roleBinding", id, revision))) {
       const current = await this.store.get("roleBinding", id);
       if (current === undefined) throw notFound(`role binding "${id}"`);
@@ -1438,6 +1548,8 @@ export class ControlPlane {
     permission: SecurityApiPermission,
     scope: PolicyScopeId,
   ): Promise<boolean> {
+    // A break-glass session acts as owner on global (Q11), whatever model is in use.
+    if (breakGlassOperators.has(operator)) return true;
     if (this.options.authorize !== undefined) {
       return (
         (await this.options.authorize(operator, permission, { scope })) === true
@@ -1456,5 +1568,354 @@ export class ControlPlane {
       }
     }
     return false;
+  }
+
+  // ── The audit log (PR-CP3) ───────────────────────────────────────────────
+
+  /** A page of the audit log, each intent with its status. */
+  async auditPage(
+    query: AuditQuery,
+  ): Promise<{ items: AuditEntryDto[]; next?: string }> {
+    let page;
+    try {
+      page = await this.store.listAudit(query);
+    } catch (error) {
+      if (error instanceof ConfigError)
+        throw new ApiProblem(400, "invalid_request", error.message);
+      throw error;
+    }
+    return {
+      items: await this.audit.describe(page.items),
+      ...(page.next === undefined ? {} : { next: page.next }),
+    };
+  }
+
+  /**
+   * The scopes `/audit?scope=` reads, as role bindings cover them: `global`
+   * is everything (`undefined`); a group is itself, its descendant groups
+   * and every service in any of them; a service is itself.
+   */
+  async auditScopesUnder(scope: PolicyScopeId): Promise<string[] | undefined> {
+    const parsed = parseScope(scope);
+    if (parsed === undefined) {
+      throw new ApiProblem(400, "invalid_request", `"${scope}" is not a scope`);
+    }
+    if (parsed.kind === "global") return undefined;
+    if (parsed.kind === "service") return [scope];
+    const groups = await this.#all("group");
+    const under = new Set([parsed.id]);
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const doc of groups) {
+        const parent = (doc.doc as GroupBody).parent;
+        if (parent !== null && under.has(parent) && !under.has(doc.id)) {
+          under.add(doc.id);
+          grew = true;
+        }
+      }
+    }
+    const scopes = [...under].map((id) => groupScope(id));
+    for (const doc of await this.#all("service")) {
+      if ((doc.doc as ServiceBody).groups.some((group) => under.has(group))) {
+        scopes.push(serviceScope(doc.id));
+      }
+    }
+    if (scopes.length > MAX_AUDIT_SCOPES) {
+      throw new ApiProblem(
+        400,
+        "invalid_request",
+        `${scope} covers more than ${MAX_AUDIT_SCOPES} scopes; read a narrower one`,
+      );
+    }
+    return scopes;
+  }
+
+  /** One entry. */
+  async auditEntry(n: number): Promise<AuditEntryDto> {
+    const page = await this.store.listAudit({ limit: 1, fromN: n, toN: n });
+    const record = page.items[0];
+    if (record === undefined) throw notFound(`audit entry ${n}`);
+    return (await this.audit.describe([record]))[0];
+  }
+
+  // ── Audited changes (PR-CP3) ─────────────────────────────────────────────
+
+  /** Creates (`revision` absent) or updates a service; its bundle is recompiled. Audited. */
+  async putService(
+    id: string,
+    input: ServiceInput,
+    create: boolean,
+  ): Promise<ServiceDto> {
+    return await this.#audited(
+      {
+        action: "service.put",
+        scope: serviceScope(id),
+        target: {
+          kind: "service",
+          id,
+          revision: create ? 1 : (input.revision ?? 0) + 1,
+        },
+        before: await this.#before("service", id),
+        after: input,
+      },
+      async () => await this.#putServiceNow(id, input, create),
+      (service) => ({ revision: service.revision }),
+    );
+  }
+
+  /** Deletes a service at `revision`. Audited. */
+  async deleteService(id: string, revision: number): Promise<void> {
+    await this.#audited(
+      {
+        action: "service.delete",
+        scope: serviceScope(id),
+        target: { kind: "service", id, deleted: true },
+        before: await this.#before("service", id),
+      },
+      async () => await this.#deleteServiceNow(id, revision),
+    );
+  }
+
+  /** Creates or updates a group; every service under it is recompiled. Audited. */
+  async putGroup(
+    id: string,
+    input: GroupInput,
+    create: boolean,
+  ): Promise<GroupDto> {
+    return await this.#audited(
+      {
+        action: "group.put",
+        scope: groupScope(id),
+        target: {
+          kind: "group",
+          id,
+          revision: create ? 1 : (input.revision ?? 0) + 1,
+        },
+        before: await this.#before("group", id),
+        after: input,
+      },
+      async () => await this.#putGroupNow(id, input, create),
+      (group) => ({ revision: group.revision }),
+    );
+  }
+
+  /** Deletes an empty group at `revision`. Audited. */
+  async deleteGroup(id: string, revision: number): Promise<void> {
+    await this.#audited(
+      {
+        action: "group.delete",
+        scope: groupScope(id),
+        target: { kind: "group", id, deleted: true },
+        before: await this.#before("group", id),
+      },
+      async () => await this.#deleteGroupNow(id, revision),
+    );
+  }
+
+  /** Creates (`revision` null) or updates a service identity. Audited. */
+  async putIdentity(
+    id: string,
+    input: ServiceIdentityInput,
+    revision: number | null,
+  ): Promise<ServiceIdentityDto> {
+    return await this.#audited(
+      {
+        action: "serviceIdentity.put",
+        scope: "global",
+        target: { kind: "serviceIdentity", id, revision: (revision ?? 0) + 1 },
+        before: await this.#before("serviceIdentity", id),
+        after: input,
+      },
+      async () => await this.#putIdentityNow(id, input, revision),
+      (identity) => ({ revision: identity.revision }),
+    );
+  }
+
+  /** Deletes a service identity at `revision`. Audited. */
+  async deleteIdentity(id: string, revision: number): Promise<void> {
+    await this.#audited(
+      {
+        action: "serviceIdentity.delete",
+        scope: "global",
+        target: { kind: "serviceIdentity", id, deleted: true },
+        before: await this.#before("serviceIdentity", id),
+      },
+      async () => await this.#deleteIdentityNow(id, revision),
+    );
+  }
+
+  /** Saves a scope's draft at `revision`. Audited, as a diff from the previous draft. */
+  async putDraft(
+    scope: PolicyScopeId,
+    policy: JsonObject,
+    revision: number | null,
+    operator: Operator,
+  ): Promise<PolicyDraftDto> {
+    const previous =
+      (
+        (await this.#before("policyDraft", scope)) as
+          { policy?: JsonObject } | undefined
+      )?.policy ?? {};
+    return await this.#audited(
+      {
+        action: "policy.draft",
+        scope,
+        target: {
+          kind: "policyDraft",
+          id: scope,
+          revision: (revision ?? 0) + 1,
+        },
+        after: { diff: diffPolicies(previous, policy) },
+      },
+      async () => await this.#putDraftNow(scope, policy, revision, operator),
+      (draft) => ({ revision: draft.revision }),
+    );
+  }
+
+  /** Publishes `policy` at `scope` (see the core's description). Audited, as a diff from the head. */
+  async publish(
+    scope: PolicyScopeId,
+    policy: JsonObject,
+    request: PublishRequest,
+    operator: Operator,
+    context: {
+      readonly approved?: ApprovalDto;
+      readonly forceApproval?: boolean;
+    } = {},
+  ): Promise<PublishOutcome> {
+    const versionId = newId("pv");
+    const head =
+      parseScope(scope) === undefined
+        ? { policy: {} }
+        : await this.#headPolicy(scope).catch(() => ({ policy: {} }));
+    return await this.#audited(
+      {
+        action: request.action ?? "policy.publish",
+        scope,
+        target: { kind: "version", id: versionId, scope },
+        after: { diff: diffPolicies(head.policy, policy) },
+        extra: {
+          expectedHead: request.expectedHead,
+          ...(request.message === undefined
+            ? {}
+            : { message: request.message }),
+          ...(request.emergency === true ? { emergency: true } : {}),
+          ...(context.approved === undefined
+            ? {}
+            : { approvalId: context.approved.id }),
+        },
+      },
+      async () =>
+        await this.#publishNow(scope, policy, request, operator, {
+          ...context,
+          versionId,
+        }),
+      (outcome) =>
+        outcome.kind === "published"
+          ? {
+              version: outcome.result.version.id,
+              bundles: outcome.result.bundles,
+              ...(outcome.result.review === undefined
+                ? {}
+                : { review: outcome.result.review.id }),
+            }
+          : { approval: outcome.approval.id },
+    );
+  }
+
+  /** Opens an approval. Audited. */
+  async #openApproval(
+    input: Omit<
+      ApprovalBody,
+      "createdAt" | "expiresAt" | "decidedBy" | "decidedAt" | "reason"
+    >,
+  ): Promise<ApprovalDto> {
+    const id = newId("ap");
+    return await this.#audited(
+      {
+        action: "approval.open",
+        scope: input.scope,
+        target: { kind: "approval", id, revision: 1 },
+        after: {
+          action: input.action,
+          status: input.status,
+          dangerous: input.dangerous,
+          summary: input.summary,
+        },
+      },
+      async () => await this.#openApprovalNow(input, id),
+      (approval) => ({ approvalId: approval.id }),
+    );
+  }
+
+  /** Opens an approval for a guarded change (no step-up hook). Audited. */
+  async requestApproval(
+    action: ApprovalDto["action"],
+    scope: PolicyScopeId,
+    operator: Operator,
+    payload: ApprovalPayload,
+    summary: JsonObject,
+  ): Promise<ApprovalDto> {
+    return await this.#requestApprovalNow(
+      action,
+      scope,
+      operator,
+      payload,
+      summary,
+    );
+  }
+
+  /** Decides an approval. Audited. */
+  async decide(
+    id: string,
+    revision: number,
+    approve: boolean,
+    reason: string | undefined,
+    operator: Operator,
+  ): Promise<{ approval: ApprovalDto; result?: unknown }> {
+    const approval = await this.store.get("approval", id);
+    return await this.#audited(
+      {
+        action: approve ? "approval.approve" : "approval.reject",
+        scope: (approval?.doc as ApprovalBody | undefined)?.scope ?? "global",
+        target: { kind: "approval", id, revision: revision + 1 },
+        extra: { approvalId: id, ...(reason === undefined ? {} : { reason }) },
+      },
+      async () =>
+        await this.#decideNow(id, revision, approve, reason, operator),
+      (decided) => ({ status: decided.approval.status }),
+    );
+  }
+
+  /** Binds a role. Audited. */
+  async createBinding(
+    input: RoleBindingInput,
+    operator: Operator,
+  ): Promise<RoleBindingDto> {
+    const id = newId("rb");
+    return await this.#audited(
+      {
+        action: "roleBinding.create",
+        scope: input.scope,
+        target: { kind: "roleBinding", id, revision: 1 },
+        after: input,
+      },
+      async () => await this.#createBindingNow(input, operator, id),
+      (binding) => ({ bindingId: binding.id }),
+    );
+  }
+
+  /** Removes a binding at `revision`. Audited. */
+  async deleteBinding(id: string, revision: number): Promise<void> {
+    const before = await this.#before("roleBinding", id);
+    await this.#audited(
+      {
+        action: "roleBinding.delete",
+        scope: (before as { scope?: string } | undefined)?.scope ?? "global",
+        target: { kind: "roleBinding", id, deleted: true },
+        before,
+      },
+      async () => await this.#deleteBindingNow(id, revision),
+    );
   }
 }

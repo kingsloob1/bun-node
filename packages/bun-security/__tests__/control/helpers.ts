@@ -23,6 +23,8 @@ export interface TestApi {
   readonly clock: FakeClock;
   /** The bundle key's public half. */
   readonly publicKey: KeyObject;
+  /** The audit key's public half. */
+  readonly auditPublicKey: KeyObject;
   /** Sends a request as `op`; the status, the parsed body and the headers. */
   readonly call: (
     method: string,
@@ -36,6 +38,7 @@ export interface TestApi {
 /** A fresh API; `options` replace the defaults (owners `alice`, no step-up). */
 export function testApi(options: Partial<SecurityApiOptions> = {}): TestApi {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const audit = generateKeyPairSync("ed25519");
   const clock = fakeClock();
   const store = options.store ?? memoryStore({ now: clock.now });
   const api = createSecurityApi({
@@ -47,6 +50,10 @@ export function testApi(options: Partial<SecurityApiOptions> = {}): TestApi {
     owners: ["alice"],
     allowWithoutStepUp: true,
     signing: { keyId: "sk_test", privateKey },
+    audit: {
+      signing: { keyId: "ak_test", privateKey: audit.privateKey },
+      allowNoExternalCheckpoints: true,
+    },
     now: clock.now,
     logger: () => {},
     ...options,
@@ -79,5 +86,12 @@ export function testApi(options: Partial<SecurityApiOptions> = {}): TestApi {
     }
     return { status: response.status, body: parsed, headers: response.headers };
   };
-  return { api, store, clock, publicKey, call };
+  return {
+    api,
+    store,
+    clock,
+    publicKey,
+    auditPublicKey: audit.publicKey,
+    call,
+  };
 }
