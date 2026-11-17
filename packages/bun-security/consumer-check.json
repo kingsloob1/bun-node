@@ -462,7 +462,8 @@
         "MAX_PAGE_LIMIT",
         "DEFAULT_STORE_PREFIX",
         "DEFAULT_POLICY_POLL_MS",
-        "DEFAULT_POLICY_RECONCILE_MS"
+        "DEFAULT_POLICY_RECONCILE_MS",
+        "postgresStore"
       ],
       "types": [
         "SecurityStoreDriver",
@@ -486,9 +487,10 @@
         "BundleInput",
         "StoredBundle",
         "PutBundleResult",
-        "ChangeKind"
+        "ChangeKind",
+        "PostgresStoreOptions"
       ],
-      "snippet": "const store: t.SecurityStoreDriver = m.sqliteStore({ path: \"./security.sqlite\", syncSchema: { dryRun: true } });\nconst put: Promise<t.PutResult> = store.put(\"service\", \"checkout\", { owner: \"payments\" }, null);\nconst page: Promise<t.Page<t.StoredDoc>> = store.list(\"service\", { limit: 50, sort: \"updatedAt\", direction: \"desc\" });\nconst appended: Promise<t.AppendResult> = store.appendVersion(\"checkout\", { id: \"v2\", policy: {} }, \"v1\");\nconst feed = store.changesSince(0n, 100);\nexport type _feedNotAny = Expect<IsAny<Awaited<typeof feed>>>;\nconst _seq: bigint = 0n as t.Change[\"seq\"];\nconst source: t.PolicyFromStore = { store: m.policyFile(\"./security.json\", { debounceMs: 50 }), id: \"default\", lastKnownGood: \"./lkg.json\" };\nconst _isSource: boolean = m.isPolicyFromStore(source);\nconst _caps: boolean = m.memoryStore().capabilities.readOnly;\nexport const _all = [put, page, appended];"
+      "snippet": "const store: t.SecurityStoreDriver = m.sqliteStore({ path: \"./security.sqlite\", syncSchema: { dryRun: true } });\nconst put: Promise<t.PutResult> = store.put(\"service\", \"checkout\", { owner: \"payments\" }, null);\nconst page: Promise<t.Page<t.StoredDoc>> = store.list(\"service\", { limit: 50, sort: \"updatedAt\", direction: \"desc\" });\nconst appended: Promise<t.AppendResult> = store.appendVersion(\"checkout\", { id: \"v2\", policy: {} }, \"v1\");\nconst feed = store.changesSince(0n, 100);\nexport type _feedNotAny = Expect<IsAny<Awaited<typeof feed>>>;\nconst _seq: bigint = 0n as t.Change[\"seq\"];\nconst source: t.PolicyFromStore = { store: m.policyFile(\"./security.json\", { debounceMs: 50 }), id: \"default\", lastKnownGood: \"./lkg.json\" };\nconst _isSource: boolean = m.isPolicyFromStore(source);\nconst _caps: boolean = m.memoryStore().capabilities.readOnly;\nexport const _all = [put, page, appended];\nconst pg: t.SecurityStoreDriver = m.postgresStore({ url: \"postgres://u:p@h:5432/db\", prefix: \"app_\", max: 4, pollIntervalMs: 500 });\nexport const _pgCaps: boolean = pg.capabilities.multiHost;"
     },
     {
       "spelling": "@kingsleyweb/bun-security/lib/store",

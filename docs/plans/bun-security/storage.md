@@ -128,6 +128,13 @@ interface SecurityStoreDriver {
 }
 ```
 
+**The sequence under concurrent commits** (PR-D2): on an engine whose
+writers commit in parallel (Postgres), a sequence number taken first can
+commit last, and a reader that already read past the later one would skip it.
+`postgresStore` serialises its writers with a transaction-scoped advisory lock
+taken first in every mutating transaction, so numbers commit in order
+(README §17.23 says why this design). SQLite has one writer already.
+
 **Built in stages** (the user's decision, 2026-11-16): PR-D1 builds the
 documents, the policy versions (`appendVersion`, `listVersions`, and
 `getVersion`, added there) and the change feed. Bans, the audit chain, the
