@@ -496,8 +496,12 @@ export interface SecurityEvent {
 
 /** Which events {@link SecurityStoreDriver.listEvents} answers: every field given must match. */
 export interface EventFilter {
+  /** One event, by its id. */
+  readonly id?: string;
   /** One service's. */
   readonly service?: string;
+  /** Any of these services' (a group's scope), at most {@link MAX_FILTER_SERVICES}; `[]` matches none. */
+  readonly services?: readonly string[];
   /** From this time, epoch milliseconds, inclusive. */
   readonly from?: number;
   /** Before this time, epoch milliseconds, exclusive. */
@@ -557,6 +561,8 @@ export interface CounterRow {
 export interface CounterQuery {
   /** One service's; every service's summed when absent. */
   readonly service?: string;
+  /** These services' summed (a group's scope), at most {@link MAX_FILTER_SERVICES}; `[]` matches none. */
+  readonly services?: readonly string[];
   /** The metric. */
   readonly metric: string;
   /** From this time, epoch milliseconds (aligned down to the tier's bucket). */
@@ -598,6 +604,9 @@ export interface TopKRow {
 
 /** The most points {@link SecurityStoreDriver.series} answers; a wider query is refused (a `ConfigError`). */
 export const MAX_SERIES_POINTS = 10_000;
+
+/** The most services a `services` filter names. */
+export const MAX_FILTER_SERVICES = 1_000;
 
 /** The most events one {@link SecurityStoreDriver.appendEvents} takes. */
 export const MAX_BATCH_EVENTS = 1_000;

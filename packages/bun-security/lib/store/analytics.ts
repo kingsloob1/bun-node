@@ -29,6 +29,7 @@ import { jsonBody } from "./shared";
 import {
   MAX_BATCH_COUNTERS,
   MAX_BATCH_EVENTS,
+  MAX_FILTER_SERVICES,
   MAX_PAGE_LIMIT,
   TIER_MS,
 } from "./types";
@@ -416,7 +417,9 @@ export interface ResolvedEventQuery {
 
 /** The filter fields, in a fixed order (the cursor's walk). */
 const FILTER_FIELDS = [
+  "id",
   "service",
+  "services",
   "from",
   "to",
   "action",
@@ -430,6 +433,18 @@ const FILTER_FIELDS = [
   "asn",
   "dryRun",
 ] as const satisfies readonly (keyof EventFilter)[];
+
+/** Checks a `services` list: strings, at most {@link MAX_FILTER_SERVICES}; answers a sorted, deduplicated copy. */
+function checkServices(value: unknown, what: string): readonly string[] {
+  if (!Array.isArray(value) || value.length > MAX_FILTER_SERVICES) {
+    throw new ConfigError(
+      `security store: ${what} must be a list of at most ${MAX_FILTER_SERVICES} services`,
+    );
+  }
+  for (const service of value as unknown[])
+    checkText(service, what, MAX_EVENT_ID);
+  return Object.freeze([...new Set(value as string[])].sort());
+}
 
 /** Checks an {@link EventListQuery}. */
 export function resolveEventQuery(query: EventListQuery): ResolvedEventQuery {
@@ -468,6 +483,9 @@ export function resolveEventQuery(query: EventListQuery): ResolvedEventQuery {
           "security store: the filter's dryRun must be a boolean",
         );
       }
+    } else if (field === "services") {
+      writable[field] = checkServices(value, "the filter's services");
+      continue;
     } else checkText(value, `the filter's ${field}`);
     writable[field] = value;
   }
@@ -487,9 +505,12 @@ function eventWalk(query: ResolvedEventQuery): string[] {
   return [
     query.direction,
     ...FILTER_FIELDS.map((field) =>
-      query.filter[field] === undefined
-        ? ""
-        : `${field}:${String(query.filter[field])}`,
+      field === "services" && query.filter.services !== undefined
+        ? // Bound by a digest: a group's list would make a long cursor.
+          `services:${new Bun.CryptoHasher("sha256").update(query.filter.services.join("\u0000")).digest("hex").slice(0, 32)}`
+        : query.filter[field] === undefined
+          ? ""
+          : `${field}:${String(query.filter[field])}`,
     ),
   ];
 }
@@ -529,7 +550,10 @@ export function eventMatches(
 ): boolean {
   const subjects = event.subjects ?? {};
   return (
+    (filter.id === undefined || event.id === filter.id) &&
     (filter.service === undefined || event.service === filter.service) &&
+    (filter.services === undefined ||
+      filter.services.includes(event.service)) &&
     (filter.from === undefined || event.at >= filter.from) &&
     (filter.to === undefined || event.at < filter.to) &&
     (filter.action === undefined || event.action === filter.action) &&
@@ -549,6 +573,8 @@ export function eventMatches(
 export interface ResolvedCounterQuery {
   /** The service, or every one. */
   readonly service: string | undefined;
+  /** These services, or every one. */
+  readonly services: readonly string[] | undefined;
   /** The metric. */
   readonly metric: string;
   /** The tier read. */
@@ -568,6 +594,10 @@ export function resolveCounterQuery(query: CounterQuery): ResolvedCounterQuery {
   }
   if (query.service !== undefined)
     checkText(query.service, "the query's service", MAX_EVENT_ID);
+  const services =
+    query.services === undefined
+      ? undefined
+      : checkServices(query.services, "the query's services");
   if (typeof query.metric !== "string" || !METRIC.test(query.metric)) {
     throw new ConfigError(
       "security store: the query's metric is not a metric name",
@@ -592,6 +622,7 @@ export function resolveCounterQuery(query: CounterQuery): ResolvedCounterQuery {
   checkDims(query.dims, "the query");
   return {
     service: query.service,
+    services,
     metric: query.metric,
     tier,
     from: bucketOf(query.from, tier),

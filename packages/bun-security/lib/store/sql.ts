@@ -581,6 +581,13 @@ function escapeLike(text: string): string {
   return text.replace(/[\\%_]/g, (char) => `\\${char}`);
 }
 
+/** `service IN (…)` over `services`, or a false condition for none. */
+function inList(p: Params, services: readonly string[]): string {
+  return services.length === 0
+    ? "1 = 0"
+    : `service IN (${services.map((service) => p.bind(service)).join(", ")})`;
+}
+
 /** A statement's parameters, numbered in the order they are bound. */
 class Params {
   /** The values, in order. */
@@ -693,6 +700,7 @@ export function sqlSecurityStore(
     if (query.service !== undefined) {
       where.push(`service = ${p.bind(query.service)}`);
     }
+    if (query.services !== undefined) where.push(inList(p, query.services));
     for (const needle of query.needles) {
       where.push(
         `('&' || dims || '&') LIKE ${p.bind(`%${escapeLike(needle)}%`)} ESCAPE '\\'`,
@@ -1288,6 +1296,7 @@ export function sqlSecurityStore(
       const where: string[] = [];
       const filter = resolved.filter;
       const equal: [keyof EventFilter, string][] = [
+        ["id", "id"],
         ["service", "service"],
         ["action", "action"],
         ["rule", "rule"],
@@ -1303,6 +1312,9 @@ export function sqlSecurityStore(
         if (filter[field] !== undefined) {
           where.push(`${column} = ${p.bind(filter[field])}`);
         }
+      }
+      if (filter.services !== undefined) {
+        where.push(inList(p, filter.services));
       }
       if (filter.dryRun !== undefined) {
         where.push(`dry_run = ${p.bind(filter.dryRun ? 1 : 0)}`);

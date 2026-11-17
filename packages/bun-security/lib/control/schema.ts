@@ -194,6 +194,37 @@ export const s = {
     );
   },
 
+  /** A finite number (a latency, a share). */
+  number(options: NumberOptions = {}): Schema<number> {
+    return make<number>(
+      {
+        type: "number",
+        ...(options.min === undefined ? {} : { minimum: options.min }),
+        ...(options.max === undefined ? {} : { maximum: options.max }),
+        ...(options.description === undefined
+          ? {}
+          : { description: options.description }),
+      },
+      (value, path, issues) => {
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+          issues.push({
+            message: `must be a finite number; got ${describe(value)}`,
+            path,
+          });
+        } else if (
+          (options.min !== undefined && value < options.min) ||
+          (options.max !== undefined && value > options.max)
+        ) {
+          issues.push({
+            message: `must be from ${options.min ?? "-∞"} to ${options.max ?? "∞"}`,
+            path,
+          });
+        }
+        return value as number;
+      },
+    );
+  },
+
   /** `true` or `false`. */
   boolean(description?: string): Schema<boolean> {
     return make<boolean>(

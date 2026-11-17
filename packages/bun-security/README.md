@@ -1514,6 +1514,41 @@ await agent.ready; // the last known good is in, before the control plane is ask
   With `agents`, a store that does not survive a restart is refused
   (`allowEphemeralStore: true` for tests).
 
+### Live updates and the analytics reads
+
+The management API streams what its UI shows live, and reads what its
+analytics page charts:
+
+- **`/live`**, as SSE (`GET /live?topics=events:global,overview:group:payments`)
+  or as a WebSocket channel at the same path (frames `subscribe` and
+  `unsubscribe`; `secureAdmin` attaches it, or call `api.live.attach(app)`
+  after mounting the router). Topics: `overview:<scope>` (a second's request
+  counts, as deltas), `events:<scope>` (the activity feed), `bans:<scope>`,
+  `policy:<scope>` and `approvals`; a scope covers what is under it.
+  Messages carry `{ epoch, seq }`, and a reconnect resumes after the last
+  (`resume=` or `Last-Event-ID`) from a ring of 1,000 messages or 5
+  minutes, or is told to refetch (`gap`). The feed sends at most 20 events
+  a second per subscriber (20 more for bans and drops) and counts the rest
+  (`more`); a subscriber more than 1 MiB behind gets nothing until it
+  catches up, then a `gap`. 5 connections an operator, 10 topics a
+  connection; access is checked when subscribing and again when a role
+  changes (a topic no longer allowed closes the connection with 4403).
+- **`GET /analytics/series`, `/analytics/top`, `/analytics/events`,
+  `/analytics/events/:id` and `/analytics/bans`** (the ban timeline), each
+  for a `scope` and what is under it, over a range of at most 400 days.
+- **Who sees what.** `analytics:read` (a viewer) sees series, top-N by
+  address, country and ASN, and events without their request samples or
+  their user, username and API-key subjects. `events:read` (an analyst)
+  sees events whole, ranks and filters by accounts, and reads one event's
+  redacted request. How much of an event is shown is decided per event, on
+  its own service (an analyst of one group sees that group's events whole
+  on a global page or topic, and the rest as a viewer). A live event never
+  carries the request sample.
+- **Per instance.** The resume ring and the connection limit belong to one
+  control-plane instance: behind an HA pair, a reconnect to the other
+  instance gets a `gap` and refetches, and the 5-connection limit is counted
+  on each instance.
+
 ## Deciding and explaining
 
 ```ts

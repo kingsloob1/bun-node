@@ -360,7 +360,8 @@
         "ArtefactStore",
         "SecurityApiAgentsOptions",
         "ResolvedAgentsOptions",
-        "HeaderState"
+        "HeaderState",
+        "SecurityApiLive"
       ],
       "snippet": "import { memoryStore } from \"@kingsleyweb/bun-security/store\";\nconst api = m.createSecurityApi({ store: memoryStore(), authenticate: () => ({ id: \"op\" }), owners: [\"op\"], approvals: \"two-person\", signing: { keyId: \"k\", sign: (bytes: Uint8Array) => bytes }, audit: { signing: { keyId: \"ak\", sign: (bytes: Uint8Array) => bytes, publicKey: \"pem\" }, sinks: [m.fileCheckpointSink(\"./checkpoints.jsonl\")] } });\nexport const _verified: Promise<boolean> = api.verifyAudit().then((result) => result.ok);\nexport const _purged: Promise<number> = api.purgeAudit({ before: 0 });\nconst sink: t.CheckpointSink = m.callbackCheckpointSink({ write: () => {} });\nexport const _sinkName: string = sink.name;\nexport type _apiNotAny = Expect<IsAny<typeof api>>;\nexport const _base: string = api.basePath;\nconst merged = m.mergePolicies([{ scope: \"global\", policy: {} }]);\nexport const _locked: readonly t.LockedOverride[] = merged.locked;\nexport const _admin: Promise<t.AdminListener> = m.secureAdmin({ port: 0, api });"
     },
@@ -387,7 +388,11 @@
         "MAX_GROUP_DEPTH",
         "AUDIT_INCOMPLETE_HEADER",
         "BREAK_GLASS_HEADER",
-        "SECURITY_ALERT_KINDS"
+        "SECURITY_ALERT_KINDS",
+        "LIVE_TOPIC_KINDS",
+        "LIVE_LIMITS",
+        "ANALYTICS_READ_LIMITS",
+        "LIVE_CLOSE_CODES"
       ],
       "types": [
         "ServiceDto",
@@ -436,7 +441,20 @@
         "AgentSecretDto",
         "AgentStatus",
         "BanDto",
-        "BanCreateInput"
+        "BanCreateInput",
+        "SecurityEventViewDto",
+        "LiveEventMessageDto",
+        "LiveOverviewDto",
+        "LiveMoreDto",
+        "LiveGapDto",
+        "LiveBanMessageDto",
+        "LiveSubscribedDto",
+        "LiveControlMessageDto",
+        "LiveCursorDto",
+        "LiveTopicKind",
+        "AnalyticsPointDto",
+        "AnalyticsTopRowDto",
+        "BanTimelineDto"
       ],
       "snippet": "export const _perm: t.SecurityApiPermission = m.SECURITY_API_PERMISSIONS[0];\nexport const _roles: readonly t.SecurityRole[] = m.SECURITY_ROLES;\nexport type _scope = Equal<t.PolicyScopeId, string>;\nexport const _page: t.PageDto<t.ServiceDto> = { items: [] };"
     },
@@ -654,7 +672,8 @@
         "MAX_SERIES_POINTS",
         "MAX_BATCH_EVENTS",
         "MAX_BATCH_COUNTERS",
-        "banId"
+        "banId",
+        "MAX_FILTER_SERVICES"
       ],
       "types": [
         "SecurityStoreDriver",

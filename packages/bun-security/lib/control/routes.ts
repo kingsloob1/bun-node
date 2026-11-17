@@ -5,14 +5,10 @@
  * bindings, and the live stream.
  */
 import type { RouteSpec } from "./route";
-import type {
-  ApprovalDto,
-  PolicyScopeId,
-  SecurityLiveEventDto,
-} from "./contract/types";
+import type { ApprovalDto, PolicyScopeId } from "./contract/types";
 import type { Operator, ResolvedSecurityApiOptions } from "./options";
 import type { ControlPlane, PublishOutcome } from "./plane";
-import type { Infer, Schema } from "./schema";
+import type { Infer } from "./schema";
 import { opaque, sse } from "@kingsleyweb/bun-common";
 import {
   BREAK_GLASS_HEADER,
@@ -22,12 +18,16 @@ import {
 } from "./contract/constants";
 import { diffPolicies } from "./merge";
 import { ApiProblem } from "./problems";
+import * as A from "./analyticsSchemas";
+import { analyticsRoutes } from "./analyticsRoutes";
+import { LIVE_LIMITS } from "./contract/live";
+import type { LiveHub } from "./live/hub";
+import { parseResume } from "./live/transports";
 import * as S from "./schemas";
-import { s } from "./schema";
 import { serviceScope } from "./scopes";
 
 /** A route of any shape, for the list. */
-type AnyRoute = RouteSpec<any, any, any>;
+export type AnyRoute = RouteSpec<any, any, any>;
 
 /** The query of a list. */
 interface PageQueryOf {
@@ -53,33 +53,27 @@ function published(outcome: PublishOutcome) {
     : { status: 202, body: outcome.approval };
 }
 
-/** The live events' data schemas. */
-const LiveEvent: Schema<SecurityLiveEventDto> = s.object({
-  event: s.enum([
-    "policy.published",
-    "bundle.compiled",
-    "approval.created",
-    "approval.decided",
-    "breakGlass.used",
-    "ban.changed",
-  ]),
-  scope: s.string(),
-  data: s.anyObject("what happened"),
-  at: s.int({ min: 0 }),
-});
-
 /** The live stream's events, for its contract and the AsyncAPI document. */
 export const LIVE_EVENTS = sse({
-  "policy.published": LiveEvent,
-  "bundle.compiled": LiveEvent,
-  "approval.created": LiveEvent,
-  "approval.decided": LiveEvent,
-  "breakGlass.used": LiveEvent,
-  "ban.changed": LiveEvent,
+  subscribed: A.LiveSubscribed,
+  event: A.LiveEventMessage,
+  overview: A.LiveOverview,
+  more: A.LiveMore,
+  gap: A.LiveGap,
+  ban: A.LiveBan,
+  "policy.published": A.LiveControl,
+  "bundle.compiled": A.LiveControl,
+  "approval.created": A.LiveControl,
+  "approval.decided": A.LiveControl,
+  "breakGlass.used": A.LiveControl,
+  "ban.changed": A.LiveControl,
 });
 
 /** Every route. */
-export function routes(options: ResolvedSecurityApiOptions): AnyRoute[] {
+export function routes(
+  options: ResolvedSecurityApiOptions,
+  hub: LiveHub,
+): AnyRoute[] {
   /** A publish or rollback through the step-up and approvals rules. */
   const publishWith = async (
     plane: ControlPlane,
@@ -1230,28 +1224,64 @@ export function routes(options: ResolvedSecurityApiOptions): AnyRoute[] {
           } satisfies AnyRoute,
         ]),
 
-    // ── Live ──────────────────────────────────────────────────────────────
+    // ── Live (ui.md §6) ────────────────────────────────────────────────────
     {
       method: "get",
       path: "/live",
       summary:
-        "Server-sent events: policies published, bundles compiled, approvals opened and decided",
+        "Server-sent events: the live hub's topics (overview, events, policy, approvals) with resume; without topics, policies published, bundles compiled, approvals opened and decided",
       tag: "live",
+      query: A.LiveQuery,
       responses: { 200: { content: { "text/event-stream": LIVE_EVENTS } } },
-      handle: async ({ plane, operator, res }) => {
-        const stream = res.sse({ contract: LIVE_EVENTS, ids: "auto" });
-        const off = plane.listen((event) => {
-          void plane
-            .can(operator, "policy:read", event.scope)
-            .then((allowed) => {
-              if (allowed)
-                void stream.send({ event: event.event, data: event });
+      problems: [429],
+      handle: async ({ req, res, operator, query }) => {
+        const q = query as Infer<typeof A.LiveQuery>;
+        const lastEventId =
+          req.request.headers.get("last-event-id") ?? undefined;
+        const resume = parseResume(q.resume ?? lastEventId);
+        // Refused before the stream opens: a 429 problem, not a broken stream.
+        if (hub.sessionsOf(operator) >= LIVE_LIMITS.connectionsPerOperator) {
+          throw new ApiProblem(
+            429,
+            "rate_limited",
+            `an operator holds at most ${LIVE_LIMITS.connectionsPerOperator} live connections`,
+          );
+        }
+        const stream = res.sse({ contract: LIVE_EVENTS });
+        let pending = 0;
+        const session = hub.open(operator, {
+          send: (type, data, id) => {
+            pending += JSON.stringify(data).length;
+            void (
+              stream.send as (message: {
+                event: string;
+                data: unknown;
+                id?: string;
+              }) => Promise<boolean>
+            )({
+              event: type,
+              data,
+              ...(id === undefined ? {} : { id }),
+            }).then(() => {
+              pending = 0;
             });
+          },
+          buffered: () => pending,
+          close: () => {
+            void stream.close();
+          },
         });
-        stream.onClose(off);
+        stream.onClose(() => session.closedByClient());
+        if (q.topics === undefined) {
+          session.subscribeUnscoped();
+        } else {
+          const subscribed = await session.subscribe(q.topics, resume);
+          void stream.send({ event: "subscribed", data: subscribed });
+        }
         return undefined;
       },
     },
+    ...analyticsRoutes(),
   ];
 }
 

@@ -38,6 +38,7 @@ export type {
   WebhookCheckpointSinkOptions,
 } from "./audit/sinks";
 export type { SecurityApi } from "./api";
+export type { SecurityApiLive } from "./live/transports";
 export { dangerousChanges } from "./dangerous";
 export { diffPolicies, mergePolicies } from "./merge";
 export type {
