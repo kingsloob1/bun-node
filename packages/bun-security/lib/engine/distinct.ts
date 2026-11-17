@@ -7,8 +7,10 @@
  * `maxKeys` keys and {@link MAX_LOCAL_ELEMENTS} elements each (a count past
  * that reads as the bound: the thresholds that use it are small). When the
  * shared store fails, `onStoreError: "local"` counts here instead and
- * `"open"` answers `undefined` (not counted). PR-S7's credential-stuffing
- * signals are its consumers.
+ * `"open"` answers `undefined` (not counted); each such fallback is counted
+ * (`status().state.store.distinctFallbacks`) and raises a
+ * `store.distinct-fallback` warning, once, until a minute passes with none.
+ * PR-S7's credential-stuffing signals are its consumers.
  */
 import type { Logger } from "@kingsleyweb/bun-common";
 import { then } from "./maybe";
@@ -16,6 +18,7 @@ import type { MaybePromise } from "./maybe";
 import type { SharedStateStore } from "./shared";
 import { BoundedTable } from "./state";
 import type { EvictionMonitor } from "./state";
+import type { SecurityWarning } from "./trust";
 
 /** The most elements one local key holds. */
 export const MAX_LOCAL_ELEMENTS = 1_024;
@@ -42,6 +45,80 @@ interface LocalSet {
   readonly ends: number;
 }
 
+/**
+ * The distinct counts that fell back from the shared store, and the warning:
+ * raised at the first fallback, once, until a minute passes with none (as
+ * `state.evictions` is). Shared by every {@link DistinctCounts} of an engine.
+ */
+export class DistinctFallbacks {
+  /** Fallbacks since the engine started. */
+  #total = 0;
+  /** The current minute's start. */
+  #minute = Number.NEGATIVE_INFINITY;
+  /** Shared counts tried this minute. */
+  #attempts = 0;
+  /** Fallbacks this minute. */
+  #fallbacks = 0;
+  /** The last minute with a fallback. */
+  #lastFalling = Number.NEGATIVE_INFINITY;
+  /** The first minute of the current run of minutes with fallbacks. */
+  #since = 0;
+  /** Whether the warning was raised for the current run. */
+  #warned = false;
+
+  constructor(
+    /** Called with the warning when it is raised. */
+    private readonly warn: (warning: SecurityWarning) => void,
+    /** The service's id, for the warning. */
+    private readonly service: () => string | undefined,
+  ) {}
+
+  /** Fallbacks since the engine started. */
+  get total(): number {
+    return this.#total;
+  }
+
+  /** Moves to `now`'s minute. */
+  #roll(now: number): void {
+    const minute = now - (now % 60_000);
+    if (minute === this.#minute) return;
+    this.#minute = minute;
+    this.#attempts = 0;
+    this.#fallbacks = 0;
+  }
+
+  /** A count was tried in the shared store (the share's denominator). */
+  attempted(now: number): void {
+    this.#roll(now);
+    this.#attempts++;
+  }
+
+  /** A count in the shared store failed and fell back to its `onStoreError`. */
+  fellBack(store: string, outcome: string, now: number): void {
+    this.#roll(now);
+    this.#total++;
+    this.#fallbacks++;
+    const minute = this.#minute;
+    if (minute - this.#lastFalling > 60_000) {
+      this.#since = minute;
+      this.#warned = false;
+    }
+    this.#lastFalling = minute;
+    if (this.#warned) return;
+    this.#warned = true;
+    this.warn(
+      Object.freeze({
+        kind: "store.distinct-fallback",
+        message: `bun-security: the shared store "${store}" failed a distinct count, which is ${outcome}: credential-stuffing, spraying and API-key address counts miss what other processes saw while it fails`,
+        service: this.service(),
+        minutes: Math.round((minute - this.#since) / 60_000) + 1,
+        share: Math.min(1, this.#fallbacks / Math.max(1, this.#attempts)),
+        since: this.#since,
+      }),
+    );
+  }
+}
+
 /** Distinct counts, local and shared. */
 export class DistinctCounts {
   /** The local sets, by key and window. */
@@ -58,6 +135,8 @@ export class DistinctCounts {
     monitor: EvictionMonitor,
     /** Where failures are logged. */
     private readonly logger: Logger,
+    /** Counts the fallbacks from the shared store and raises their warning. */
+    private readonly fallbacks: DistinctFallbacks,
   ) {
     this.#local = new BoundedTable("distinct counts", maxKeys, monitor);
   }
@@ -80,17 +159,23 @@ export class DistinctCounts {
     }
     const key = `d:${count.window}:${index}:${count.key}`;
     const store = this.store;
+    this.fallbacks.attempted(now);
     const shared = store
       .pfAdd(key, [count.element], count.window * 2)
       .then(() => store.pfCount(key));
     return shared.catch((error: unknown) => {
+      const outcome =
+        count.onStoreError === "local"
+          ? "counting in this process"
+          : "not counted";
       if (now - this.#lastWarn >= 10_000) {
         this.#lastWarn = now;
         this.logger.warn(
-          `bun-security: the shared store "${store.name}" failed a distinct count; ${count.onStoreError === "local" ? "counting in this process" : "not counted"}`,
+          `bun-security: the shared store "${store.name}" failed a distinct count; ${outcome}`,
           { error },
         );
       }
+      this.fallbacks.fellBack(store.name, outcome, now);
       return count.onStoreError === "local"
         ? this.#addLocal(count, index, now)
         : undefined;

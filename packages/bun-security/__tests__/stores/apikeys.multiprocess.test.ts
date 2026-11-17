@@ -128,14 +128,16 @@ const POLICY: SecurityPolicy = {
 };
 
 /**
- * The shared store's options in these tests. Its per-call deadline is 50 ms
- * by default, and a distinct count is two calls (`pfAdd`, then `pfCount`;
- * on Postgres the first is a five-statement transaction, about 2 ms idle):
- * past the deadline, a process counts on its own (`onStoreError: "local"`),
- * sees at most three addresses, and the sixth is let through. A loaded
- * machine (a serial run taking 260 s instead of 74) went past it once. The
- * deadline is what is under test only in the control below; here the store
- * is given room, so what is asserted is the shared count.
+ * The shared store's options in these tests. A distinct count's deadline is
+ * 250 ms by default (`distinctTimeout`), and a distinct count is two calls
+ * (`pfAdd`, then `pfCount`; on Postgres the first is a five-statement
+ * transaction, about 2 ms idle): past the deadline, a process counts on its
+ * own (`onStoreError: "local"`), sees at most three addresses, and the sixth
+ * is let through. A loaded machine (a serial run taking 260 s instead of 74)
+ * went past the 50 ms the counts had before their own deadline once. The
+ * deadline is under test in `apikeys.deadline.test.ts`; here the store is
+ * given room (a `timeout` this long lengthens `distinctTimeout` with it), so
+ * what is asserted is the shared count.
  */
 const STORE = { timeout: "5s" } as const;
 

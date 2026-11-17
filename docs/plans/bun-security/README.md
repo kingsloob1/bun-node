@@ -1670,6 +1670,18 @@ PR; `acceptUnsealed` defaults to `false`, with `resealStore` for a store that
 held secrets before sealing; and a sealed value is bound to its row, field
 and version but not its revision, as documented.
 
+### 17.28 Added with the distinct counts' deadline (approved by the user, 2026-11-17)
+
+| Names | Where |
+|---|---|
+| `CacheStoreOptions.distinctTimeout` (a `Duration`, 1 ms to 60 s; default the larger of `"250ms"` and `timeout`) | `./stores` |
+| `SharedStoreStatus.distinctFallbacks` (`status().state.store.distinctFallbacks`: distinct counts that fell back from the store since the engine started) | `.` |
+| the warning kind `store.distinct-fallback` (`SecurityWarningKind`) | `.` |
+
+Why: a distinct count (credential stuffing, spraying, the API-key many-addresses check) that misses the store's deadline falls back to its `onStoreError`, and `local` counts only this process's traffic, so a fleet-wide anomaly goes unseen; under load a Postgres `pfAdd` (a five-statement transaction, about 2 ms idle, 37 ms on a first call) went past the general 50 ms and the sixth address was let through. 250 ms is five times the general deadline: room for a transaction on a loaded SQL engine and for the first call's connection, while a sick store still costs a counting request at most twice that (the write, then the read) until five failures in a row open the circuit, after which it costs nothing. A `timeout` set longer than 250 ms lengthens it with it, so an app that gave every call more room does not find its distinct counts given less. Limits keep the 50 ms: a limit that falls back counts one request at its local share, where a distinct count that falls back misses the attack it exists for.
+
+The fallbacks were visible only in a log line at most every 10 s. Now each is counted (local or not counted alike; `explain()`'s peeks are not), and the `store.distinct-fallback` warning is raised at the first one and again only after a whole minute with none, as `state.evictions` is. Its `share` is the minute's fallbacks over the distinct counts tried in the store that minute, at the moment it is raised; `minutes` and `since` are the run's. The warning in force is not kept in `status()` (the count is): say if it should be, as `state.warning` is for evictions.
+
 ## 18. Findings outside this plan
 
 Found while surveying; each is reported, none fixed here.

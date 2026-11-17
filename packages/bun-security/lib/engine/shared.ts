@@ -142,8 +142,12 @@ export class StoreGuard {
     };
   }
 
-  /** Runs `call` under the timeout and the circuit. */
-  async run<T>(what: string, call: () => Promise<T>): Promise<T> {
+  /** Runs `call` under the timeout (`timeout` ms when given) and the circuit. */
+  async run<T>(
+    what: string,
+    call: () => Promise<T>,
+    timeout: number = this.options.timeout,
+  ): Promise<T> {
     const now = this.options.now();
     let probe = false;
     if (this.#openUntil > 0) {
@@ -161,10 +165,10 @@ export class StoreGuard {
         timer = setTimeout(() => {
           reject(
             new SharedStoreError(
-              `the shared store's ${what} timed out after ${this.options.timeout} ms`,
+              `the shared store's ${what} timed out after ${timeout} ms`,
             ),
           );
-        }, this.options.timeout);
+        }, timeout);
         timer.unref?.();
         call().then(resolve, reject);
       });
