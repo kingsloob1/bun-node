@@ -23,7 +23,12 @@ import {
   resolveLogger,
 } from "@kingsleyweb/bun-common";
 import type { Logger, LoggerLike } from "@kingsleyweb/bun-common";
-import { parseAddress, parseCidr } from "../ip/address";
+import {
+  isWholeFamilyRange,
+  parseAddress,
+  parseCidr,
+  WHOLE_FAMILY_RANGE,
+} from "../ip/address";
 import type { ParsedAddress, ParsedCidr } from "../ip/address";
 import { CidrTrie } from "../ip/trie";
 import { openMmdb } from "./mmdb";
@@ -199,7 +204,9 @@ export async function ipIntel(options: IpIntelOptions = {}): Promise<IpIntel> {
       const cidr = parseCidr(text);
       if (cidr === null)
         throw new ConfigError(
-          `ipIntel(): ranges.${name}: not an address or range: ${JSON.stringify(text)}`,
+          isWholeFamilyRange(text)
+            ? `ipIntel(): ranges.${name}: ${WHOLE_FAMILY_RANGE} (${JSON.stringify(text)}), so the class would name every client`
+            : `ipIntel(): ranges.${name}: not an address or range: ${JSON.stringify(text)}`,
         );
       statics.push([name, cidr]);
     }

@@ -123,6 +123,13 @@ ban, and only one with no ban is challenged. Entries take an `id`, `reason`, `cr
 `code`, `expiresAt` (an ISO 8601 timestamp with its time zone), `paths`
 (route prefixes), `scope`, `override`, `locked` and `mode`.
 
+A `/0` range (`0.0.0.0/0`, `::/0`, or `::ffff:0:0/96`, which maps to the
+IPv4 `/0`) covers every address of its family, so it is refused, saying so:
+`lists[0].ip: a /0 range covers every address of its family; use a request
+rule instead`. The same goes for the internal ranges, a request rule's
+`client.cidr`, `ipIntel()`'s static `ranges` and `ban()`. A rule matching
+every client is a rule without a `client` condition.
+
 - The most specific scope that matched decides (route `paths` > service >
   group > global); within it an `allow` marked `override` wins, otherwise the
   most severe action does. A `locked` entry is weighed before every unlocked

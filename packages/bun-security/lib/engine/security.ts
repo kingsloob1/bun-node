@@ -54,8 +54,10 @@ import type {
 import {
   addressKey,
   normalizeAddress,
+  isWholeFamilyRange,
   parseAddress,
   parseCidr,
+  WHOLE_FAMILY_RANGE,
 } from "../ip/address";
 import type { ParsedAddress } from "../ip/address";
 import { compilePolicy, policyInternals } from "../policy/compile";
@@ -2155,7 +2157,9 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       const cidr = address === null ? parseCidr(value) : null;
       if (address === null && cidr === null) {
         throw new TypeError(
-          `bun-security: ban(): ${JSON.stringify(value)} is not an address or CIDR range`,
+          isWholeFamilyRange(value)
+            ? `bun-security: ban(): ${WHOLE_FAMILY_RANGE} (${JSON.stringify(value)}), so the ban would refuse every client; use a request rule instead`
+            : `bun-security: ban(): ${JSON.stringify(value)} is not an address or CIDR range`,
         );
       }
       subject =
