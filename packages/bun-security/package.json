@@ -242,6 +242,7 @@
   "devDependencies": {
     "@kingsleyweb/bun-cache": "workspace:^",
     "@types/bun": "catalog:",
+    "ajv": "catalog:",
     "bun-types": "catalog:",
     "typescript": "catalog:"
   }
