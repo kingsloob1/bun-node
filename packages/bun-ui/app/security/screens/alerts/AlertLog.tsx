@@ -5,6 +5,7 @@
  * channel. With `alerts:write`, a dead letter is **Replayed** (queued
  * again).
  */
+import { Table } from "../../../kit/components/Table";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Badge } from "../../../kit/components/Badge";
@@ -101,7 +102,7 @@ export function Deliveries() {
         />
       ) : (
         <>
-          <table className="table">
+          <Table label="Delivery log">
             <thead>
               <tr>
                 <th scope="col">When</th>
@@ -131,7 +132,7 @@ export function Deliveries() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </Table>
           {page.data !== undefined && page.data.items.length === 0 ? (
             <p data-testid="deliveries-empty">No delivery yet.</p>
           ) : null}
@@ -209,7 +210,7 @@ export function DeadLetters() {
         />
       ) : (
         <>
-          <table className="table">
+          <Table label="Dead letters">
             <thead>
               <tr>
                 <th scope="col">Died</th>
@@ -247,7 +248,7 @@ export function DeadLetters() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </Table>
           {page.data !== undefined && page.data.items.length === 0 ? (
             <p data-testid="dead-letters-empty">No dead letter.</p>
           ) : null}

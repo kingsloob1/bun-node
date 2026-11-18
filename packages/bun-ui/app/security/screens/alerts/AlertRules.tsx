@@ -3,6 +3,7 @@
  * title, scope, severity, what it watches, its channels, on or off. With
  * `alerts:write` on the scope on screen, **New rule**.
  */
+import { Table } from "../../../kit/components/Table";
 import { useQuery } from "@tanstack/react-query";
 import { Badge } from "../../../kit/components/Badge";
 import { dataOf } from "../../api/client";
@@ -60,7 +61,7 @@ export function AlertRules({ scope }: { scope: string }) {
         />
       ) : (
         <>
-          <table className="table">
+          <Table label="Alert rules">
             <thead>
               <tr>
                 <th scope="col">Rule</th>
@@ -96,7 +97,7 @@ export function AlertRules({ scope }: { scope: string }) {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </Table>
           {page.data !== undefined && page.data.items.length === 0 ? (
             <p data-testid="alert-rules-empty">No alert rule.</p>
           ) : null}

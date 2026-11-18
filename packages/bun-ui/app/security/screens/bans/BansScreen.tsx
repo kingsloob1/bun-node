@@ -6,6 +6,7 @@
  * address finds the ranges holding it), sorted by start or end. Live: a new
  * ban never moves the page; it is counted in an "N new — show" chip.
  */
+import { Table } from "../../../kit/components/Table";
 import type { BanDto, BanFilters } from "./banQueries";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
@@ -244,9 +245,9 @@ export function BansScreen({ scope }: BansScreenProps) {
         />
       ) : (
         <>
-          <table
-            className="table"
-            data-testid="bans-table"
+          <Table
+            label="Bans"
+            testId="bans-table"
           >
             <thead>
               <tr>
@@ -301,7 +302,7 @@ export function BansScreen({ scope }: BansScreenProps) {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </Table>
           {page.data !== undefined && page.data.items.length === 0 ? (
             <p data-testid="bans-empty">No ban matches.</p>
           ) : null}

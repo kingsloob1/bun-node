@@ -7,6 +7,7 @@
  * accepted until the agent first uses the new one, or 24 hours) and
  * **Revoke** (at once).
  */
+import { Table } from "../../../kit/components/Table";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Badge } from "../../../kit/components/Badge";
@@ -208,9 +209,9 @@ export function AgentDetail({ scope }: AgentDetailProps) {
           {(reported.intel?.feeds ?? []).length === 0 ? (
             <p data-testid="agent-feeds-none">None configured.</p>
           ) : (
-            <table
-              className="table"
-              data-testid="agent-feeds"
+            <Table
+              label="IP feeds"
+              testId="agent-feeds"
             >
               <thead>
                 <tr>
@@ -232,7 +233,7 @@ export function AgentDetail({ scope }: AgentDetailProps) {
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </Table>
           )}
         </section>
       )}

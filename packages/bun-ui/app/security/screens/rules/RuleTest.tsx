@@ -9,6 +9,7 @@
  * against, the crawler verdict, every step in order, and what the test
  * could not evaluate. The control plane keeps nothing of it.
  */
+import { Table } from "../../../kit/components/Table";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Badge } from "../../../kit/components/Badge";
@@ -412,9 +413,9 @@ function TestResult({ result }: { result: RuleTestResult }) {
       {decision.hits.length === 0 ? (
         <p data-testid="test-no-hits">None.</p>
       ) : (
-        <table
-          className="table"
-          data-testid="test-hits"
+        <Table
+          label="Rules that matched"
+          testId="test-hits"
         >
           <thead>
             <tr>
@@ -441,7 +442,7 @@ function TestResult({ result }: { result: RuleTestResult }) {
               </tr>
             ))}
           </tbody>
-        </table>
+        </Table>
       )}
       <h3>The client</h3>
       <p data-testid="test-client">

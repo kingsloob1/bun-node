@@ -65,7 +65,7 @@ export function AlertChannelForm({ scope, id }: AlertChannelFormProps) {
       <div className="screen">
         {back}
         <ErrorView
-          headingLevel={1}
+          headingLevel={2}
           error={channel.error}
           title="The channel could not be read"
           onRetry={() => void channel.refetch()}
@@ -220,7 +220,7 @@ function ChannelEditor({
     }, "The test was not sent");
   return (
     <>
-      <h1>{channel === null ? "New channel" : channel.name}</h1>
+      <h2>{channel === null ? "New channel" : channel.name}</h2>
       {secret === null ? null : (
         <SecretOnce
           label="The webhook's signing secret"

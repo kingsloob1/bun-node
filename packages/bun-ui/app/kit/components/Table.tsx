@@ -7,6 +7,8 @@ export interface TableProps {
   label: string;
   /** Extra class names on the `<table>`. */
   className?: string;
+  /** The `<table>`'s `data-testid`, for tests. */
+  testId?: string;
   /** `<thead>` / `<tbody>`. */
   children: ReactNode;
 }
@@ -15,7 +17,7 @@ export interface TableProps {
  * A table in a scrollable, focusable region with a sticky header. Keyboard
  * users can scroll a wide table because the region is tabbable.
  */
-export function Table({ label, className, children }: TableProps) {
+export function Table({ label, className, testId, children }: TableProps) {
   return (
     <div
       className="table-wrap"
@@ -24,7 +26,10 @@ export function Table({ label, className, children }: TableProps) {
       // A scrollable region must be reachable by keyboard.
       tabIndex={0}
     >
-      <table className={cx("table", className)}>
+      <table
+        className={cx("table", className)}
+        {...(testId === undefined ? {} : { "data-testid": testId })}
+      >
         <caption className="visually-hidden">{label}</caption>
         {children}
       </table>

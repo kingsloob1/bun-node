@@ -4,6 +4,7 @@
  * and host only: the URL is write-only) and which of the control plane's
  * own alerts it receives. With `alerts:write` on `global`, **New channel**.
  */
+import { Table } from "../../../kit/components/Table";
 import { useQuery } from "@tanstack/react-query";
 import { dataOf } from "../../api/client";
 import { ErrorView } from "../../components/ErrorView";
@@ -58,7 +59,7 @@ export function AlertChannels({ scope }: { scope: string }) {
         />
       ) : (
         <>
-          <table className="table">
+          <Table label="Channels">
             <thead>
               <tr>
                 <th scope="col">Channel</th>
@@ -90,7 +91,7 @@ export function AlertChannels({ scope }: { scope: string }) {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </Table>
           {page.data !== undefined && page.data.items.length === 0 ? (
             <p data-testid="alert-channels-empty">No channel.</p>
           ) : null}

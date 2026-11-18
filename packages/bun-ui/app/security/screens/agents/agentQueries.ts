@@ -27,8 +27,8 @@ export const STATUS: Record<
   revoked: { label: "Revoked", tone: "neutral" },
 };
 
-/** Whether the API answered that agents are not configured (a 404 on the route). */
-export function agentsOff(error: unknown): boolean {
+/** Whether the API answered that a feature is not configured: a `404` on its route (agents, alerts). */
+export function notConfigured(error: unknown): boolean {
   return (
     typeof error === "object" &&
     error !== null &&

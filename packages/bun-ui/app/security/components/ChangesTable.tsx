@@ -1,4 +1,5 @@
 /** A diff's changes as a table (a policy diff, an audit entry's): where, before, after. */
+import { Table } from "../../kit/components/Table";
 
 /** One change. */
 export interface ChangeRow {
@@ -21,14 +22,20 @@ export interface ChangesTableProps {
   changes: readonly ChangeRow[];
   /** Its test id. */
   testId: string;
+  /** Its accessible name. Default "Changes". */
+  label?: string;
 }
 
 /** See the module's description. */
-export function ChangesTable({ changes, testId }: ChangesTableProps) {
+export function ChangesTable({
+  changes,
+  testId,
+  label = "Changes",
+}: ChangesTableProps) {
   return (
-    <table
-      className="table"
-      data-testid={testId}
+    <Table
+      label={label}
+      testId={testId}
     >
       <thead>
         <tr>
@@ -52,6 +59,6 @@ export function ChangesTable({ changes, testId }: ChangesTableProps) {
           </tr>
         ))}
       </tbody>
-    </table>
+    </Table>
   );
 }

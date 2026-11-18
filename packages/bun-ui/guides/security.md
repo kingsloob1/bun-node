@@ -265,6 +265,13 @@ on.
 
 ### What each element needs
 
+This table is parsed and checked by
+[`examples/bun-ui/security/01-screens/permissions.ts`](../../../examples/bun-ui/security/01-screens/permissions.ts):
+every row must have a gate there, every permission it names is one the API
+checks, the nav gates as the table says, and each element that makes one
+call is refused by the API without its permission. A row changed here is a
+change to that example.
+
 The app boots with `GET /meta`, `GET /meta/permissions?scope=global` and
 `GET /operators/me`. A screen asks `GET /meta/permissions?scope=<scope>` for
 the scope on screen, and its elements read that answer. An element the
@@ -386,6 +393,20 @@ token is kept in `sessionStorage` (gone when the tab closes) and sent in
 session until <time>** while it lasts. The token is cleared when it expires
 or when the API answers `401`. Too many failed attempts lock the account
 (`429`), which the form says. Every use is audited and alerted by the API.
+
+## Accessibility and layout
+
+Every screen is checked in Chrome (`__tests__/security/e2e/a11y.e2e.test.ts`)
+for one `main`, a `nav`, a banner and one `h1`; a name on every control,
+image and link (a placeholder is a hint, and never stands in for a label); text contrast of WCAG AA (4.5:1, 3:1 for large text) in the
+light and the dark theme; a visible focus indicator on every control the
+Tab key reaches, in document order; and no sideways scroll at 375 px and
+1440 px (a wide table scrolls inside its own labelled region). A dialog
+opens, keeps focus and closes from the keyboard alone, giving focus back to
+what opened it. The flows an operator runs (publishing behind a step-up, a
+draft changed meanwhile, bans, lists, rules and testing a request, a second
+operator's approval, agents, alert channels and rules, paging events while
+they arrive) run end to end in `flows.e2e.test.ts`.
 
 ## Testing without a socket
 

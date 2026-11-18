@@ -9,6 +9,7 @@
  * saves the draft without the rule, **Publish** and **Discard** act on the
  * draft. **Test a request** runs one through the effective policy.
  */
+import { Table } from "../../../kit/components/Table";
 import { useState } from "react";
 import { Badge } from "../../../kit/components/Badge";
 import { Button } from "../../../kit/components/Button";
@@ -214,9 +215,9 @@ export function RulesScreen({ scope }: RulesScreenProps) {
       {data.own.length === 0 ? (
         <p data-testid="rules-own-empty">No rule of its own.</p>
       ) : (
-        <table
-          className="table"
-          data-testid="rules-own"
+        <Table
+          label="This scope's rules"
+          testId="rules-own"
         >
           <thead>
             <tr>
@@ -278,14 +279,14 @@ export function RulesScreen({ scope }: RulesScreenProps) {
               );
             })}
           </tbody>
-        </table>
+        </Table>
       )}
       {data.inherited.length === 0 ? null : (
         <>
           <h2>Inherited</h2>
-          <table
-            className="table"
-            data-testid="rules-inherited"
+          <Table
+            label="Inherited rules"
+            testId="rules-inherited"
           >
             <thead>
               <tr>
@@ -327,7 +328,7 @@ export function RulesScreen({ scope }: RulesScreenProps) {
                 );
               })}
             </tbody>
-          </table>
+          </Table>
         </>
       )}
       <h2>The managed probe set</h2>
