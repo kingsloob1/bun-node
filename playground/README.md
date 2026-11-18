@@ -12,6 +12,7 @@ PLAYGROUND_DRIVER=sqlite bun playground/index.ts     # keeps its state in playgr
 PLAYGROUND_DRIVER=memory bun playground/index.ts     # nothing on disk, and no summoning
 PLAYGROUND_DRIVER=redis PLAYGROUND_URL=redis://localhost:6379/12 bun playground/index.ts
 PLAYGROUND_INTERVAL_MS=0 bun playground/index.ts     # seed only, no new jobs
+PLAYGROUND_SECURITY_INTERVAL_MS=0 bun playground/index.ts  # the security demo seeds, its attacker loop sends nothing (default a tick a second)
 PLAYGROUND_CGROUP=auto bun playground/index.ts       # summoned units in a cgroup (Linux, cgroup v2)
 PLAYGROUND_SECRET_DELAY_MS=3000 bun playground/index.ts  # Vault Compute's slow secret store answers in 3 s (default 12 s)
 PLAYGROUND_SHARED_UNIT=mailer bun playground/index.ts    # the uploads shared unit's controller on the mailer context
@@ -24,6 +25,7 @@ bun playground/nest-gateway.ts                           # the validated Nest ga
 bun playground/cache-smoke.ts                            # the cache lab's smoke check (see "The cache lab")
 bun playground/typed-client-smoke.ts                     # the typed client's smoke check (see "The typed client")
 cd playground && bun run check:client                    # the typed client's committed route map is fresh (bun run gen:client rewrites it)
+cd playground && bun run test:security                   # the security demo's test (see "The security demo")
 ```
 
 **Restart it after changing the UI.** The playground passes `dev: true`, so
@@ -58,6 +60,7 @@ can reach it, so never expose it.
 | `/playground/chat/:room` | a validated WebSocket chat channel (bun-validate V8's `defineChannel`, `chat.ts`, over its shared `chatContract`, a `channelContract()` that the typed-client section's channel scenario opens with bun-client's `channel()`), mounted with one `ws()` call: the upgrade's room name is checked against the channel's `request` schema (a bad one — `/playground/chat/Lobby` — is a 400, never a 101), every text frame is parsed and checked against its `type` (`say` with data, `typing` without; an invalid frame is answered with a value-free `VALIDATION` error frame, an unknown type with `UNKNOWN_MESSAGE`), and `send`/`publish` are typed and checked (typed-client PR-W1: the handler's `ws.data.params`/`ws.data.custom` are typed, `say`'s return is its `said` reply carrying the request's id, and `send`/`publish` resolve to Bun's send status). `POST /playground/chat/:room/announce?text=…` pushes into a room from a route, with no socket (the channel's server-level `publish` on `req.server`), answering `{ status }`. It appears in `/playground/routes` as `GET /playground/chat/:room` with its `websocket` contract's rows; OpenAPI documents HTTP only, so each OpenAPI generation still collects one "skipped" warning for it — but the channel is fully present in the **AsyncAPI** document (`/playground/docs/asyncapi.json`: the `playground-chat` channel — its room parameter's checked schema as `x-bun-common-schema`, its frames as envelope payloads, the `say`→`said` reply, the implicit `error` frame). Poke it: `bunx wscat -c 'ws://localhost:4000/playground/chat/lobby?name=ada'`, then `{"type":"say","id":"m-1","data":{"text":"hi"}}` |
 | `/playground/cache` | the bun-cache lab (`cache.ts`, see "The cache lab" below): routes behind `cacheResponse()` showing `X-Cache`, `Age` and timing, stale-while-revalidate and stale-if-error, invalidation by path and by tag, live `cache.stats()`, and one cache switchable between drivers, compression algorithms and an L1 tier. PR-C1's `getOrSet` demo stays on the same cache: `GET /playground/cache/report` (250 ms to build, cached 10 s with a 30 s stale window; its `cache` field says `miss`/`hit`/`stale`; ten at once build once), `GET /playground/cache/stats`, `POST /playground/cache/invalidate` (the `report` tag, or `?tag=`). And the **at-rest** item, `/playground/cache/at-rest`: one value through an encrypted cache with `hashNames` on, as the store holds it beside what the cache answers (see "At rest" below) |
 | `/playground/client` | the typed client (`typed-client.ts`, see "The typed client" below): bun-client against a small API at `/playground/client/api`, its generated route map beside the OpenAPI document it came from, live typed calls (a 200, a narrowed 404, `api.op`, `throwOnError`, an undeclared status, a `Retry-After` retry, a timeout, middleware, server-sent events and their resume, a WebSocket channel: `channel()` on the chat channel below, over a real socket), validation both ways, the query layer (keys, `ETag`/304, `invalidates`, `Cache-Tag` tags, live invalidation over `/__live`), and a regenerate button with its diff. `/playground/client/__bun/types` is its `devTypes()` endpoint, for `bun-client watch` (development only, loopback, token) |
+| `/security`, `/security-api`, `/playground/security` | the security demo (`security.ts`, see "The security demo" below): bun-security's control plane at `/security-api` and bun-ui's security UI at `/security`, over three demo services whose engines run behind agents, with an attacker loop keeping every screen moving; `/playground/security` shows the loop's figures and the alert emails the control plane sent |
 | `/playground/throttle` | bun-common's `throttle()` on one route: 5 requests per 30 s per address with the IETF `RateLimit-Policy`/`RateLimit` headers, then a `429` problem+json with `Retry-After` (`curl -i` it in a loop) |
 | `/` | redirects to `/jobs` |
 
@@ -465,6 +468,42 @@ playground's wrapper. That counts like any `unavailable`: on a backend that
 keeps its state (`PLAYGROUND_DRIVER=sqlite`, a server), the next start's
 Summon panel may show one failure and a last outcome of `unavailable` with
 that detail, until a registration or a Reset clears it.
+
+## The security demo
+
+`security.ts` (`mountSecurityDemo(app, options)`, bun-security PR-X2) mounts
+a real control plane (`createSecurityApi`, at `/security-api`) and the
+security UI (`securityUi`, at `/security`, built from the source like the
+jobs UI, in the playground's theme and layout) on the playground's adapter.
+
+| Part | What it is |
+|---|---|
+| The control plane | an in-memory store; agents; alerts to an email channel the demo keeps (`/playground/security`); two-person approvals; a step-up that always says yes. Two operators: `playground` (the browser, every request) and `reviewer` (named by the `x-demo-operator` header) |
+| The services | `shop` (two instances) and `accounts` in group `storefront`, and `partner-api`; each instance an engine behind `installSecurity` on an adapter of its own that never listens (the loop calls its `fetch()`), connected by `connectAgent` over the playground adapter's `fetch()` (no network), counting its decisions and sampling events (one allow in twenty) that its agent posts each second |
+| The seed | global: the managed probe set and the honeypots enforced, a canary account (`backup-admin`), a counted rule on probe hits that feeds the ladder (a challenge at 4, a ban at 8), lists (the office allowed, a botnet range and a country blocked, and an old scraper range that covers Googlebot's: a **crawler conflict** the agents report), and `admin-paths`, a request rule in dry run; `storefront`: 120 requests a minute per address; `accounts`: 30 sign-ins a minute per address; `partner-api`: 60 calls a minute per API key and a dry-run many-addresses check. The global publish is dangerous (an allow entry, the ladder), so it opens an approval the reviewer approves. Four alert rules (a ban storm, a rule tripping, a canary used, an address refused heavily), evaluated every 15 s. Last, the reviewer's change turning `admin-paths` on is left **waiting for your approval** (`/security/approvals`) |
+
+The attacker loop (`PLAYGROUND_SECURITY_INTERVAL_MS`, default a tick a
+second) sends, each kind from its own addresses so one kind's bans never
+stop another's:
+
+| Every | Kind | What it exercises |
+|---|---|---|
+| tick | normal users | browsing the shop, signing in, the partner's calls: the allowed traffic, the services' requests a minute |
+| 3 ticks | a verified crawler | Googlebot from Google's range, verified by range: the crawler series |
+| 4 ticks | the dry-run rule | a visitor on `/admin`: `admin-paths` would block it (the rules screen's would-blocks, the traffic chart's dry run) |
+| 5 ticks | list hits | the office (allowed), the botnet range and the blocked country (refused): the lists, the geography panel |
+| 7 ticks | a spoofed crawler | Googlebot's name from outside its range: `crawler.spoofed`, the spoofed claimants |
+| 9 ticks | a path scan | the probe paths and dead links: the managed probe set, the honeypots, the counted rule and the ladder's bans, which the agents report as automatic bans |
+| 11 ticks | a rotating IPv6 attacker | 150 requests from one `/64`: the per-address limit, keyed by the prefix |
+| 13 ticks | credential stuffing | 40 usernames from one address: the sign-in profile's delays, its limit and the failure rate |
+| 17 ticks | an API key's abuse | 80 calls on one key: the per-key limit |
+| 30 ticks | a canary sign-in | the `backup-admin` account: the canary's ban and its critical alert |
+
+`bun run test:security` (`security.test.ts`) mounts the demo on a port-0
+adapter, runs thirty ticks and checks every kind ran, the attacks were
+refused and normal users never were, the control plane saw refused events,
+automatic bans, the crawler conflict and a waiting approval, an alert email
+was sent, and that a stopped demo ticks no more.
 
 ## The cache lab
 
