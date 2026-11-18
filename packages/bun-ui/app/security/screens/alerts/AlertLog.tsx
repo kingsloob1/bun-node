@@ -32,6 +32,7 @@ function ChannelFilter() {
       <label>
         Channel{" "}
         <input
+          placeholder="e.g. ops-pager"
           className="input"
           defaultValue={params.get("channel") ?? ""}
           data-testid="filter-channel"

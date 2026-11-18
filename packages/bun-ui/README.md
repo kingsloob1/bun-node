@@ -35,6 +35,7 @@ UI never loads another's code or bundle.
 - [Colour themes](#colour-themes)
 - [Layout](#layout)
 - [Frame and sections](#frame-and-sections)
+- [Forms](#forms)
 - [What a UI serves](#what-a-ui-serves)
 - [Tree-shaking](#tree-shaking)
 - [Troubleshooting](#troubleshooting)
@@ -384,6 +385,18 @@ const menu = sectionsFor(JOBS_SECTIONS, (action) => permissions.actions[action] 
   may link to a page the UI answers with its not-found screen.
 - The docs viewer's two sections need nothing; it shows only the one
   matching its document.
+
+## Forms
+
+Every text field in every UI shows a concrete example of what to type
+(`e.g. checkout-api`, `203.0.113.0/24`, `e.g. */5 * * * *`, the JSON's
+shape) beside its label, which stays: a placeholder is a hint, never the
+label. A select that can be empty shows a "Choose a …" option first (or
+an "Any" choice); one that always holds a value (a sort order, a page size)
+shows none, since a placeholder is for an empty field. Checkboxes, dates and
+files have none. The kit's `TextInput`, `NumberInput` and `JsonEditor`
+require a `placeholder`, and `Select` either a `placeholder` or `alwaysSet`;
+a test reads every app's fields so no raw one goes without.
 
 ## What a UI serves
 

@@ -597,6 +597,7 @@ function FlowQueueField({
         error={error}
       >
         <TextInput
+          placeholder="e.g. emails"
           value={value}
           onChange={onChange}
           autoComplete="off"
@@ -613,6 +614,7 @@ function FlowQueueField({
         error={freeText ? undefined : error}
       >
         <Select
+          placeholder="Choose a queue"
           options={[
             { value: "", label: `Its parent's (${parentQueue})` },
             ...listed.map((name) => ({ value: name })),
@@ -637,6 +639,7 @@ function FlowQueueField({
           error={error}
         >
           <TextInput
+            placeholder="e.g. emails"
             value={value}
             onChange={onChange}
             autoComplete="off"

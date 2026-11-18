@@ -91,6 +91,7 @@ function TabJson({ tab }: { tab: PolicyTab }) {
       data-testid="tab-json"
     >
       <JsonEditor
+        placeholder='{ "mode": "enforce" }'
         value={text}
         aria-label={`${tab.label} as JSON`}
         rows={18}

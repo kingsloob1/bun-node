@@ -2,6 +2,7 @@ import type { FetchLike } from "../../../../app/jobs/api/client";
 import { runnerPath } from "../../../../app/jobs/api/runners";
 import { act, fireEvent, page, visit, waitFor, within } from "../dom";
 import { renderApp } from "../renderApp";
+import { choices } from "../../../harness/choices";
 
 /**
  * Drives the runner screen's "Settings…" editor and reads its summary rows
@@ -187,7 +188,7 @@ function readDialog(dialog: HTMLElement): ConfigDialogView {
   ) as unknown as HTMLSelectElement;
   const cap = control(dialog, "Max concurrency");
   return {
-    modeOptions: Array.from(mode.options, (option) => option.value),
+    modeOptions: choices(mode).map((option) => option.value),
     executionMode: mode.value,
     runMode: control(dialog, "Run mode").value,
     maxConcurrency: cap.value,

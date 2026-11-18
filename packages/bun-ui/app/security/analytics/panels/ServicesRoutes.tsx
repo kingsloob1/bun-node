@@ -98,6 +98,7 @@ export function ServicesRoutes() {
             </ChartFrame>
             {services.length === 0 ? null : (
               <Select
+                placeholder="Choose a service"
                 aria-label="Drill down to a service's routes"
                 value={service}
                 onChange={(value) => setService(value)}

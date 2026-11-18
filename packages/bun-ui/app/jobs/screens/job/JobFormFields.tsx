@@ -27,11 +27,12 @@ const TIMING_OPTIONS = [
 ] as const satisfies readonly { value: AddJobTiming; label: string }[];
 
 /**
- * Select values that cannot be job names in practice (bun-jobs refuses
- * control characters in names' ids, and no sane name starts with NUL):
- * "nothing picked yet" and "type another name".
+ * Select values that cannot be job names: "nothing picked yet" is the empty
+ * value (no job is named "", and it makes the prompt the select's empty
+ * first option, BU-placeholders), and "type another name" one bun-jobs
+ * refuses in a name (control characters; no sane name starts with NUL).
  */
-const PICK_NAME = "\u0000pick";
+const PICK_NAME = "";
 /** See {@link PICK_NAME}. */
 const OTHER_NAME = "\u0000other";
 
@@ -76,6 +77,7 @@ export function JobNameField({
         error={error}
       >
         <Select
+          placeholder="Choose a job name"
           options={[
             { value: "", label: "Pick a name…", disabled: true },
             ...addableNames.map((name) => ({ value: name })),
@@ -99,6 +101,7 @@ export function JobNameField({
           error={freeText ? undefined : error}
         >
           <Select
+            placeholder="Choose a job name"
             options={[
               { value: PICK_NAME, label: "Pick a name…", disabled: true },
               ...defined.map((name) => ({ value: name })),
@@ -135,6 +138,7 @@ export function JobNameField({
           error={error}
         >
           <TextInput
+            placeholder="e.g. send-welcome-email"
             value={value}
             onChange={onChange}
             maxLength={200}
@@ -177,6 +181,7 @@ export function JobDataField({
       error={error}
     >
       <JsonEditor
+        placeholder='{ "userId": "u_123", "template": "welcome" }'
         value={value}
         onChange={onChange}
         maxBytes={maxBytes}
@@ -214,6 +219,7 @@ export function JobOptionsFields({
         error={fieldError("opts.jobId")}
       >
         <TextInput
+          placeholder="e.g. invoice-2026-11-0042"
           value={form.jobId}
           onChange={(jobId) => patch({ jobId })}
           maxLength={MAX_JOB_ID_LENGTH}
@@ -227,6 +233,7 @@ export function JobOptionsFields({
         error={fieldError("opts.priority")}
       >
         <NumberInput
+          placeholder="e.g. 10"
           value={form.priority}
           onChange={(priority) => patch({ priority })}
           step="any"
@@ -234,6 +241,7 @@ export function JobOptionsFields({
       </Field>
       <Field label="Run">
         <Select
+          alwaysSet
           options={TIMING_OPTIONS}
           value={form.timing}
           onChange={(timing) => patch({ timing })}
@@ -246,6 +254,7 @@ export function JobOptionsFields({
           error={fieldError("opts.delay")}
         >
           <NumberInput
+            placeholder="e.g. 30000"
             value={form.delay}
             onChange={(delay) => patch({ delay })}
             min={0}
@@ -271,6 +280,7 @@ export function JobOptionsFields({
         error={fieldError("opts.attempts")}
       >
         <NumberInput
+          placeholder="e.g. 3"
           value={form.attempts}
           onChange={(attempts) => patch({ attempts })}
           min={1}
@@ -282,6 +292,7 @@ export function JobOptionsFields({
         error={fieldError("opts.backoff")}
       >
         <NumberInput
+          placeholder="e.g. 5000"
           value={form.backoff}
           onChange={(backoff) => patch({ backoff })}
           min={0}
@@ -293,6 +304,7 @@ export function JobOptionsFields({
         error={fieldError("opts.timeout")}
       >
         <NumberInput
+          placeholder="e.g. 60000"
           value={form.timeout}
           onChange={(timeout) => patch({ timeout })}
           min={0}

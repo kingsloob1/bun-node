@@ -269,6 +269,7 @@ function ApprovalView({ approval }: { approval: ApprovalDto }) {
           <label>
             Reason (optional){" "}
             <input
+              placeholder="e.g. Checked the diff with the payments team"
               className="input"
               value={reason}
               maxLength={500}

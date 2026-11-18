@@ -485,6 +485,7 @@ function ListsView({ scope }: ListsScreenProps) {
         </Field>
         <Field label="Kind">
           <Select
+            placeholder="Choose a kind"
             value={filters.kind}
             options={[
               { value: "", label: "Any kind" },
@@ -499,6 +500,7 @@ function ListsView({ scope }: ListsScreenProps) {
         </Field>
         <Field label="Action">
           <Select
+            placeholder="Choose an action"
             value={filters.action}
             options={[
               { value: "", label: "Any action" },
@@ -510,6 +512,7 @@ function ListsView({ scope }: ListsScreenProps) {
         </Field>
         <Field label="Expiry">
           <Select
+            placeholder="Choose an expiry"
             value={filters.expiry}
             options={EXPIRY_OPTIONS}
             onChange={(value) => setFilter("expiry", value)}
@@ -519,6 +522,7 @@ function ListsView({ scope }: ListsScreenProps) {
         {serviceOf(scope) === null && groupOf(scope) === null ? null : (
           <Field label="Origin">
             <Select
+              placeholder="Choose an origin"
               value={filters.origin}
               options={ORIGIN_OPTIONS}
               onChange={(value) => setFilter("origin", value)}

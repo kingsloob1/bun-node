@@ -31,6 +31,7 @@ import {
   openDialog,
   renderQueue,
 } from "./fixtures";
+import { choices } from "../../../harness/choices";
 
 setupDom();
 
@@ -296,7 +297,7 @@ describe("the job defaults editor", () => {
     const strategy = within(dialog).getByLabelText(
       "Backoff strategy",
     ) as HTMLSelectElement;
-    expect([...strategy.options].map((option) => option.value)).toEqual([
+    expect(choices(strategy).map((option) => option.value)).toEqual([
       ...JOB_DEFAULT_BACKOFF_TYPES,
     ]);
     // Effective vs code, per setting, and what "code" means.

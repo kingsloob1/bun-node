@@ -10,6 +10,7 @@ import {
 } from "../../../../app/kit/components/pagerState";
 import { expectAbsent, expectNone } from "../../../harness/assert";
 import { fireEvent, page, render, setupDom } from "../dom";
+import { choices } from "../../../harness/choices";
 
 setupDom();
 
@@ -175,7 +176,7 @@ describe("Pager", () => {
       />,
     );
     const select = page().getByLabelText("Rows per page") as HTMLSelectElement;
-    expect(Array.from(select.options).map((option) => option.value)).toEqual([
+    expect(choices(select).map((option) => option.value)).toEqual([
       "10",
       "20",
       "50",
@@ -202,7 +203,7 @@ describe("Pager", () => {
     );
     const select = page().getByLabelText("Page") as HTMLSelectElement;
     expect(select.tagName).toBe("SELECT");
-    expect(Array.from(select.options).map((option) => option.value)).toEqual(
+    expect(choices(select).map((option) => option.value)).toEqual(
       Array.from({ length: 18 }, (_unused, index) => String(index + 1)),
     );
     // It shows the page the offset is on, and says how many there are.
@@ -387,7 +388,7 @@ describe("Pager", () => {
     );
     const select = page().getByLabelText("Page") as HTMLSelectElement;
     expect(select.tagName).toBe("SELECT");
-    expect(select.options).toHaveLength(3);
+    expect(choices(select)).toHaveLength(3);
   });
 
   it("disables the page control with the rest", () => {

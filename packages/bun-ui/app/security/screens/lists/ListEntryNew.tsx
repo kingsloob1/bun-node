@@ -226,6 +226,7 @@ function EntryForm({ scope }: ListEntryNewProps) {
           required
         >
           <Select<InputKind | "">
+            placeholder="Choose a kind"
             value={kind}
             options={[
               ...(kind === ""
@@ -257,6 +258,7 @@ function EntryForm({ scope }: ListEntryNewProps) {
           required
         >
           <TextInput
+            placeholder="e.g. 203.0.113.0/24"
             value={input.value}
             autoComplete="off"
             spellCheck={false}
@@ -277,6 +279,7 @@ function EntryForm({ scope }: ListEntryNewProps) {
           required
         >
           <Select<ListAction | "">
+            placeholder="Choose an action"
             value={input.action}
             options={[
               ...(input.action === ""
@@ -337,6 +340,7 @@ function EntryForm({ scope }: ListEntryNewProps) {
           hint="For operators; never sent to the client."
         >
           <TextInput
+            placeholder="e.g. Partner's office range"
             value={input.reason}
             maxLength={MAX_REASON}
             onChange={(value) => set("reason", value)}
@@ -349,6 +353,7 @@ function EntryForm({ scope }: ListEntryNewProps) {
           hint="dryRun records what it would do; off disables it."
         >
           <Select<ListMode | "">
+            placeholder="Choose a mode"
             value={input.mode}
             options={[
               { value: "", label: "enforce (default)" },

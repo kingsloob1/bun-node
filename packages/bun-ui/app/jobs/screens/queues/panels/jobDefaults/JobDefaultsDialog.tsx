@@ -344,6 +344,7 @@ function KeyEditor({ keyName, value, onChange, error }: KeyEditorProps) {
       error={error}
     >
       <NumberInput
+        placeholder="e.g. 3"
         value={value as number | undefined}
         min={bounds.min}
         max={bounds.max}
@@ -375,6 +376,7 @@ function BackoffEditor({ value, onChange, error }: BackoffEditorProps) {
         hint="Fixed waits the delay every time; exponential doubles it after each attempt. Other strategies can be set only in code."
       >
         <Select
+          alwaysSet
           options={JOB_DEFAULT_BACKOFF_TYPES.map((type) => ({ value: type }))}
           value={value.type}
           onChange={(type) => onChange({ ...value, type })}
@@ -386,6 +388,7 @@ function BackoffEditor({ value, onChange, error }: BackoffEditorProps) {
         error={error}
       >
         <NumberInput
+          placeholder="e.g. 5000"
           value={value.delay}
           min={delay.min}
           max={delay.max}
@@ -397,6 +400,7 @@ function BackoffEditor({ value, onChange, error }: BackoffEditorProps) {
         hint={`Optional, at least the delay; empty means uncapped. Up to ${max.max}.`}
       >
         <NumberInput
+          placeholder="e.g. 600000"
           value={value.max}
           min={max.min}
           max={max.max}
@@ -408,6 +412,7 @@ function BackoffEditor({ value, onChange, error }: BackoffEditorProps) {
         hint={`Optional fraction of each delay randomised, ${jitter.min}–${jitter.max}.`}
       >
         <NumberInput
+          placeholder="e.g. 0.2"
           value={value.jitter}
           min={jitter.min}
           max={jitter.max}
@@ -462,6 +467,7 @@ function RetentionEditor({
         error={value.mode === "limit" ? undefined : error}
       >
         <Select
+          alwaysSet
           options={RETENTION_OPTIONS}
           value={value.mode}
           onChange={(mode) => onChange({ ...value, mode })}
@@ -475,6 +481,7 @@ function RetentionEditor({
             error={error}
           >
             <NumberInput
+              placeholder="e.g. 1000"
               value={value.count}
               min={count.min}
               max={count.max}
@@ -486,6 +493,7 @@ function RetentionEditor({
             hint={`Optional, up to ${ttl.max} (a year).`}
           >
             <NumberInput
+              placeholder="e.g. 86400000"
               value={value.ttl}
               min={ttl.min}
               max={ttl.max}

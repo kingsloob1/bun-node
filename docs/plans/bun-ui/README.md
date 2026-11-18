@@ -1016,6 +1016,30 @@ Every existing exported name of the two packages (`jobsUi`, `docsUi`, the
 `JobsUi*` and `DocsUi*` types, the constants) keeps its name; only its
 import specifier changes.
 
+### 13.1 BU-placeholders (approved by the user, 2026-11-18)
+
+The user's rule (2026-11-18): every text input and textarea in `app/jobs`,
+`app/security`, `app/docs` and `app/kit` shows a concrete example
+placeholder (`e.g. checkout-api`, `203.0.113.0/24`, `GET /api/payroll`, the
+expected JSON's shape), never empty; the label stays; every select shows a
+"Choose a …" empty first option; checkboxes, switches, dates and files have
+none; a select that always holds a value shows no "Choose a …" entry.
+
+| Name | Kind | Where |
+|---|---|---|
+| `placeholder` required on `TextInput`, `NumberInput` and `JsonEditor` (a concrete example; the type checker refuses a use without one) | prop | `app/kit/components/inputs.tsx`, `JsonEditor.tsx` |
+| `Select` takes exactly one of `placeholder` (a select that can be empty: rendered as a disabled empty first option, `Choose a …`, left out when an option already has the value `""`) and `alwaysSet` (a select that always holds a value: no "Choose a …" entry, marked `data-always-set`); leaving both out is a type error. A raw `<select>` opts out with `data-always-set` | props, attribute | `app/kit/components/inputs.tsx` |
+| `__tests__/placeholders/scan.ts` (`scan`, `Finding`) and `placeholders.test.ts`: every field of the four apps read with TypeScript's parser, with a negative control | test | bun-ui |
+| `choices(select)` (a select's options without the empty "Choose a …" one), for tests that list what a select offers | test helper | `__tests__/harness/choices.ts` |
+| The Chrome pass (`__tests__/security/e2e/a11yChecks.ts`) reports `placeholder: none on …`, `select: no empty option: …` and `select: marked always set, yet empty: …` on every rendered screen, with planted controls | test | bun-ui |
+
+Decisions taken here:
+
+1. **The user's decision (2026-11-18): an always-set select gets no "Choose a …" entry** (a sort order, a page size, a unit, a mode: any select whose value is never empty), since a placeholder is for an empty field. It says so (`alwaysSet`, `data-always-set`); the scanner and the Chrome check accept that, and the Chrome check still fails a select marked always set that is empty, or one that can be empty with no empty option. A select with an "Any" choice keeps that as its empty option.
+2. The policy editor's generated fields take their example from the policy's JSON Schema (`examples`, else `default`), else one from their bounds (`e.g. 10`) or their label.
+3. The jobs UI's name picker's "Pick a name…" prompt is its empty option (`PICK_NAME` is `""`: no job is named so), not a second prompt beside the kit's.
+4. The security UI's scope picker always has its "Choose a scope" option, disabled once a scope is chosen.
+
 ---
 
 ## 14. What this plan could not verify

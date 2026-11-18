@@ -53,6 +53,7 @@ function JsonControl({
   return (
     <div data-testid={testId}>
       <JsonEditor
+        placeholder='e.g. [{ "id": "per-ip", "limit": 300, "window": "1m" }]'
         value={text}
         aria-label={label}
         rows={6}
@@ -78,6 +79,7 @@ export function FieldControl(props: FieldControlProps) {
       ];
       return (
         <Select
+          placeholder="Choose a value"
           aria-label={label}
           data-testid={testId}
           disabled={disabled}
@@ -115,6 +117,7 @@ export function FieldControl(props: FieldControlProps) {
           aria-label={label}
           data-testid={testId}
           disabled={disabled}
+          placeholder={`e.g. ${control.example ?? control.min ?? (control.integer ? 10 : 0.5)}`}
           value={typeof value === "number" ? value : undefined}
           {...(control.min === undefined ? {} : { min: control.min })}
           {...(control.max === undefined ? {} : { max: control.max })}
@@ -128,6 +131,11 @@ export function FieldControl(props: FieldControlProps) {
           aria-label={label}
           data-testid={testId}
           disabled={disabled}
+          placeholder={
+            control.example === undefined
+              ? `e.g. a ${label.toLowerCase()}`
+              : `e.g. ${control.example}`
+          }
           value={typeof value === "string" ? value : ""}
           onChange={(next) => onChange(next === "" ? undefined : next)}
         />
@@ -138,7 +146,7 @@ export function FieldControl(props: FieldControlProps) {
           aria-label={label}
           data-testid={testId}
           disabled={disabled}
-          placeholder='a duration with its unit: "30s", "5m", "1h"'
+          placeholder='e.g. 5m (a duration with its unit: "30s", "5m", "1h")'
           value={durationText(value)}
           onChange={(next) => onChange(next.trim() === "" ? undefined : next)}
         />
@@ -151,7 +159,7 @@ export function FieldControl(props: FieldControlProps) {
           data-testid={testId}
           disabled={disabled}
           rows={3}
-          placeholder="one per line"
+          placeholder="e.g. /admin (one per line)"
           value={Array.isArray(value) ? value.join("\n") : ""}
           onChange={(event) => {
             const lines = event.target.value

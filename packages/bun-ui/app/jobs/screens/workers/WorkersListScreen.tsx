@@ -168,6 +168,7 @@ function FilterSelect({
   return (
     <Field label={label}>
       <Select
+        placeholder="Choose a value"
         options={[
           { value: "", label: any },
           ...values.map((choice) => ({

@@ -87,6 +87,31 @@ function kindHint(
   }
 }
 
+/**
+ * A parameter's example, for its placeholder: its schema's `example`, first
+ * `examples` entry or `default`, else one of its kind (`e.g. a, b, c` for a
+ * list, `e.g. 10` for a number), else one naming it.
+ */
+function exampleOf(parameter: DocParameter, kind: InputKind): string {
+  const schema =
+    typeof parameter.schema === "object" && parameter.schema !== null
+      ? (parameter.schema as {
+          example?: unknown;
+          examples?: unknown;
+          default?: unknown;
+        })
+      : {};
+  const given = [
+    schema.example,
+    Array.isArray(schema.examples) ? schema.examples[0] : undefined,
+    schema.default,
+  ].find((value) => typeof value === "string" || typeof value === "number");
+  if (given !== undefined) return `e.g. ${String(given)}`;
+  if (kind.kind === "list") return "e.g. a, b, c";
+  if (kind.kind === "number") return "e.g. 10";
+  return `e.g. a ${parameter.name}`;
+}
+
 /** One parameter's control. */
 function ParameterInput({
   parameter,
@@ -114,6 +139,7 @@ function ParameterInput({
         kind.kind === "boolean" ? ["true", "false"] : kind.options;
       return (
         <Select<string>
+          placeholder="Choose a value"
           value={text}
           disabled={disabled}
           options={[
@@ -156,7 +182,7 @@ function ParameterInput({
           value={text}
           disabled={disabled}
           inputMode={kind.kind === "number" ? "decimal" : undefined}
-          placeholder={kind.kind === "list" ? "a, b, c" : undefined}
+          placeholder={exampleOf(parameter, kind)}
           onChange={(next) => onChange(next)}
         />
       );
@@ -541,6 +567,7 @@ export function TryItPanel({
             error={errors.body}
           >
             <JsonEditor
+              placeholder='{ "name": "nightly-report", "enabled": true }'
               value={body.text}
               allowEmpty={bodyOptional}
               readOnly={disabled}

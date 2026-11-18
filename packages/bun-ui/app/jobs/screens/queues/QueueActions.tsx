@@ -250,6 +250,7 @@ function CleanDialog({ queue, onClose }: ActionDialogProps) {
         error={fieldError("state")}
       >
         <Select
+          alwaysSet
           options={CLEAN_STATES.map((value) => ({
             value,
             label: STATE_LABELS[value],
@@ -265,6 +266,7 @@ function CleanDialog({ queue, onClose }: ActionDialogProps) {
           required
         >
           <NumberInput
+            placeholder="e.g. 7"
             value={age}
             onChange={setAge}
             min={0}
@@ -273,6 +275,7 @@ function CleanDialog({ queue, onClose }: ActionDialogProps) {
         </Field>
         <Field label="Unit">
           <Select
+            alwaysSet
             options={UNIT_OPTIONS}
             value={unit}
             onChange={setUnit}
@@ -290,6 +293,7 @@ function CleanDialog({ queue, onClose }: ActionDialogProps) {
         }
       >
         <NumberInput
+          placeholder="e.g. 1000"
           value={limit}
           onChange={setLimit}
           min={1}
@@ -357,6 +361,7 @@ function RetryAllDialog({ queue, onClose }: ActionDialogProps) {
         error={fieldError("state")}
       >
         <Select
+          alwaysSet
           options={RETRY_ALL_STATES.map((value) => ({
             value,
             label: STATE_LABELS[value],
@@ -371,6 +376,7 @@ function RetryAllDialog({ queue, onClose }: ActionDialogProps) {
         error={fieldError("name")}
       >
         <TextInput
+          placeholder="e.g. send-welcome-email"
           value={name}
           onChange={setName}
           maxLength={200}
@@ -382,6 +388,7 @@ function RetryAllDialog({ queue, onClose }: ActionDialogProps) {
         error={fieldError("reason")}
       >
         <TextInput
+          placeholder="e.g. TimeoutError"
           value={reason}
           onChange={setReason}
           maxLength={500}
@@ -398,6 +405,7 @@ function RetryAllDialog({ queue, onClose }: ActionDialogProps) {
         }
       >
         <NumberInput
+          placeholder="e.g. 1000"
           value={limit}
           onChange={setLimit}
           min={1}

@@ -133,6 +133,7 @@ export function BansScreen({ scope }: BansScreenProps) {
         <label>
           State{" "}
           <select
+            data-always-set
             className="input"
             value={filters.state}
             onChange={(e) => setFilter("state", e.target.value)}
@@ -176,6 +177,7 @@ export function BansScreen({ scope }: BansScreenProps) {
         <label>
           Rule{" "}
           <input
+            placeholder="e.g. ladder or counted:login"
             className="input"
             defaultValue={filters.rule}
             data-testid="filter-rule"
@@ -199,6 +201,7 @@ export function BansScreen({ scope }: BansScreenProps) {
         <label>
           Order{" "}
           <select
+            data-always-set
             className="input"
             value={`${filters.sort}:${filters.direction}`}
             data-testid="filter-sort"

@@ -1020,7 +1020,7 @@ try {
           for (const label of document.querySelectorAll("${DIALOG} label")) {
             if (!label.textContent.trim().startsWith("Execution mode")) continue;
             const select = document.getElementById(label.htmlFor);
-            if (select) return resolve(Array.from(select.options, (option) => option.value));
+            if (select) return resolve(Array.from(select.options).filter((option) => !(option.value === "" && option.disabled)).map((option) => option.value));
           }
           if (Date.now() > deadline) return resolve(null);
           setTimeout(poll, 50);
@@ -1442,7 +1442,7 @@ try {
       if (!select) return null;
       const shown = {
         value: select.value,
-        options: [...select.options].map((option) => option.value),
+        options: [...select.options].filter((option) => !(option.value === "" && option.disabled)).map((option) => option.value),
       };
       return (${ready}) ? shown : null;
     })()`);

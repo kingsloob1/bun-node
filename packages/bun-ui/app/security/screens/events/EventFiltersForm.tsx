@@ -132,6 +132,7 @@ export function EventFiltersForm({
       {offered.has("action") ? (
         <Field label="Action">
           <Select
+            placeholder="Choose an action"
             options={actionOptions}
             value={draft.action}
             onChange={(value) => set("action", value)}
@@ -142,6 +143,7 @@ export function EventFiltersForm({
       {offered.has("rule") ? (
         <Field label="Rule">
           <TextInput
+            placeholder="e.g. rule:no-admin"
             value={draft.rule}
             onChange={(value) => set("rule", value)}
             data-testid="filter-rule"
@@ -161,6 +163,7 @@ export function EventFiltersForm({
       {offered.has("ip") ? (
         <Field label="Address">
           <TextInput
+            placeholder="e.g. 203.0.113.7 or 198.51.100.0/24"
             value={draft.ip}
             onChange={(value) => set("ip", value)}
             data-testid="filter-ip"
@@ -181,6 +184,7 @@ export function EventFiltersForm({
       {offered.has("asn") ? (
         <Field label="ASN">
           <NumberInput
+            placeholder="e.g. 64500"
             value={draft.asn}
             onChange={(value) =>
               set(
@@ -198,6 +202,7 @@ export function EventFiltersForm({
       {offered.has("dryRun") ? (
         <Field label="Dry run">
           <Select<DryRunChoice>
+            placeholder="Choose dry run or enforced"
             options={[
               { value: "", label: "Both" },
               { value: "true", label: "Dry run only" },
@@ -217,6 +222,7 @@ export function EventFiltersForm({
         <>
           <Field label="User key">
             <TextInput
+              placeholder="e.g. 9f86d081884c7d659a2feaa0c55ad015"
               value={draft.user}
               onChange={(value) => set("user", value)}
               data-testid="filter-user"
@@ -224,6 +230,7 @@ export function EventFiltersForm({
           </Field>
           <Field label="API key key">
             <TextInput
+              placeholder="e.g. 9f86d081884c7d659a2feaa0c55ad015"
               value={draft.apiKey}
               onChange={(value) => set("apiKey", value)}
               data-testid="filter-apiKey"
@@ -231,6 +238,7 @@ export function EventFiltersForm({
           </Field>
           <Field label="Username key">
             <TextInput
+              placeholder="e.g. 9f86d081884c7d659a2feaa0c55ad015"
               value={draft.username}
               onChange={(value) => set("username", value)}
               data-testid="filter-username"

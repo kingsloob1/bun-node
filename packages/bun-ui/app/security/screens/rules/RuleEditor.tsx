@@ -66,6 +66,7 @@ export function RuleEditor({
         <label>
           Id{" "}
           <input
+            placeholder="e.g. block-wp-login"
             className="input"
             value={form.id}
             disabled={disabled}
@@ -77,6 +78,7 @@ export function RuleEditor({
         <label>
           A hit{" "}
           <select
+            data-always-set
             className="input"
             value={form.action}
             disabled={disabled}
@@ -98,6 +100,7 @@ export function RuleEditor({
         <label>
           Mode{" "}
           <select
+            data-always-set
             className="input"
             value={form.mode}
             disabled={disabled}

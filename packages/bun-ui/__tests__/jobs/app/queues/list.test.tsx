@@ -3,6 +3,7 @@ import { expectAbsent } from "../../../harness/assert";
 import { fireEvent, LOADED, page, setupDom, waitFor, within } from "../dom";
 import { metaFixture, permissionsFixture, problem } from "../fixtures";
 import { queuePageFixture, renderQueue } from "./fixtures";
+import { choices } from "../../../harness/choices";
 
 setupDom();
 
@@ -83,9 +84,9 @@ describe("the queue list screen", () => {
     expect(new URLSearchParams(window.location.search).get("offset")).toBe(
       "20",
     );
-    const sizes = within(pager)
-      .getAllByRole("option")
-      .map((option) => Number(option.textContent));
+    const sizes = choices(within(pager).getByLabelText("Rows per page")).map(
+      (option) => Number(option.textContent),
+    );
     expect(Math.max(...sizes)).toBe(50);
   });
 

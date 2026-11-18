@@ -95,6 +95,9 @@ function OpenImportDialog({ onClose, existing, onImport }: ImportDialogProps) {
       <Field label="Or paste the CSV">
         {(control) => (
           <textarea
+            placeholder={
+              "kind,value,action,reason\nip,203.0.113.0/24,block,scanner"
+            }
             {...control}
             className="input lists-import-text"
             rows={8}

@@ -233,6 +233,7 @@ function ChannelTryIt({
                   error={problem}
                 >
                   <TextInput
+                    placeholder="e.g. emails"
                     value={value}
                     onChange={(next) =>
                       setValues((current) => ({

@@ -68,6 +68,12 @@ type PassThroughInputProps = Omit<
 
 /** Props of {@link TextInput}. */
 export interface TextInputProps extends PassThroughInputProps, ControlWiring {
+  /**
+   * A concrete example of what to type (`e.g. checkout-api`,
+   * `203.0.113.0/24`): required, so no text field is left blank. A hint
+   * only: the field's label stays (the user's rule, BU-placeholders).
+   */
+  placeholder: string;
   /** The text. */
   value: string;
   /** Called with the new text on each edit. */
@@ -99,6 +105,8 @@ export function TextInput({
 
 /** Props of {@link NumberInput}. */
 export interface NumberInputProps extends PassThroughInputProps, ControlWiring {
+  /** A concrete example number (`e.g. 300`): required, a hint beside the label, never the label. */
+  placeholder: string;
   /** The number, or `undefined` for empty. */
   value: number | undefined;
   /** Called with the new number, or `undefined` when the input is empty (or not a number). */
@@ -153,8 +161,8 @@ export interface SelectOption<V extends string> {
   disabled?: boolean;
 }
 
-/** Props of {@link Select}. */
-export interface SelectProps<V extends string>
+/** The props every {@link Select} takes, beside how it says what to choose. */
+export interface SelectBaseProps<V extends string>
   extends
     Omit<
       SelectHTMLAttributes<HTMLSelectElement>,
@@ -166,6 +174,7 @@ export interface SelectProps<V extends string>
       | "aria-invalid"
       | "required"
       | "multiple"
+      | "placeholder"
     >,
     ControlWiring {
   /** The choices. Include `{ value: "", label: "Any" }` (with `""` in `V`) for an "unset" choice. */
@@ -176,11 +185,41 @@ export interface SelectProps<V extends string>
   onChange: (value: V, event: ChangeEvent<HTMLSelectElement>) => void;
 }
 
+/**
+ * Props of {@link Select}: exactly one of `placeholder` and `alwaysSet`
+ * (the user's rule, BU-placeholders), so leaving both out is a type error.
+ */
+export type SelectProps<V extends string> = SelectBaseProps<V> &
+  (
+    | {
+        /**
+         * The empty first option, as "Choose a …" (`Choose a queue`), for a
+         * select that can be empty: shown when nothing is chosen, and not
+         * selectable. Left out when an option already has the value `""` (an
+         * "Any" choice is the empty option then).
+         */
+        placeholder: string;
+        alwaysSet?: never;
+      }
+    | {
+        /**
+         * The select always holds a value (a sort order, a page size, a
+         * unit): it shows no "Choose a …" entry, since a placeholder is for an
+         * empty field. Marked `data-always-set` for the checks that read the
+         * page.
+         */
+        alwaysSet: true;
+        placeholder?: never;
+      }
+  );
+
 /** A native `<select>` over a typed set of string values. */
 export function Select<V extends string>({
   options,
   value,
   onChange,
+  placeholder,
+  alwaysSet,
   className,
   ...rest
 }: SelectProps<V>) {
@@ -189,6 +228,7 @@ export function Select<V extends string>({
     <select
       {...rest}
       {...wiring}
+      {...(alwaysSet === true ? { "data-always-set": "" } : {})}
       className={cx("input", "select", className)}
       value={value}
       onChange={(event) => {
@@ -200,6 +240,15 @@ export function Select<V extends string>({
         }
       }}
     >
+      {alwaysSet === true ||
+      options.some((option) => option.value === "") ? null : (
+        <option
+          value=""
+          disabled
+        >
+          {placeholder}
+        </option>
+      )}
       {options.map((option) => (
         <option
           key={option.value}

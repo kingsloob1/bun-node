@@ -43,6 +43,7 @@ export function ThroughputPanel({ queue }: ThroughputPanelProps) {
       <div className="throughput-controls">
         <label htmlFor={selectId}>Window</label>
         <Select
+          alwaysSet
           id={selectId}
           options={THROUGHPUT_WINDOWS.map((window) => ({
             value: String(window),

@@ -70,6 +70,7 @@ function Steps() {
             >
               <td>
                 <NumberInput
+                  placeholder="e.g. 10"
                   aria-label={`Step ${index + 1} score`}
                   disabled={!editable}
                   value={step.score}
@@ -80,6 +81,7 @@ function Steps() {
               </td>
               <td>
                 <Select
+                  alwaysSet
                   aria-label={`Step ${index + 1} action`}
                   disabled={!editable}
                   options={[

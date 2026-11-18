@@ -117,6 +117,7 @@ function NodeEditor({
       <fieldset className="matcher-node">
         <legend>Written as JSON (the builder cannot show it)</legend>
         <textarea
+          placeholder='{ "path": { "prefix": "/admin" } }'
           className="input"
           rows={6}
           value={node.json}
@@ -165,6 +166,7 @@ function NodeEditor({
       <fieldset className="matcher-node">
         <legend>
           <select
+            data-always-set
             className="input"
             value={node.kind}
             disabled={disabled}
@@ -280,6 +282,7 @@ function MatchEditor({
       data-testid={`node-match-${path}`}
     >
       <select
+        data-always-set
         className="input"
         value={node.target}
         disabled={disabled}
@@ -318,6 +321,7 @@ function MatchEditor({
         />
       ) : null}
       <select
+        data-always-set
         className="input"
         value={node.op}
         disabled={disabled || ops.length === 1}
@@ -336,6 +340,7 @@ function MatchEditor({
       </select>
       {node.op === "length" ? (
         <select
+          data-always-set
           className="input"
           value={node.lengthOp}
           disabled={disabled}
@@ -357,6 +362,7 @@ function MatchEditor({
       ) : null}
       {boolean ? (
         <select
+          data-always-set
           className="input"
           value={node.value === "false" ? "false" : "true"}
           disabled={disabled}
@@ -369,6 +375,7 @@ function MatchEditor({
         </select>
       ) : list ? (
         <textarea
+          placeholder="e.g. PUT (one per line)"
           className="input"
           rows={3}
           value={node.value}
@@ -379,6 +386,7 @@ function MatchEditor({
         />
       ) : (
         <input
+          placeholder="e.g. /wp-login.php*"
           className="input"
           value={node.value}
           disabled={disabled}

@@ -199,6 +199,7 @@ export function BanDetail({ scope }: BanDetailProps) {
           <label>
             Extend to{" "}
             <select
+              data-always-set
               className="input"
               value={extension}
               data-testid="ban-extension"

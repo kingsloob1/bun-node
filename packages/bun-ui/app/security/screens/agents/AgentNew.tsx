@@ -111,6 +111,7 @@ export function AgentNew({ scope }: AgentNewProps) {
           <label>
             Service{" "}
             <input
+              placeholder="e.g. checkout"
               className="input"
               list="agent-services"
               value={service}
@@ -132,6 +133,7 @@ export function AgentNew({ scope }: AgentNewProps) {
           <label>
             Id (optional){" "}
             <input
+              placeholder="e.g. checkout-eu-1"
               className="input"
               value={id}
               data-testid="agent-id"
@@ -141,6 +143,7 @@ export function AgentNew({ scope }: AgentNewProps) {
           <label>
             Name (optional){" "}
             <input
+              placeholder="e.g. Checkout, eu-west-1"
               className="input"
               value={name}
               data-testid="agent-name"

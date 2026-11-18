@@ -75,11 +75,11 @@ export function typeInto(scope: string, label: string, value: string): string {
   })()`);
 }
 
-/** Page-side: the options of the `<select>` labelled `label` inside `scope`, as `[value, text]` pairs, once it exists. */
+/** Page-side: the options of the `<select>` labelled `label` inside `scope`, as `[value, text]` pairs, once it exists; without the disabled empty "Choose a …" one every select shows first. */
 export function optionsOf(scope: string, label: string): string {
   return poll(`(() => {
     const select = ${control(scope, label)};
-    return select ? [...select.options].map((option) => [option.value, option.textContent.trim()]) : null;
+    return select ? [...select.options].filter((option) => !(option.value === "" && option.disabled)).map((option) => [option.value, option.textContent.trim()]) : null;
   })()`);
 }
 
@@ -201,9 +201,9 @@ function readPager(label: string): string {
     return {
       range: nav.querySelector(".pager-range")?.textContent.trim() ?? "",
       size: Number(size.value),
-      sizes: [...size.options].map((option) => Number(option.value)),
+      sizes: [...size.options].filter((option) => !(option.value === "" && option.disabled)).map((option) => Number(option.value)),
       pageControl: pageSelect
-        ? { kind: "select", value: pageSelect.value, options: [...pageSelect.options].map((option) => option.value), max: null }
+        ? { kind: "select", value: pageSelect.value, options: [...pageSelect.options].filter((option) => !(option.value === "" && option.disabled)).map((option) => option.value), max: null }
         : pageInput
           ? { kind: "input", value: pageInput.value, options: null, max: pageInput.getAttribute("max") }
           : null,

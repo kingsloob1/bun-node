@@ -149,6 +149,7 @@ function OpenEditRepeatableDataDialog({
           error={dataError}
         >
           <JsonEditor
+            placeholder='{ "report": "daily-sales", "recipients": ["ops@example.com"] }'
             value={data.text}
             onChange={setData}
             maxBytes={maxBytes}

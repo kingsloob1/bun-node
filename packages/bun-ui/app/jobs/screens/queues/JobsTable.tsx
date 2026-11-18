@@ -354,6 +354,7 @@ export function JobFiltersBar({
       <span className="jobs-filter">
         <label htmlFor={orderId}>Order</label>
         <Select
+          alwaysSet
           id={orderId}
           options={[
             { value: "desc", label: "Newest first" },

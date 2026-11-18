@@ -138,6 +138,7 @@ function TargetInput({ label, value, names, onChange }: TargetInputProps) {
     <Field label={label}>
       {names && names.length > 0 ? (
         <Select
+          placeholder="Choose a name"
           options={[
             { value: "", label: "Choose…" },
             ...names.map((name) => ({ value: name })),
@@ -147,6 +148,7 @@ function TargetInput({ label, value, names, onChange }: TargetInputProps) {
         />
       ) : (
         <TextInput
+          placeholder="e.g. emails"
           value={value}
           onChange={onChange}
           maxLength={200}
@@ -208,6 +210,7 @@ function ChannelPicker({ choice, onApply }: ChannelPickerProps) {
     >
       <Field label="Channel">
         <Select
+          alwaysSet
           options={scopesFor(meta.mode).map((scope) => ({
             value: scope,
             label: SCOPE_LABELS[scope],
@@ -234,6 +237,7 @@ function ChannelPicker({ choice, onApply }: ChannelPickerProps) {
       {draft.scope === "job" && (
         <Field label="Job id">
           <TextInput
+            placeholder="e.g. 42"
             value={draft.id}
             onChange={(id) => setDraft({ ...draft, id })}
             autoComplete="off"

@@ -71,6 +71,7 @@ export function StopWorkerDialog({
           hint={PERSISTENCE_HINT[persist]}
         >
           <Select
+            alwaysSet
             value={persist}
             onChange={setPersist}
             options={WORKER_STOP_PERSISTENCE.map((value) => ({

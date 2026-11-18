@@ -163,6 +163,7 @@ function OpenUpdateJobDialog({ job, onClose }: UpdateJobDialogProps) {
             error={fieldError("data")}
           >
             <JsonEditor
+              placeholder='{ "userId": "u_123", "template": "welcome" }'
               value={form.data.text}
               onChange={(data) => patch({ data })}
               maxBytes={maxBytes}
