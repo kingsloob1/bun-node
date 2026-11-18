@@ -671,6 +671,13 @@ export const Agent: Schema<AgentDto> = s.object({
           16,
         ),
       ),
+      bansDropped: s.optional(
+        s.int({
+          min: 0,
+          description:
+            "ban reports dropped since the previous heartbeat (past the agent's cap, or unsendable)",
+        }),
+      ),
     }),
   ),
   revision: s.int({ min: 1 }),
@@ -725,6 +732,13 @@ export const Ban: Schema<BanDto> = s.object({
     s.int({
       min: 0,
       description: "the subject's ASN when written, from its latest event",
+    }),
+  ),
+  step: s.optional(
+    s.int({
+      min: 1,
+      max: 100,
+      description: "the ladder's step that wrote an automatic ban",
     }),
   ),
 });

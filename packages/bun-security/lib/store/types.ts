@@ -324,6 +324,8 @@ export interface BanInputRecord {
   readonly country?: string;
   /** The subject's autonomous system number when the ban was written (from its latest event); absent when none was known. */
   readonly asn?: number;
+  /** The escalation ladder's step that wrote an automatic ban (1 for the lowest), as its agent reported it; the highest reported when merged. */
+  readonly step?: number;
 }
 
 /** A stored ban. */
@@ -375,6 +377,16 @@ export interface BanQuery {
    * breaks ties, so a page is stable while bans arrive.
    */
   readonly sort?: "id" | "created" | "expires";
+}
+
+/** What {@link SecurityStoreDriver.purgeBans} deletes. */
+export interface BanPurgeQuery {
+  /** Only bans of this source. */
+  readonly source: "auto" | "manual";
+  /** Only bans that ended (lifted, or expired) before this, epoch ms. */
+  readonly before: number;
+  /** The most it deletes in one call, 1 to {@link MAX_PAGE_LIMIT}. */
+  readonly limit: number;
 }
 
 /** The most subject values a ban query's `values` names (an IPv6 address and its 128 ranges, with room). */
@@ -831,6 +843,13 @@ export interface SecurityStoreDriver {
   getBan: (id: string) => Promise<BanRecord | undefined>;
   /** A page of bans by id, filtered by scope and by whether they are active now. */
   listBans: (query: BanQuery) => Promise<Page<BanRecord>>;
+  /**
+   * Deletes up to `limit` bans of `source` that ended (lifted, or expired)
+   * before `before`, oldest end first: retention (the control plane keeps
+   * automatic bans 30 days past their end). Each is a deleted change.
+   * Answers how many it deleted.
+   */
+  purgeBans: (query: BanPurgeQuery) => Promise<number>;
 
   /** The changes after `seq`, oldest first, at most `limit`, and the feed's head. */
   changesSince: (

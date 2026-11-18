@@ -35,7 +35,7 @@ export {
   DEFAULT_CRAWLERS,
 } from "./crawlers/registry";
 export type { CrawlerResolver } from "./crawlers/verify";
-export type { Ban, BanSubject } from "./engine/bans";
+export type { Ban, BanSubject, BanWrite } from "./engine/bans";
 export type {
   ClientResolution,
   ClientSource,
@@ -66,6 +66,7 @@ export {
 export { canonicalPath } from "./engine/path";
 export {
   type BanInput,
+  type BanListener,
   createSecurity,
   type CreateSecurityOptions,
   type EvaluateOptions,

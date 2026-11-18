@@ -663,6 +663,8 @@ export interface AgentDto {
       readonly since: number;
       readonly share?: number;
     }[];
+    /** Ban reports the agent dropped since its previous heartbeat (past its rate cap, or unsendable); absent from an older agent. */
+    readonly bansDropped?: number;
   } | null;
   /** The record's revision, for rotate and revoke. */
   readonly revision: number;
@@ -727,6 +729,8 @@ export interface BanDto {
   readonly country?: string;
   /** The subject's autonomous system number when the ban was written, from its latest event; absent when none was known. */
   readonly asn?: number;
+  /** The escalation ladder's step that wrote an automatic ban (1 for the lowest), as its agent reported it. */
+  readonly step?: number;
 }
 
 /** `GET /bans/:id`: a ban with what explains it. */

@@ -161,3 +161,27 @@ export async function subjectFacts(
     return {};
   }
 }
+
+/**
+ * The stored subject of a reported ban (`POST /agent/ban-reports`): an
+ * address or range in its canonical text (an engine's IPv6 address key is
+ * its /64), or an account's key as it is; `undefined` for anything else.
+ */
+export function reportedSubject(subject: {
+  readonly type: string;
+  readonly value: string;
+}): StoredBanSubject | undefined {
+  if (subject.type === "user" || subject.type === "apiKey") {
+    return /^[\da-f]{32}$/.test(subject.value)
+      ? { type: subject.type, value: subject.value }
+      : undefined;
+  }
+  if (subject.type !== "ip" && subject.type !== "cidr") return undefined;
+  const address = parseAddress(subject.value);
+  if (address !== null) return { type: "ip", value: address.text };
+  const range = parseCidr(subject.value);
+  if (range !== null && !isWholeFamilyRange(subject.value)) {
+    return { type: "cidr", value: range.text };
+  }
+  return undefined;
+}

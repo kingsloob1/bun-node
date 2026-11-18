@@ -97,6 +97,7 @@ import {
   banPosition,
   PERMANENT_SORT_KEY,
   checkBanInput,
+  checkBanPurge,
   checkCounter,
   UNFED_KINDS,
   checkLift,
@@ -1988,6 +1989,30 @@ export function sqlSecurityStore(
         ...(rows.length > resolved.limit && last !== undefined
           ? { next: banCursor(resolved, last) }
           : {}),
+      });
+    },
+    purgeBans: async (query) => {
+      const { source, before, limit } = checkBanPurge(query);
+      const sql = await connection();
+      return await dialect.transaction(sql, async (tx) => {
+        await init.serialize?.(tx);
+        const p = new Params(dialect);
+        const end = "COALESCE(lifted_at, expires_at)";
+        const rows = (await tx.unsafe(
+          `SELECT id, revision FROM ${tables.bans}
+            WHERE source = ${p.bind(source)} AND ${end} IS NOT NULL AND ${end} < ${p.bind(before)}
+            ORDER BY ${end} ASC, id ASC LIMIT ${limit}`,
+          p.values,
+        )) as { id: string; revision: number | string }[];
+        for (const row of rows) {
+          const q = new Params(dialect);
+          await tx.unsafe(
+            `DELETE FROM ${tables.bans} WHERE id = ${q.bind(row.id)}`,
+            q.values,
+          );
+          await record(tx, "ban", row.id, Number(row.revision), true);
+        }
+        return rows.length;
       });
     },
     // Counters and claims: one upsert each (RETURNING, on SQLite and

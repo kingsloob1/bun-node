@@ -77,6 +77,8 @@ export interface Ban {
    * `state.scope`); absent when every `shared` service on the store does.
    */
   readonly scope?: "service";
+  /** The escalation ladder's step that wrote it (1 for the lowest step), for a ladder ban; the highest reached when merged. */
+  readonly step?: number;
 }
 
 /** What {@link BanTable.add} writes. */
@@ -101,6 +103,8 @@ export interface BanWrite {
   readonly service?: string;
   /** `"service"` for a ban only its service enforces. */
   readonly scope?: "service";
+  /** The ladder's step, for a ladder ban. */
+  readonly step?: number;
 }
 
 /** What {@link BanTable.add} did. */
@@ -154,6 +158,9 @@ export function mergeBans(a: Ban, b: Ban): Ban {
         : Math.max(a.expiresAt, b.expiresAt),
     count: Math.max(a.count, b.count),
     createdAt: Math.min(a.createdAt, b.createdAt),
+    ...(a.step === undefined && b.step === undefined
+      ? {}
+      : { step: Math.max(a.step ?? 0, b.step ?? 0) }),
   });
 }
 
@@ -170,7 +177,8 @@ function sameBan(a: Ban, b: Ban): boolean {
     a.code === b.code &&
     a.createdBy === b.createdBy &&
     a.service === b.service &&
-    a.scope === b.scope
+    a.scope === b.scope &&
+    a.step === b.step
   );
 }
 
@@ -346,6 +354,10 @@ export class BanTable {
             ...(write.service === undefined ? {} : { service: write.service }),
           }),
       ...(write.scope === undefined ? {} : { scope: write.scope }),
+      // The ladder's step: the highest reached while the ban stays in force.
+      ...(write.step === undefined && existing.step === undefined
+        ? {}
+        : { step: Math.max(existing.step ?? 0, write.step ?? 0) }),
     });
     this.#put(merged);
     return merged;
@@ -367,6 +379,7 @@ export class BanTable {
       ...(write.code === undefined ? {} : { code: write.code }),
       ...(write.service === undefined ? {} : { service: write.service }),
       ...(write.scope === undefined ? {} : { scope: write.scope }),
+      ...(write.step === undefined ? {} : { step: write.step }),
     });
   }
 

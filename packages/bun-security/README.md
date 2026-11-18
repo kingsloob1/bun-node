@@ -1519,6 +1519,22 @@ await agent.ready; // the last known good is in, before the control plane is ask
   nudge, the whole set every 60 s. Each batch is **signed with the bundle
   key** and bound to the request it answers, so a ban forged into the
   control plane's database, or a batch replayed, is refused and alerted.
+- **Ban reports**: the bans the engine's layers write themselves (counted
+  rules, the ladder, canaries; `security.watchBans`) are reported to the
+  control plane (`POST /agent/ban-reports`, signed like every request),
+  which stores them as automatic bans of the agent's service (`source:
+  "auto"`, with their rule, service and ladder `step`) and pushes them to
+  the service's other agents. A batch every 5 s, at most 500; one report per
+  subject a minute unless the ban escalates (a later end, permanent, a
+  higher step); at most 600 a minute, the rest dropped and counted:
+  `bansDropped` rides the next heartbeat and the control plane raises
+  `agent.banReportsDropped`. `ban()`'s bans are never reported, so the
+  control plane's own bans the agent applies never come back. A ban an
+  operator lifts is lifted on the fleet, and a report of that ban (one that
+  started before the lift) does not re-create it. Ended automatic bans are
+  kept 30 days (`bans.autoRetention`, `false` to keep them), then purged by
+  an hourly pass, the count audited (`bans.purge`); `api.purgeAutoBans()`
+  runs it now. `banReports: false` turns reporting off.
 - **Events**: given CP1's ring and recorder (`events: { ring, recorder }`),
   the agent posts a batch a second (or at 500 events) to `/agent/events`,
   gzip, signed like every request, flushing the recorder's open minute too;

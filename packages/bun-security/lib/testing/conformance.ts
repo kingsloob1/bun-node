@@ -959,6 +959,125 @@ export async function runSecurityStoreConformance(
         });
       });
 
+      test("keeps the ladder's highest step while a ban is in force, and starts again after it", async () => {
+        await withStore(factory, async (store) => {
+          const later = Date.now() + 3_600_000;
+          const first = await store.upsertBan(
+            banInput("192.0.2.60", {
+              rule: "ladder",
+              step: 2,
+              expiresAt: later,
+            }),
+          );
+          expect(first.step).toBe(2);
+          expect(
+            (
+              await store.upsertBan(
+                banInput("192.0.2.60", {
+                  rule: "ladder",
+                  step: 1,
+                  expiresAt: later,
+                }),
+              )
+            ).step,
+          ).toBe(2);
+          expect(
+            (
+              await store.upsertBan(
+                banInput("192.0.2.60", {
+                  rule: "ladder",
+                  step: 3,
+                  expiresAt: later,
+                }),
+              )
+            ).step,
+          ).toBe(3);
+          await store.liftBan(first.id, "alice", Date.now());
+          expect(
+            (
+              await store.upsertBan(
+                banInput("192.0.2.60", {
+                  rule: "ladder",
+                  step: 1,
+                  expiresAt: later,
+                }),
+              )
+            ).step,
+          ).toBe(1);
+          for (const step of [0, 101, 1.5]) {
+            expect(
+              await rejects(() =>
+                store.upsertBan(banInput("192.0.2.61", { step })),
+              ),
+            ).toBe(true);
+          }
+        });
+      });
+
+      test("purges the bans of a source that ended before a time, oldest end first, each a deleted change", async () => {
+        await withStore(factory, async (store) => {
+          const now = Date.now();
+          const day = 86_400_000;
+          const old = await store.upsertBan(
+            banInput("192.0.2.70", { expiresAt: now - 40 * day }),
+          );
+          const older = await store.upsertBan(
+            banInput("192.0.2.71", { expiresAt: now - 50 * day }),
+          );
+          const recent = await store.upsertBan(
+            banInput("192.0.2.72", { expiresAt: now - 1 * day }),
+          );
+          const live = await store.upsertBan(
+            banInput("192.0.2.73", { expiresAt: null }),
+          );
+          const manual = await store.upsertBan(
+            banInput("192.0.2.74", {
+              source: "manual",
+              expiresAt: now - 60 * day,
+            }),
+          );
+          const lifted = await store.upsertBan(
+            banInput("192.0.2.75", { expiresAt: null }),
+          );
+          await store.liftBan(lifted.id, "alice", now - 45 * day);
+          const { head } = await store.changesSince(0n, 1);
+          const before = now - 30 * day;
+          expect(
+            await store.purgeBans({ source: "auto", before, limit: 2 }),
+          ).toBe(2);
+          // Oldest end first: the 50-day one and the lifted 45-day one.
+          expect(await store.getBan(older.id)).toBeUndefined();
+          expect(await store.getBan(lifted.id)).toBeUndefined();
+          expect(await store.getBan(old.id)).toBeDefined();
+          expect(
+            await store.purgeBans({ source: "auto", before, limit: 10 }),
+          ).toBe(1);
+          expect(await store.getBan(old.id)).toBeUndefined();
+          for (const kept of [recent, live, manual]) {
+            expect(await store.getBan(kept.id)).toBeDefined();
+          }
+          const { changes } = await store.changesSince(head, 100);
+          expect(
+            changes
+              .filter((change) => change.kind === "ban")
+              .map((change) => [change.id, change.deleted]),
+          ).toEqual([
+            [older.id, true],
+            [lifted.id, true],
+            [old.id, true],
+          ]);
+          for (const bad of [
+            { source: "feed", before, limit: 1 },
+            { source: "auto", before, limit: 0 },
+            { source: "auto", before: 1.5, limit: 1 },
+          ]) {
+            expect(await rejects(() => store.purgeBans(bad as never))).toBe(
+              true,
+            );
+          }
+        });
+      });
+
       test("filters by kind, source, rule and subject values, and sorts by created or expiry, a page at a time", async () => {
         await withStore(factory, async (store) => {
           const hour = 3_600_000;

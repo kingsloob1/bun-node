@@ -2071,6 +2071,31 @@ Also: challenge answers count `challenges { outcome }` (`passed`, `failed`) from
 
 Decided by the user (2026-11-17): the metric names stay lowercase (`rules.false-positive`, `login.success-after-failures`, `top.usernames-per-ip`), matching the store's metric grammar and every other metric, rather than widening the grammar.
 
+### 17.39 Added with agent ban reporting (approved by the user, 2026-11-18)
+
+| Names | Where |
+|---|---|
+| `Security.watchBans(listener)` → the unsubscribe; `BanListener` (`(ban: Ban, write: BanWrite) => void`): the bans the engine's layers write themselves (counted rules, the ladder, canaries), never `ban()`'s | `.` |
+| `Ban.step`, `BanWrite.step`: the escalation ladder's step that wrote a ban (1 for the lowest), the highest kept while it is in force; `BanWrite` exported from the root | `.` |
+| `POST /agent/ban-reports` (signed, route tag `banReports`): `AgentBanReportBatch` (`route`, `sentAt`, `bans: AgentBanReport[]`, at most `MAX_BAN_REPORTS` = 500); `AgentBanReport` (`subject` (`ip`, `cidr`, `user`, `apiKey`), `action`, `reason`, `rule?`, `createdAt`, `expiresAt`, `step?`, `code?`); answer `AgentBanReportAnswer` (`stored`, `lifted`) | `./agent` (the types and the limits), `./control` (the route) |
+| `BAN_REPORT_LIMITS` (`intervalMs` 5,000, `dedupeMs` 60,000, `perMinute` 600, `queue` 1,000) | `./agent` |
+| `ConnectAgentOptions.banReports` (default `true` when the engine has `watchBans`); `SecurityAgent.reportBans()`; `AgentStatusReport.banReports` (`pending`, `dropped`); `AgentEngine.watchBans` (optional) | `./agent` |
+| `AgentHeartbeat.bansDropped`; `AgentDto.reported.bansDropped` | `./agent`, `./control` |
+| The alert kind `agent.banReportsDropped` (warning: an agent dropped reports past its cap, or could not send them) | `./control` |
+| `SecurityApiOptions.bans.autoRetention` (`Duration \| false`, default `"30d"`, at least 1 h); `SecurityApi.purgeAutoBans()`; the audit event `bans.purge` (`count`, `before`) | `./control` |
+| `BanDto.step` | `./control` |
+| `SecurityStoreDriver.purgeBans(query)`, `BanPurgeQuery` (`source`, `before`, `limit`); `BanInputRecord.step` | `./store` |
+
+Decisions (the user's defaults, 2026-11-18):
+1. A batch every 5 s, at most 500 bans, on the signed channel.
+2. One report per scope and subject per 60 s, except when the ban escalates (a later end, permanent, a higher ladder step).
+3. At most 600 reports a minute per agent; the rest dropped and counted: `bansDropped` in the heartbeat and the alert `agent.banReportsDropped`, never silent.
+4. Automatic bans are kept while in force and 30 days after they end, then purged by an hourly pass, the count audited.
+5. A lift from the UI reaches the fleet through the signed ban batches (the control plane pushes its copy of a reported ban to the service's agents, and its lift takes it away), and is remembered: a report of a ban that started before the lift does not re-create it; one that started after is a new ban.
+6. The engine's ban record carries the ladder step; the ban detail's slot shows it, and the bans list shows it beside the rule.
+
+Also: only the four subject kinds the control plane stores are reported (a counted rule's composite key, `ip|user`, is not); `ban()`'s bans are never handed to `watchBans`, so the control plane's bans an agent applies never come back as reports; reported bans are not audited one by one (the events record each, and they arrive at attack volume); an agent whose engine cannot be watched (a wrapper around one) reports nothing and runs on.
+
 ## 18. Findings outside this plan
 
 Found while surveying; each is reported, none fixed here.

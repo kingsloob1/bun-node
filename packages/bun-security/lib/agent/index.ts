@@ -36,10 +36,15 @@ export {
   AGENT_SIGNATURE_HEADER,
   AGENT_SIGNATURE_WINDOW_MS,
   agentRequestId,
+  BAN_REPORT_LIMITS,
+  MAX_BAN_REPORTS,
   MAX_HEARTBEAT_FEEDS,
   MAX_HEARTBEAT_WARNINGS,
 } from "./protocol";
 export type {
+  AgentBanReport,
+  AgentBanReportAnswer,
+  AgentBanReportBatch,
   AgentHeartbeat,
   AgentHeartbeatAnswer,
   AgentNudge,

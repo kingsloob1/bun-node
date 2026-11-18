@@ -96,13 +96,15 @@ server-sent events, so `connect-src` allows no `ws(s)` origin.
   chip. **Lift matching…** lifts every active ban the filter matches,
   after a count ("1,204 active bans match"), behind a step-up or, under
   two-person approvals, by opening an approval. The source filter offers
-  **Automatic** once the control plane holds automatic bans (when agents
-  report their engines' bans; until then they show under
-  **Automatic bans**).
+  **Automatic** once the control plane holds automatic bans: the bans the
+  services' engines write themselves, which their agents report; an
+  automatic ban shows its rule and, for the ladder's, its step. Lifting one
+  lifts it on the service's engines too.
 - **A ban** (`/bans/:id`): its subject (with its country and ASN when
   known), state and writes; its history (the audit entries on it); the
   subject's events that led to it and its hits since; its bans in other
-  scopes; and, with `bans:write` on its scope, **Extend**, **Make
+  scopes; the escalation ladder's step for a ladder ban; and, with
+  `bans:write` on its scope, **Extend**, **Make
   permanent**, **Widen to the /24** (or /64) and **Lift**. Extending works
   on an account's key: no raw id is asked for.
 - **New ban** (`/bans/new`): an address or range, an account id (keyed by

@@ -33,6 +33,7 @@ export const AGENT_ROUTES = /* @__PURE__ */ Object.freeze({
   heartbeat: "heartbeat",
   nudge: "nudge",
   events: "events",
+  banReports: "banReports",
 } as const);
 
 /** A route's tag. */
@@ -137,6 +138,67 @@ export interface AgentHeartbeat {
   readonly warnings?: readonly AgentWarning[];
   /** The engine's IP feeds, at most {@link MAX_HEARTBEAT_FEEDS} (PR-AN); absent without an intel that reports them. */
   readonly intel?: { readonly feeds: readonly AgentFeedStatus[] };
+  /** Ban reports dropped since the last heartbeat (past the agent's rate cap, or unsendable); absent from an older agent. */
+  readonly bansDropped?: number;
+}
+
+/** The most bans one report batch holds (`POST /agent/ban-reports`). */
+export const MAX_BAN_REPORTS = 500;
+
+/**
+ * How an agent reports its engine's bans (the user's defaults, 2026-11-18):
+ * a batch every `intervalMs`, at most {@link MAX_BAN_REPORTS} each; one
+ * report per subject per `dedupeMs` unless the ban escalates (a later end,
+ * permanent, or a higher ladder step); at most `perMinute` reports a
+ * minute, the rest dropped and counted (`bansDropped`); at most `queue`
+ * waiting while the control plane is unreachable.
+ */
+export const BAN_REPORT_LIMITS = /* @__PURE__ */ Object.freeze({
+  intervalMs: 5_000,
+  dedupeMs: 60_000,
+  perMinute: 600,
+  queue: 1_000,
+});
+
+/** One ban an agent's engine wrote itself, as reported (`POST /agent/ban-reports`). */
+export interface AgentBanReport {
+  /** What it refuses: an address, a range, or a user's or an API key's key. */
+  readonly subject: {
+    readonly type: "ip" | "cidr" | "user" | "apiKey";
+    readonly value: string;
+  };
+  /** `ban` or `challenge`. */
+  readonly action: "ban" | "challenge";
+  /** Why (the engine's reason). */
+  readonly reason: string;
+  /** The rule that wrote it (`counted:<id>`, `ladder`, `canary:<id>`). */
+  readonly rule?: string;
+  /** When the engine started it, epoch ms. */
+  readonly createdAt: number;
+  /** When it ends, epoch ms; `null` until lifted. */
+  readonly expiresAt: number | null;
+  /** The ladder's step, for a ladder ban (1 for the lowest). */
+  readonly step?: number;
+  /** The problem code it answers with. */
+  readonly code?: string;
+}
+
+/** A batch of ban reports: the bans an agent's engine wrote since the last one. */
+export interface AgentBanReportBatch {
+  /** The route: `banReports`. */
+  readonly route: "banReports";
+  /** When it was sent, epoch ms. */
+  readonly sentAt: number;
+  /** The bans, at most {@link MAX_BAN_REPORTS}. */
+  readonly bans: readonly AgentBanReport[];
+}
+
+/** What the control plane answers a batch. */
+export interface AgentBanReportAnswer {
+  /** The reports stored (new or merged). */
+  readonly stored: number;
+  /** The reports of a ban an operator lifted since it started: not re-created. */
+  readonly lifted: number;
 }
 
 /** What the control plane answers a heartbeat. */

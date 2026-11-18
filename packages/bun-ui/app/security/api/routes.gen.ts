@@ -4,7 +4,7 @@
  * `manifest` it takes. Do not edit; regenerate it, and run the same command
  * with `--check` in CI.
  *
- * typesHash: 8e8506cfd4d527e3
+ * typesHash: 64645f2ddbdc41d3
  *
  * Warnings:
  * - GET /agent/artefacts/:sha256: no response is declared; typed `{ 200: unknown }`
@@ -13,6 +13,7 @@
  * - GET /agent/nudge: no response is declared; typed `{ 200: unknown }`
  * - GET /asyncapi.json: no response is declared; typed `{ 200: unknown }`
  * - GET /openapi.json: no response is declared; typed `{ 200: unknown }`
+ * - POST /agent/ban-reports: no response is declared; typed `{ 200: unknown }`
  * - POST /agent/events: no response is declared; typed `{ 200: unknown }`
  * - POST /agent/heartbeat: no response is declared; typed `{ 200: unknown }`
  */
@@ -22,7 +23,7 @@ import type { RouteManifest } from "@kingsleyweb/bun-client";
  * The documents' hash, as the header records it: the `buster` of a
  * persisted query cache (`@kingsleyweb/bun-client/persist`).
  */
-export const typesHash = "8e8506cfd4d527e3";
+export const typesHash = "64645f2ddbdc41d3";
 
 /** letters, digits, _, . and - */
 export type Schema1 = string;
@@ -57,6 +58,8 @@ export interface Schema13 {
   country?: string;
   /** the subject's ASN when written, from its latest event */
   asn?: number;
+  /** the ladder's step that wrote an automatic ban */
+  step?: number;
 }
 
 export type Schema14 = string;
@@ -74,6 +77,16 @@ export interface Routes {
     params: {
       sha256: string;
     };
+    query: Record<never, never>;
+    headers: Record<never, never>;
+    body: undefined;
+    responses: {
+      200: unknown;
+    };
+  };
+  "POST /agent/ban-reports": {
+    operationId: "postAgentBanReports";
+    params: Record<never, never>;
     query: Record<never, never>;
     headers: Record<never, never>;
     body: undefined;
@@ -185,6 +198,8 @@ export interface Routes {
               since: number;
               share?: number;
             }[];
+            /** ban reports dropped since the previous heartbeat (past the agent's cap, or unsendable) */
+            bansDropped?: number;
           } | null;
           revision: number;
         }[];
@@ -388,6 +403,8 @@ export interface Routes {
               since: number;
               share?: number;
             }[];
+            /** ban reports dropped since the previous heartbeat (past the agent's cap, or unsendable) */
+            bansDropped?: number;
           } | null;
           revision: number;
         };
@@ -657,6 +674,8 @@ export interface Routes {
             since: number;
             share?: number;
           }[];
+          /** ban reports dropped since the previous heartbeat (past the agent's cap, or unsendable) */
+          bansDropped?: number;
         } | null;
         revision: number;
       };
@@ -891,6 +910,8 @@ export interface Routes {
             since: number;
             share?: number;
           }[];
+          /** ban reports dropped since the previous heartbeat (past the agent's cap, or unsendable) */
+          bansDropped?: number;
         } | null;
         revision: number;
       };
@@ -1161,6 +1182,8 @@ export interface Routes {
               since: number;
               share?: number;
             }[];
+            /** ban reports dropped since the previous heartbeat (past the agent's cap, or unsendable) */
+            bansDropped?: number;
           } | null;
           revision: number;
         };
@@ -7784,6 +7807,8 @@ export interface Routes {
           country?: string;
           /** the subject's ASN when written, from its latest event */
           asn?: number;
+          /** the ladder's step that wrote an automatic ban */
+          step?: number;
         }[];
         next?: string;
         totalEstimate?: number;
@@ -7979,6 +8004,8 @@ export interface Routes {
         country?: string;
         /** the subject's ASN when written, from its latest event */
         asn?: number;
+        /** the ladder's step that wrote an automatic ban */
+        step?: number;
       };
       400: {
         type: string;
@@ -8433,6 +8460,8 @@ export interface Routes {
         country?: string;
         /** the subject's ASN when written, from its latest event */
         asn?: number;
+        /** the ladder's step that wrote an automatic ban */
+        step?: number;
       };
       400: {
         type: string;
@@ -8684,6 +8713,8 @@ export interface Routes {
         country?: string;
         /** the subject's ASN when written, from its latest event */
         asn?: number;
+        /** the ladder's step that wrote an automatic ban */
+        step?: number;
       };
       400: {
         type: string;
@@ -8935,6 +8966,8 @@ export interface Routes {
         country?: string;
         /** the subject's ASN when written, from its latest event */
         asn?: number;
+        /** the ladder's step that wrote an automatic ban */
+        step?: number;
       };
       400: {
         type: string;
@@ -11382,6 +11415,8 @@ export interface Routes {
           country?: string;
           /** the subject's ASN when written, from its latest event */
           asn?: number;
+          /** the ladder's step that wrote an automatic ban */
+          step?: number;
         };
       };
       "ban.changed": {
@@ -18159,6 +18194,7 @@ export interface Routes {
 
 export const manifest = {
   "GET /agent/artefacts/:sha256": { operationId: "getAgentArtefactsBySha256" },
+  "POST /agent/ban-reports": { operationId: "postAgentBanReports" },
   "GET /agent/bans": { operationId: "getAgentBans" },
   "GET /agent/bundle": { operationId: "getAgentBundle" },
   "POST /agent/events": { operationId: "postAgentEvents" },

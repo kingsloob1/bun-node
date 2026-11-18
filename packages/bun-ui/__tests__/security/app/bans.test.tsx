@@ -140,6 +140,22 @@ describe("the bans list", () => {
     await waitFor(() => expect(options()).toEqual(["", "manual"]));
   });
 
+  it("an automatic ban an agent reported shows its rule and ladder step", async () => {
+    renderApp({
+      path: "/bans",
+      routes: bansRoutes([
+        ban("b8", {
+          source: "auto",
+          rule: "ladder",
+          step: 2,
+          service: "checkout",
+        }),
+      ]),
+    });
+    const row = (await page().findAllByTestId("ban-row", {}, LOADED))[0]!;
+    expect(row.textContent).toContain("auto (ladder, step 2)");
+  });
+
   it("negative control: an automatic ban makes the source offer it", async () => {
     renderApp({
       path: "/bans",

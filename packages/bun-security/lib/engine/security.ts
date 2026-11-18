@@ -454,6 +454,9 @@ export interface SecurityStatus {
 }
 
 /** The engine `createSecurity()` returns. */
+/** A {@link Security.watchBans} listener: the ban in force after a write, and the write. */
+export type BanListener = (ban: Ban, write: BanWrite) => void;
+
 export interface Security<TRequest = Request> {
   /** The policy in force. */
   readonly policy: CompiledPolicy;
@@ -573,6 +576,16 @@ export interface Security<TRequest = Request> {
    * Lifting an automatic address ban also clears the address's score.
    */
   unban: (id: string, options?: UnbanOptions) => Ban | undefined;
+  /**
+   * Listens to the bans this engine's layers write themselves (a counted
+   * rule's, the ladder's, a canary's): each with the record in force after
+   * the write and the write itself (its own `source`, `rule` and ladder
+   * `step`). Not `ban()`'s (an operator's, or the control plane's applied
+   * by its agent, so nothing it reports comes back), nor the bans other
+   * processes write on a shared store. The agent reports these to the
+   * control plane. Answers the unsubscribe.
+   */
+  watchBans: (listener: BanListener) => () => void;
   /** The bans in force. */
   bans: () => readonly Ban[];
   /**
@@ -996,6 +1009,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
   #storeWarned = false;
   /** When the `bans.aggregated` warning was last raised. */
   #lastAggregated = Number.NEGATIVE_INFINITY;
+  /** {@link watchBans}' listeners. */
+  readonly #banListeners = new Set<BanListener>();
   /** Evictions of local state. */
   readonly #evictions: EvictionMonitor;
   /** User and API-key list entries with their default id keyed, by the compiled entry. */
@@ -2606,6 +2621,13 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     return lifted;
   }
 
+  watchBans(listener: BanListener): () => void {
+    this.#banListeners.add(listener);
+    return () => {
+      this.#banListeners.delete(listener);
+    };
+  }
+
   bans(): readonly Ban[] {
     return Object.freeze(this.#bans.list(this.#now()));
   }
@@ -3021,6 +3043,13 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     const outcome = this.#bans.add({ ...write, ...this.#stamp() }, now);
     if (outcome.ban !== undefined) {
       this.#banSync?.record({ op: "ban", ban: outcome.ban });
+      for (const listener of [...this.#banListeners]) {
+        try {
+          listener(outcome.ban, write);
+        } catch (error) {
+          this.#logger.error("bun-security: a ban listener threw", { error });
+        }
+      }
     }
     if (
       (outcome.aggregated || outcome.ban === undefined) &&
@@ -3179,6 +3208,8 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
           rule: "ladder",
           source: "auto",
           expiresAt: now + length,
+          // 1 for the lowest step: the steps are kept highest first.
+          step: ladder.steps.length - ladder.steps.indexOf(step),
         },
         now,
       );

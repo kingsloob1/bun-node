@@ -155,6 +155,7 @@ export const SECURITY_ALERT_KINDS = /* @__PURE__ */ Object.freeze([
   "policy.dangerous",
   "checkpoint.sinkFailed",
   "agent.signatureFailing",
+  "agent.banReportsDropped",
 ] as const);
 
 /** An alert's kind. */
