@@ -194,14 +194,16 @@ export interface CreateSecurityOptions<TRequest = Request> {
    * Called with every event `signal()` takes (and `check()`'s
    * `pattern.hit`, with the pattern), its facts and the keys the engine
    * resolved: the analytics' `analyticsSignalHook` counts sign-in and
-   * challenge outcomes and pattern hits from it (PR-AN). Never with a raw
+   * challenge outcomes and pattern hits from it (PR-AN). Also called by
+   * `complete()` with `crawler.not-found` and the crawler's id when a
+   * verified crawler was answered `404` (PR-AN2). Never with a raw
    * account id: `subject` is keyed. A hook that throws is logged.
    */
   readonly onSignal?: (
     event: string,
     facts: RequestFacts,
     subject: SubjectKeys,
-    detail?: { readonly pattern?: string },
+    detail?: { readonly pattern?: string; readonly crawler?: string },
   ) => void;
   /**
    * Called with each warning as it is raised: every
@@ -2030,6 +2032,20 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     ) {
       return EMPTY;
     }
+    // A verified crawler answered 404, for its series (PR-AN2).
+    if (
+      outcome.status === 404 &&
+      decision.crawler?.verified === true &&
+      this.#options.onSignal !== undefined
+    ) {
+      try {
+        this.#options.onSignal("crawler.not-found", facts, decision.subject, {
+          crawler: decision.crawler.id,
+        });
+      } catch (error) {
+        this.#hookError("onSignal", error);
+      }
+    }
     const events: string[] = [];
     if (
       outcome.routeNotFound === true &&
@@ -3488,6 +3504,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
           rule: rule.hitRule,
           action: "log",
           reason: `crawler.probe: ${what} matched a verified crawler, which it does not hold`,
+          lifted: "probe",
         });
         trace?.push({
           layer: "L7",
@@ -3665,6 +3682,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
           rule: "honeypot",
           action: notFound && !dry ? "block" : "log",
           reason,
+          lifted: "honeypot",
         },
         notFound && !dry ? { status: 404, code: "not_found" } : undefined,
       );

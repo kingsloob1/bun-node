@@ -331,6 +331,78 @@ describe("rules", () => {
     expect((await t.alerts.evaluate()).raised).toBe(1);
   });
 
+  it("sustained (crawlerLimited): a crawler limited in each of the last 24 complete hours, across services; clears after an hour with none", async () => {
+    const t = await alertingApi();
+    await t.channel(WEBHOOK);
+    await t.rule(
+      alertRulePreset("crawlerLimited", {
+        id: "crawler-limited",
+        scope: "global",
+        channels: ["hook"],
+      }),
+    );
+    // Ten minutes into an hour; the 24 complete hours before it.
+    t.clock.advance(HOUR - (t.clock.now() % HOUR) + 10 * MINUTE);
+    const hour = Math.floor(t.clock.now() / HOUR) * HOUR;
+    const limited = (at: number, service: string, crawler: string) =>
+      row(at, service, "crawlers", 1, { crawler, outcome: "limited" });
+    const rows = [];
+    for (let h = 1; h <= 24; h++) {
+      const at = hour - h * HOUR + 5 * MINUTE;
+      // Google: limited every hour, alternating between two services'
+      // agents (each alone covers half the day: the fleet's sum fires).
+      rows.push(limited(at, h % 2 === 0 ? "pay" : "shop", "google"));
+      // Bing: every hour but one (the control).
+      if (h !== 7) rows.push(limited(at, "pay", "bing"));
+      // Requests are not limits.
+      rows.push(
+        row(at, "pay", "crawlers", 50, {
+          crawler: "apple",
+          outcome: "request",
+        }),
+      );
+    }
+    // Hours older than 24 are rolled up; recent ones only per minute: both
+    // are read. Move the oldest twelve to the hour tier.
+    await t.store.addCounters!(
+      rows.map((r) =>
+        r.at < hour - 12 * HOUR
+          ? { ...r, at: Math.floor(r.at / HOUR) * HOUR, tier: "hour" as const }
+          : r,
+      ),
+    );
+    expect(await t.alerts.evaluate()).toMatchObject({ raised: 1 });
+    await t.work();
+    expect(t.net.calls).toHaveLength(1);
+    expect(JSON.parse(t.net.calls[0].body)).toMatchObject({
+      kind: "rule:crawler-limited",
+      severity: "warning",
+      facts: { crawler: "google", hours: 24, value: 24 },
+    });
+    // The current, incomplete hour is not read: an hour with none ends it.
+    t.clock.advance(HOUR);
+    expect(await t.alerts.evaluate()).toMatchObject({ raised: 0, closed: 1 });
+  });
+
+  it("sustained checks its hours and groupBy", async () => {
+    const t = await alertingApi();
+    const put = (condition: Record<string, unknown>) =>
+      t.call("PUT", "/alerts/rules/s", {
+        title: "s",
+        scope: "global",
+        severity: "info",
+        condition: { type: "sustained", metric: "crawlers", ...condition },
+        channels: [],
+        revision: null,
+      });
+    expect((await put({ hours: 0 })).status).toBe(400);
+    expect((await put({ hours: 169 })).status).toBe(400);
+    expect((await put({ hours: 1.5 })).status).toBe(400);
+    expect((await put({ hours: 24, groupBy: "a b" })).status).toBe(400);
+    // The control: a well-formed one is taken.
+    expect((await put({ hours: 24, groupBy: "crawler" })).status).toBe(201);
+  });
+
   it("a ban storm: bans created in the window", async () => {
     const t = await alertingApi();
     await t.channel(WEBHOOK);

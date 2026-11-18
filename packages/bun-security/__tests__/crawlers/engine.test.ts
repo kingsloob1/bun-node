@@ -6,6 +6,11 @@
  * ASN, the hosting class), or ranges from a local fake for T-L3-5.
  */
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import {
+  analyticsSignalHook,
+  ANALYTICS_METRICS,
+  createAnalyticsRecorder,
+} from "../../lib/analytics/index";
 import type { CrawlerResolver } from "../../lib/crawlers/verify";
 import type { Decision } from "../../lib/engine/decision";
 import type { RequestFacts } from "../../lib/engine/facts";
@@ -299,10 +304,34 @@ describe("T-L3-5: the conflict check, and a truncated range file", () => {
     ).toEqual(
       conflicts.map((c) => `bun-security: crawler conflict: ${c.message}`),
     );
-    security.ban({ ip: "66.249.70.0/24", duration: "1h", reason: "by hand" });
+    // Each names its entry's key as the effective policy's paths do (PR-AN2).
+    expect(conflicts.map((c) => [c.entryId, c.banId])).toEqual([
+      ["country:US", undefined],
+      ["asn:15169", undefined],
+      ["ip:66.249.66.0/24", undefined],
+    ]);
+    const ban = security.ban({
+      ip: "66.249.70.0/24",
+      duration: "1h",
+      reason: "by hand",
+    });
+    const byBan = security
+      .crawlerConflicts()
+      .filter((c) => c.entry.startsWith("ban "));
+    expect(byBan.map((c) => [c.banId, c.entryId])).toEqual([
+      [ban.id, undefined],
+    ]);
+    // An entry's own id, and a route-scoped entry's paths, as the merge keys them.
     expect(
-      security.crawlerConflicts().some((c) => c.entry.startsWith("ban ")),
-    ).toBe(true);
+      engine({
+        lists: [
+          { id: "no-google", ip: "66.249.66.0/24", action: "block" },
+          { ip: "66.249.67.0/24", action: "block", paths: ["/a", "/b"] },
+        ],
+      })
+        .crawlerConflicts()
+        .map((c) => c.entryId),
+    ).toEqual(["no-google", "ip:66.249.67.0/24|/a,/b"]);
     // Negative control: no conflict without the crawler's ranges.
     const blind = engine(
       { lists: [{ country: "US", action: "block" }] },
@@ -531,5 +560,80 @@ describe("the allowance's modes", () => {
         )
       ).crawler?.verified,
     ).toBe(true);
+  });
+});
+
+describe("the crawler series (layers.md L3.2, PR-AN2)", () => {
+  /** An engine over the fakes that counts into a recorder; the rows of `crawlers`. */
+  function counted(policy: SecurityPolicy) {
+    const clock = fakeClock();
+    const recorder = createAnalyticsRecorder({
+      service: "site",
+      now: clock.now,
+    });
+    const security = createSecurity({
+      policy,
+      intel: fakeIntel(),
+      resolver,
+      now: clock.now,
+      logger: () => {},
+      onDecision: (decision) => recorder.recordDecision(decision),
+      onSignal: analyticsSignalHook({ recorder }),
+    });
+    const rows = () => {
+      const out: Record<string, number> = {};
+      for (const row of recorder.flush({ all: true })) {
+        if (row.metric !== ANALYTICS_METRICS.crawlers) continue;
+        const key = `${row.dims?.crawler}/${row.dims?.outcome}`;
+        out[key] = (out[key] ?? 0) + row.value;
+      }
+      return out;
+    };
+    return { security, rows };
+  }
+
+  it("counts each verified crawler's requests, 404s, 429s and what its allowance lifted", async () => {
+    const { security, rows } = counted({
+      ...HAZARDS,
+      crawlers: { limit: "6/1m" },
+    });
+    await visit(security, crawl("/"));
+    await visit(security, crawl("/old/page"), 404);
+    await visit(security, crawl("/wp-admin/install.php"), 404);
+    await visit(security, crawl("/wp-login.php"), 404);
+    // Two more inside the limit, then two refused by it (429).
+    for (let i = 0; i < 4; i++) {
+      const decision = await visit(security, crawl(`/p/${i}`));
+      if (i >= 2) expect(decision.status).toBe(429);
+    }
+    // The probe and the honeypot were passed on and answered 404 too, and
+    // `/wp-login.php` is in the managed probe set as well as a honeypot.
+    expect(rows()).toEqual({
+      "google/request": 8,
+      "google/not-found": 3,
+      "google/probe": 2,
+      "google/honeypot": 1,
+      "google/limited": 2,
+    });
+  });
+
+  it("negative controls: an unverified claimant, a plain client and the allowance off count nothing", async () => {
+    const { security, rows } = counted(HAZARDS);
+    await visit(security, plain("/"), 404);
+    await visit(security, crawl("/", OUTSIDER), 404);
+    expect(rows()).toEqual({});
+    const off = counted({ ...HAZARDS, crawlers: { mode: "off" } });
+    await visit(off.security, crawl("/"), 404);
+    await visit(off.security, crawl("/wp-admin/install.php"), 404);
+    expect(off.rows()).toEqual({});
+  });
+
+  it("negative control: in dry run its limit's would-be refusals are not counted as limited", async () => {
+    const { security, rows } = counted({
+      ...HAZARDS,
+      crawlers: { mode: "dryRun", limit: "1/1m" },
+    });
+    for (let i = 0; i < 3; i++) await visit(security, crawl(`/p/${i}`));
+    expect(rows()["google/limited"]).toBeUndefined();
   });
 });

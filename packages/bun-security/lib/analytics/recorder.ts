@@ -82,7 +82,33 @@ export const ANALYTICS_METRICS = Object.freeze({
   patterns: "patterns",
   /** The minute's addresses each pattern tripped, by space-saving: `{ pattern, kind: "ip", subject }`. */
   topPattern: "top.pattern",
+  /**
+   * Verified crawler traffic (layers.md L3.2, PR-AN2): `{ crawler, outcome }`,
+   * the outcome one of {@link CRAWLER_OUTCOMES}.
+   */
+  crawlers: "crawlers",
 } as const);
+
+/**
+ * The outcomes the `crawlers` metric counts per verified crawler
+ * (PR-AN2): every `request`; each answered `not-found` (a `404`); each
+ * `limited` by its own limit (a `429`); and what its allowance lifted, a
+ * managed probe rule (`probe`, logged as `crawler.probe`) or a honeypot
+ * (`honeypot`, no score or ban).
+ */
+export const CRAWLER_OUTCOMES = Object.freeze([
+  "request",
+  "not-found",
+  "limited",
+  "probe",
+  "honeypot",
+] as const);
+
+/** One of {@link CRAWLER_OUTCOMES}. */
+export type CrawlerOutcome = (typeof CRAWLER_OUTCOMES)[number];
+
+/** The crawler limit's hit (`crawlerLimitRule`'s id). */
+const CRAWLER_LIMIT_RULE = "limit:crawler";
 
 /** One decision to count. */
 export interface AnalyticsRecord {
@@ -111,6 +137,19 @@ export interface AnalyticsRecord {
   readonly latencyMs?: number;
   /** The status it was answered with, when known. */
   readonly status?: number;
+  /**
+   * The verified crawler it came from, and what besides its request to
+   * count for it (PR-AN2): limited, or a lifted probe or honeypot.
+   */
+  readonly crawler?: {
+    /** The crawler's id. */
+    readonly id: string;
+    /** The outcomes besides `request`. */
+    readonly outcomes: readonly Exclude<
+      CrawlerOutcome,
+      "request" | "not-found"
+    >[];
+  };
 }
 
 /** What {@link AnalyticsRecorder.recordDecision} takes beside the decision. */
@@ -219,8 +258,33 @@ export interface SignalRecord {
   readonly subject?: Partial<Record<"ip" | "username", string>>;
   /** The identifier pattern a `pattern.hit` matched. */
   readonly pattern?: string;
+  /** The verified crawler a `crawler.not-found` was answered to (PR-AN2). */
+  readonly crawler?: string;
   /** When, epoch ms. Default the recorder's clock. */
   readonly at?: number;
+}
+
+/**
+ * A decision's verified crawler and its outcomes (PR-AN2): `limited` when
+ * its own limit refused it (enforced, not in dry run), `probe` and
+ * `honeypot` for each hit its allowance lifted.
+ */
+function crawlerOf(decision: Decision): {
+  crawler?: NonNullable<AnalyticsRecord["crawler"]>;
+} {
+  if (decision.crawler?.verified !== true) return {};
+  const outcomes: Exclude<CrawlerOutcome, "request" | "not-found">[] = [];
+  for (const hit of decision.hits) {
+    if (hit.lifted !== undefined) outcomes.push(hit.lifted);
+    else if (
+      hit.rule === CRAWLER_LIMIT_RULE &&
+      hit.action !== "log" &&
+      !outcomes.includes("limited")
+    ) {
+      outcomes.push("limited");
+    }
+  }
+  return { crawler: { id: decision.crawler.id, outcomes } };
 }
 
 /** A minute's start. */
@@ -511,6 +575,19 @@ export function createAnalyticsRecorder(
         1,
       );
     }
+    if (input.crawler !== undefined) {
+      const crawler = input.crawler.id;
+      add(
+        minute,
+        at,
+        ANALYTICS_METRICS.crawlers,
+        { crawler, outcome: "request" },
+        1,
+      );
+      for (const outcome of input.crawler.outcomes) {
+        add(minute, at, ANALYTICS_METRICS.crawlers, { crawler, outcome }, 1);
+      }
+    }
     const refusing = REFUSING_ACTIONS.includes(action);
     for (const kind of kinds) {
       // Already keyed by the engine: the address key and the HMACs.
@@ -532,6 +609,16 @@ export function createAnalyticsRecorder(
         at,
         ANALYTICS_METRICS.challenges,
         { outcome: event === "challenge.passed" ? "passed" : "failed" },
+        1,
+      );
+      return;
+    }
+    if (event === "crawler.not-found" && input.crawler !== undefined) {
+      add(
+        minuteFor(at),
+        at,
+        ANALYTICS_METRICS.crawlers,
+        { crawler: input.crawler, outcome: "not-found" },
         1,
       );
       return;
@@ -615,6 +702,7 @@ export function createAnalyticsRecorder(
           dryRun: hit.wouldHaveBeen !== undefined,
         })),
         subject: decision.subject,
+        ...crawlerOf(decision),
       });
     },
     count: (metric, dims = {}, value = 1, at = now()) => {

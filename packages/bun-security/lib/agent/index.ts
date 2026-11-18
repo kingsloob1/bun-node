@@ -38,6 +38,7 @@ export {
   agentRequestId,
   BAN_REPORT_LIMITS,
   MAX_BAN_REPORTS,
+  MAX_HEARTBEAT_CONFLICTS,
   MAX_HEARTBEAT_FEEDS,
   MAX_HEARTBEAT_WARNINGS,
 } from "./protocol";
@@ -45,6 +46,7 @@ export type {
   AgentBanReport,
   AgentBanReportAnswer,
   AgentBanReportBatch,
+  AgentCrawlerConflict,
   AgentHeartbeat,
   AgentHeartbeatAnswer,
   AgentNudge,

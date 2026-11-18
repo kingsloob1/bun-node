@@ -120,6 +120,58 @@ describe("mergePolicies", () => {
     ).toBe("off");
   });
 
+  it("maps each locked item to the outermost scope that locked it (PR-AN2); negative control: unlocked, no lock", () => {
+    const merge = (globalLocks: boolean) =>
+      mergePolicies([
+        {
+          scope: "global",
+          policy: {
+            limits: [
+              { id: "a", limit: 1, window: "1m", locked: globalLocks },
+              { id: "b", limit: 1, window: "1m" },
+            ],
+          },
+        },
+        {
+          scope: "group:g",
+          // Locks `a` too (dropped when global holds it), and locks `b`
+          // by overriding it, and `c`, its own.
+          policy: {
+            limits: [
+              { id: "a", locked: true },
+              { id: "b", limit: 2, locked: true },
+              { id: "c", limit: 3, window: "1m", locked: true },
+            ],
+          },
+        },
+        {
+          scope: "service:s",
+          policy: { limits: [{ id: "c", limit: 9 }] },
+        },
+      ]);
+    expect(merge(true).locks).toEqual({
+      "limits[id=a]": "global",
+      "limits[id=b]": "group:g",
+      "limits[id=c]": "group:g",
+    });
+    // The service's override of `c` was dropped.
+    expect(merge(true).locked).toContainEqual({
+      path: "limits[id=c]",
+      lockedBy: "group:g",
+      scope: "service:s",
+    });
+    // Unlocked at global, `a` is the group's to lock.
+    expect(merge(false).locks["limits[id=a]"]).toBe("group:g");
+    expect(
+      mergePolicies([
+        {
+          scope: "global",
+          policy: { limits: [{ id: "a", limit: 1, window: "1m" }] },
+        },
+      ]).locks,
+    ).toEqual({});
+  });
+
   it("unions lists, scoping each entry by its layer; an entry's own scope is kept", () => {
     const merged = mergePolicies([
       {

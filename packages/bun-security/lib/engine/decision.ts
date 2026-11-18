@@ -35,6 +35,13 @@ export interface RuleHit {
   readonly wouldHaveBeen?: SecurityAction;
   /** Why, for operators and events; never sent to the client. */
   readonly reason?: string;
+  /**
+   * The crawler allowance's exemption this hit stands for (layers.md L3.2,
+   * PR-AN2): `probe`, a managed probe rule logged as `crawler.probe`
+   * instead of acting, or `honeypot`, a honeypot answered with no score or
+   * ban (`crawler.honeypot`). The analytics count them per crawler.
+   */
+  readonly lifted?: "probe" | "honeypot";
 }
 
 /**

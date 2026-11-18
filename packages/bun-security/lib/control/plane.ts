@@ -1037,27 +1037,30 @@ export class ControlPlane {
       policyVersions: versions,
       policy: merged.policy,
       origins: merged.origins,
+      locked: merged.locks,
     };
   }
 
   /**
    * An effective policy as an operator sees it: its policy shown
-   * ({@link showPolicy}) and its origins' paths with any raw account id
+   * ({@link showPolicy}) and its origins' and locks' paths with any raw account id
    * that could not be keyed redacted.
    */
   showEffective<
     T extends {
       policy: JsonObject;
       origins: Readonly<Record<string, PolicyScopeId>>;
+      locked: Readonly<Record<string, PolicyScopeId>>;
     },
   >(effective: T): T {
     const keyless = this.options.banKeys === undefined;
-    return {
-      ...effective,
-      policy: this.showPolicy(effective.policy),
-      origins: keyless
+    /** A path map with any unkeyed raw account id in its paths redacted. */
+    const shown = (
+      paths: Readonly<Record<string, PolicyScopeId>>,
+    ): Readonly<Record<string, PolicyScopeId>> =>
+      keyless
         ? Object.fromEntries(
-            Object.entries(effective.origins).map(([path, scope]) => [
+            Object.entries(paths).map(([path, scope]) => [
               path.replace(
                 /\[id=(user|apiKey):(?![\da-f]{32}[|\]])[^|\]]*/g,
                 "[id=$1:[unkeyed]",
@@ -1065,7 +1068,12 @@ export class ControlPlane {
               scope,
             ]),
           )
-        : effective.origins,
+        : paths;
+    return {
+      ...effective,
+      policy: this.showPolicy(effective.policy),
+      origins: shown(effective.origins),
+      locked: shown(effective.locked),
     };
   }
 
@@ -1241,6 +1249,7 @@ export class ControlPlane {
       policyVersions: versions,
       policy,
       origins: merged.origins,
+      locked: merged.locks,
     };
   }
 

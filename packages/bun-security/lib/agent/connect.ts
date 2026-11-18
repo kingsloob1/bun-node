@@ -45,6 +45,7 @@ import type { EventBatcher } from "./batcher";
 import type { Ban, BanWrite } from "../engine/bans";
 import type {
   AgentBanReportBatch,
+  AgentCrawlerConflict,
   AgentHeartbeat,
   AgentFeedStatus,
   AgentWarning,
@@ -68,6 +69,7 @@ import {
   agentRequestId,
   artefactSignedBody,
   BAN_REPORT_LIMITS,
+  MAX_HEARTBEAT_CONFLICTS,
   MAX_HEARTBEAT_FEEDS,
   MAX_HEARTBEAT_WARNINGS,
   notModifiedBody,
@@ -99,6 +101,17 @@ export interface AgentEngine {
   readonly watchBans?: (
     listener: (ban: Ban, write: BanWrite) => void,
   ) => () => void;
+  /**
+   * The engine's crawler conflicts (layers.md L3.2); the heartbeat carries
+   * them (PR-AN2), checked again at most every 5 minutes or when the bundle
+   * or the bans change. Optional for a stand-in engine.
+   */
+  readonly crawlerConflicts?: () => readonly {
+    readonly crawler: string;
+    readonly range: string;
+    readonly entryId?: string;
+    readonly banId?: string;
+  }[];
   /** The engine's state; its `warnings` go in every heartbeat (PR-CP6). Optional for a stand-in engine. */
   readonly status?: () => {
     readonly warnings?: readonly {
@@ -277,6 +290,44 @@ function intelOf(engine: AgentEngine): {
   };
 }
 
+/** How often the heartbeat's crawler conflicts are checked again when nothing changed, ms (PR-AN2). */
+const CONFLICTS_REFRESH_MS = 5 * 60_000;
+
+/**
+ * The engine's crawler conflicts, for a heartbeat (PR-AN2): at most
+ * {@link MAX_HEARTBEAT_CONFLICTS}, each its crawler, its entry's key or its
+ * ban's id, and one range, cut to bounds; and how many there were. Nothing
+ * for an engine without the check, or when the check throws.
+ */
+function crawlersOf(engine: AgentEngine): {
+  crawlers?: { conflicts: AgentCrawlerConflict[]; total: number };
+} {
+  if (engine.crawlerConflicts === undefined) return {};
+  let found;
+  try {
+    found = engine.crawlerConflicts();
+  } catch {
+    return {};
+  }
+  const conflicts: AgentCrawlerConflict[] = [];
+  for (const conflict of found) {
+    if (conflicts.length >= MAX_HEARTBEAT_CONFLICTS) break;
+    const by =
+      conflict.entryId !== undefined
+        ? { entry: conflict.entryId.slice(0, 300) }
+        : conflict.banId !== undefined
+          ? { ban: conflict.banId.slice(0, 200) }
+          : undefined;
+    if (by === undefined) continue;
+    conflicts.push({
+      crawler: conflict.crawler.slice(0, 64),
+      ...by,
+      range: conflict.range.slice(0, 50),
+    });
+  }
+  return { crawlers: { conflicts, total: found.length } };
+}
+
 /** The engine's warnings in force, for a heartbeat (kind, since and share only, bounded). */
 function warningsOf(engine: AgentEngine): { warnings?: AgentWarning[] } {
   let listed;
@@ -391,6 +442,23 @@ export function connectAgent(options: ConnectAgentOptions): SecurityAgent {
   const alerted = new Set<string>();
   const timers: ReturnType<typeof setTimeout>[] = [];
   let nudgeAbort: AbortController | undefined;
+  /** The last crawler-conflict report, when it was made, and what it was made on. */
+  let conflicts:
+    | { report: ReturnType<typeof crawlersOf>; at: number; on: string }
+    | undefined;
+  /** The crawler conflicts for this heartbeat: the last report, unless stale. */
+  const conflictsNow = (): ReturnType<typeof crawlersOf> => {
+    const on = `${current?.bundle.version ?? "-"}|${banSeq}|${applied.size}`;
+    const at = now();
+    if (
+      conflicts === undefined ||
+      conflicts.on !== on ||
+      at - conflicts.at >= CONFLICTS_REFRESH_MS
+    ) {
+      conflicts = { report: crawlersOf(options.security), at, on };
+    }
+    return conflicts.report;
+  };
 
   /** Raises `alert` (once per `key`, when given). */
   const alert = (input: Omit<AgentAlert, "at">, key?: string) => {
@@ -922,6 +990,7 @@ export function connectAgent(options: ConnectAgentOptions): SecurityAgent {
       ...warningsOf(options.security),
       ...intelOf(options.security),
       ...(reporter === undefined ? {} : { bansDropped: reporter.dropped }),
+      ...conflictsNow(),
     };
     const answer = await call(
       AGENT_ROUTES.heartbeat,

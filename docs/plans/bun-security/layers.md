@@ -538,9 +538,15 @@ is in the default set (ranges only: it publishes no reverse DNS); Bun's
 resolver; a claimant that cannot be verified (a timeout, an error, a full
 queue, no data) is an ordinary client, and only a definite failure is
 `crawler.spoofed`; the conflict check runs at start, on `load()` and on
-`crawlerConflicts()`, since the compiler has no ranges; the alert on a
-crawler limited for a day and the analytics series are not built yet (plan
-§17.14).
+`crawlerConflicts()`, since the compiler has no ranges (plan §17.14).
+**As built (PR-AN2, plan §17.41):** the series counts each verified
+crawler's requests, 404s, 429s from its own limit, and the probe and
+honeypot hits its allowance lifted (`crawlers { crawler, outcome }`); the
+alert is the control plane's `crawlerLimited` preset, which fires when a
+crawler was limited in every one of the last 24 complete hours across the
+scope's services ("a day's worth of windows", read fleet-wide by the
+hour); and the agents report the conflicts in their heartbeats, since
+only they hold the ranges.
 
 ---
 

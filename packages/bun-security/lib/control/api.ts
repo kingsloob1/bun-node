@@ -219,11 +219,13 @@ export function createSecurityApi(options: SecurityApiOptions): SecurityApi {
 
   const documents = {
     openapi: () =>
-      generateOpenApi(router, {
-        title: resolved.docs.title,
-        version: resolved.docs.version,
-        servers: [{ url: resolved.basePath }],
-      }).document as unknown as Record<string, unknown>,
+      liftPolicyComponent(
+        generateOpenApi(router, {
+          title: resolved.docs.title,
+          version: resolved.docs.version,
+          servers: [{ url: resolved.basePath }],
+        }).document,
+      ),
     asyncapi: () =>
       mergeAsyncApi(
         generateAsyncApi(router, {
@@ -383,4 +385,46 @@ export function createSecurityApi(options: SecurityApiOptions): SecurityApi {
       return await plane.audit.purge(before);
     },
   });
+}
+
+/** The OpenAPI component the policy's JSON Schema is published under (PR-AN2). */
+export const POLICY_COMPONENT = "SecurityPolicy";
+
+/**
+ * Moves every inline copy of the policy's JSON Schema (a node titled
+ * {@link POLICY_COMPONENT}: the schemas embed it where a policy appears)
+ * into one `components.schemas.SecurityPolicy`, each copy replaced by a
+ * `$ref` to it (PR-AN2). The document is changed in place and returned.
+ */
+export function liftPolicyComponent(
+  document: Record<string, unknown>,
+): Record<string, unknown> {
+  let body: Record<string, unknown> | undefined;
+  const ref = { $ref: `#/components/schemas/${POLICY_COMPONENT}` };
+  const walk = (node: unknown): unknown => {
+    if (Array.isArray(node)) return node.map(walk);
+    if (typeof node !== "object" || node === null) return node;
+    const object = node as Record<string, unknown>;
+    if (object.title === POLICY_COMPONENT && object.type === "object") {
+      body ??= object;
+      return { ...ref };
+    }
+    for (const [key, value] of Object.entries(object))
+      object[key] = walk(value);
+    return object;
+  };
+  for (const [key, value] of Object.entries(document))
+    document[key] = walk(value);
+  if (body === undefined) return document;
+  const components = (document.components ?? {}) as Record<string, unknown>;
+  const schemas = (components.schemas ?? {}) as Record<string, unknown>;
+  document.components = {
+    ...components,
+    schemas: Object.fromEntries(
+      [...Object.entries(schemas), [POLICY_COMPONENT, body] as const].sort(
+        ([a], [b]) => (a < b ? -1 : 1),
+      ),
+    ),
+  };
+  return document;
 }

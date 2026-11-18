@@ -431,6 +431,17 @@ export const s = {
     return make<unknown>({ description }, (value) => value);
   },
 
+  /**
+   * `schema`'s checks, documented by `json` instead of its own JSON Schema
+   * (the policy's, whose own validator runs in the handlers).
+   */
+  documented<T>(schema: Schema<T>, json: JsonSchema): Schema<T> {
+    return make<T>(json, schema.check, {
+      ...(schema.optional === true ? { optional: true } : {}),
+      ...(schema.coerce === undefined ? {} : { coerce: schema.coerce }),
+    });
+  },
+
   /** A JSON object, checked only for being one; `description` says what it is. */
   anyObject(description: string): Schema<Readonly<Record<string, unknown>>> {
     return make<Readonly<Record<string, unknown>>>(

@@ -4,7 +4,7 @@
  * `manifest` it takes. Do not edit; regenerate it, and run the same command
  * with `--check` in CI.
  *
- * typesHash: 64645f2ddbdc41d3
+ * typesHash: b9bdc5376dd92b42
  *
  * Warnings:
  * - GET /agent/artefacts/:sha256: no response is declared; typed `{ 200: unknown }`
@@ -23,7 +23,7 @@ import type { RouteManifest } from "@kingsleyweb/bun-client";
  * The documents' hash, as the header records it: the `buster` of a
  * persisted query cache (`@kingsleyweb/bun-client/persist`).
  */
-export const typesHash = "64645f2ddbdc41d3";
+export const typesHash = "b9bdc5376dd92b42";
 
 /** letters, digits, _, . and - */
 export type Schema1 = string;
@@ -70,6 +70,976 @@ export type Schema16 =
   "allow" | "log" | "tag" | "delay" | "challenge" | "block" | "ban" | "drop";
 
 export type Schema17 = "allow" | "challenge" | "refuse";
+
+/** A bun-security policy (control-plane.md §2): a scope's own is partial, layered over the scopes above it; nothing is required. The shape only: securityPolicySchema checks the rest. */
+export interface SecurityPolicy {
+  /** the policy format version; default 1 */
+  version?: 1;
+  /** the service's name, as events and bans name it */
+  service?: string;
+  /** the environment (`production`), for operators */
+  environment?: string;
+  /** a public service: the trust check warns when its clients resolve inside */
+  public?: boolean;
+  /** the whole policy's mode; default enforce */
+  mode?: "enforce" | "dryRun" | "off";
+  /** how subjects are keyed (layers.md L2.3) */
+  keys?: {
+    /** an IPv6 client is keyed by this prefix; default 64 */
+    ipv6Prefix?: number;
+    [key: string]: unknown;
+  };
+  /** the internal never-block list (layers.md L3.1): true (default), false, or narrowed to some of its ranges */
+  internal?:
+    | boolean
+    | {
+        /** the ranges kept */
+        ranges?: string[];
+        [key: string]: unknown;
+      };
+  /** allow and deny entries (layers.md L3), keyed by `id` or their subject */
+  lists?: {
+    /** a stable id, unique in the policy; default its subject */
+    id?: string;
+    /** an IPv4 or IPv6 address or CIDR range */
+    ip?: string;
+    /** a user id (the control plane keys it on save) */
+    user?: string;
+    /** a user's key, 32 hex */
+    userHash?: string;
+    /** an API key id (the control plane keys it on save) */
+    apiKey?: string;
+    /** an API key's key, 32 hex */
+    apiKeyHash?: string;
+    /** a country, ISO 3166-1 alpha-2 */
+    country?: string;
+    /** an autonomous system number */
+    asn?: number;
+    /** what a match does (required in the effective policy) */
+    action?: "allow" | "block" | "challenge" | "drop";
+    /** an allow that wins over a block in the same scope; default false */
+    override?: boolean;
+    /** lower scopes cannot override it; default false */
+    locked?: boolean;
+    /** where it was written; default "service" */
+    scope?: "global" | "group" | "service";
+    /** the routes it applies to */
+    paths?: string[];
+    /** when it stops applying, ISO 8601 with a time zone */
+    expiresAt?: string;
+    /** enforce applies it; dryRun records what it would have done; off skips it */
+    mode?: "enforce" | "dryRun" | "off";
+    /** why it exists, for operators */
+    reason?: string;
+    /** who added it */
+    createdBy?: string;
+    /** the refusal's problem code */
+    code?: string;
+    [key: string]: unknown;
+  }[];
+  /** sibling services allowed to call under their own identity (layers.md L2.4) */
+  serviceIdentity?: {
+    /** the header carrying a token; default "x-service-token" */
+    header?: string;
+    /** the header carrying a forwarded end-user address; default "x-service-client-ip" */
+    clientIpHeader?: string;
+    /** the services allowed to call */
+    services?: {
+      /** its name, unique in the policy */
+      id?: string;
+      /** the SHA-256 of its token, "sha256:<64 hex>", or several during a rotation */
+      verifier?: string | string[];
+      /** its forwarded end-user address is believed; default false */
+      forwardsClientIp?: boolean;
+      /** what a verified call skips; default all four */
+      exempt?: ("lists" | "bans" | "countedRules" | "globalLimits")[];
+      [key: string]: unknown;
+    }[];
+    [key: string]: unknown;
+  };
+  /** the trust-misconfiguration check (layers.md L2.5); false for none */
+  trustCheck?:
+    | {
+        /** the share of a minute's requests that marks it suspicious; default 0.5 */
+        threshold?: number;
+        /** how long before the warning; default "5m" */
+        window?:
+          | string
+          | {
+              ms?: number;
+              seconds?: number;
+              minutes?: number;
+              hours?: number;
+              days?: number;
+              weeks?: number;
+            };
+        /** a minute with fewer requests never counts; default 20 */
+        minRequests?: number;
+        [key: string]: unknown;
+      }
+    | false;
+  /** connection and in-flight limits (layers.md L1); false for none */
+  concurrency?:
+    | {
+        /** in-flight requests per client address; default 64 */
+        perIp?: number | false;
+        /** in-flight requests in all; none by default */
+        total?: number | false;
+        /** a slot held longer is released */
+        releaseAfter?:
+          | string
+          | {
+              ms?: number;
+              seconds?: number;
+              minutes?: number;
+              hours?: number;
+              days?: number;
+              weeks?: number;
+            };
+        /** enforce applies it; dryRun records what it would have done; off skips it */
+        mode?: "enforce" | "dryRun" | "off";
+        [key: string]: unknown;
+      }
+    | false;
+  /** rate limits (layers.md L9), keyed by `id` */
+  limits?: {
+    /** a stable id, unique in its list: letters, digits, _, . and -, starting with a letter or digit, at most 64 */
+    id?: string;
+    /** requests allowed per window (required in the effective policy) */
+    limit?: number;
+    /** the window (required in the effective policy) */
+    window?:
+      | string
+      | {
+          ms?: number;
+          seconds?: number;
+          minutes?: number;
+          hours?: number;
+          days?: number;
+          weeks?: number;
+        };
+    /** accept a window under one second; default false */
+    subSecond?: boolean;
+    /** who a request counts against: one part, or several for a composite key; default "ip" */
+    key?:
+      | "ip"
+      | "user"
+      | "session"
+      | "tenant"
+      | "apiKey"
+      | "route"
+      | "username"
+      | "destination"
+      | "destinationPrefix"
+      | "device"
+      | "crawler"
+      | (
+          | "ip"
+          | "user"
+          | "session"
+          | "tenant"
+          | "apiKey"
+          | "route"
+          | "username"
+          | "destination"
+          | "destinationPrefix"
+          | "device"
+          | "crawler"
+        )[];
+    /** the routes it applies to; every request when absent */
+    routes?: string[];
+    /** how it counts; default "sliding-window" */
+    algorithm?: "sliding-window" | "fixed-window" | "gcra";
+    /** what one request costs; default 1 */
+    cost?: number;
+    /** enforce applies it; dryRun records what it would have done; off skips it */
+    mode?: "enforce" | "dryRun" | "off";
+    /** lower scopes cannot override or disable it; default false */
+    locked?: boolean;
+    /** applies to a verified sibling service exempt from global limits; default false */
+    appliesToServices?: boolean;
+    /** still counts a request an allow entry let through; default false */
+    evenWhenAllowed?: boolean;
+    /** the 429 body's problem code; default "rate_limited" */
+    code?: string;
+    /** where it counts; default the policy's state.mode */
+    state?: "local" | "shared" | "hybrid";
+    /** what it does when the shared store fails; default the policy's state.onStoreError */
+    onStoreError?: "local" | "open" | "closed";
+    /** only requests of routes with this profile count (`securityProfile()`); every route when absent */
+    profile?: string;
+    /** only requests whose API key is on this plan count; every request when absent */
+    apiKeyPlan?: string;
+    [key: string]: unknown;
+  }[];
+  /** counted rules (layers.md §0.2), keyed by `id` */
+  countedRules?: {
+    /** a stable id, unique in its list: letters, digits, _, . and -, starting with a letter or digit, at most 64 */
+    id?: string;
+    /** the event counted: request, throttled, route.notFound, server.error, rule.hit, probe.hit, pattern.hit, or the app's signals (required in the effective policy) */
+    event?: string;
+    /** occurrences that trip it (required in the effective policy) */
+    threshold?: number;
+    /** the window occurrences are counted in */
+    window?:
+      | string
+      | {
+          ms?: number;
+          seconds?: number;
+          minutes?: number;
+          hours?: number;
+          days?: number;
+          weeks?: number;
+        };
+    /** accept a window under one second; default false */
+    subSecond?: boolean;
+    /** who a request counts against: one part, or several for a composite key; default "ip" */
+    key?:
+      | "ip"
+      | "user"
+      | "session"
+      | "tenant"
+      | "apiKey"
+      | "route"
+      | "username"
+      | "destination"
+      | "destinationPrefix"
+      | "device"
+      | "crawler"
+      | (
+          | "ip"
+          | "user"
+          | "session"
+          | "tenant"
+          | "apiKey"
+          | "route"
+          | "username"
+          | "destination"
+          | "destinationPrefix"
+          | "device"
+          | "crawler"
+        )[];
+    /** the routes it applies to; every request when absent */
+    routes?: string[];
+    /** what the tripped key gets; default "ban" */
+    action?: "ban" | "challenge" | "ladder";
+    /** how long, or null until lifted; required except with action ladder */
+    duration?:
+      | string
+      | {
+          ms?: number;
+          seconds?: number;
+          minutes?: number;
+          hours?: number;
+          days?: number;
+          weeks?: number;
+        }
+      | null;
+    /** enforce applies it; dryRun records what it would have done; off skips it */
+    mode?: "enforce" | "dryRun" | "off";
+    /** lower scopes cannot override or disable it; default false */
+    locked?: boolean;
+    /** counts a verified service's forwarded end users; default false */
+    appliesToServices?: boolean;
+    /** its bans' problem code; default the policy's bans.code */
+    code?: string;
+    /** the offence weight a trip adds; default 1 */
+    weight?: number;
+    /** where its counters live */
+    state?: "local" | "shared";
+    /** what it does when the shared store fails */
+    onStoreError?: "local" | "open";
+    /** only requests of routes with this profile count (`securityProfile()`); every route when absent */
+    profile?: string;
+    [key: string]: unknown;
+  }[];
+  /** bans (layers.md L4) */
+  bans?: {
+    /** the problem code of a ban's refusal; default "banned" */
+    code?: string;
+    /** answer Retry-After with a ban's end; default true */
+    retryAfter?: boolean;
+    /** the most bans held; default 100,000 */
+    maxActive?: number;
+    /** enforce applies it; dryRun records what it would have done; off skips it */
+    mode?: "enforce" | "dryRun" | "off";
+    [key: string]: unknown;
+  };
+  /** the offence ladder (layers.md §0.2); false for none */
+  ladder?:
+    | {
+        /** how fast a score decays */
+        halfLife?:
+          | string
+          | {
+              ms?: number;
+              seconds?: number;
+              minutes?: number;
+              hours?: number;
+              days?: number;
+              weeks?: number;
+            };
+        /** the steps, by score */
+        steps?: {
+          /** the score that reaches it */
+          score?: number;
+          /** what it does */
+          action?: "challenge" | "ban";
+          /** a ban's length */
+          duration?:
+            | string
+            | {
+                ms?: number;
+                seconds?: number;
+                minutes?: number;
+                hours?: number;
+                days?: number;
+                weeks?: number;
+              };
+          [key: string]: unknown;
+        }[];
+        /** the first escalating ban's length */
+        base?:
+          | string
+          | {
+              ms?: number;
+              seconds?: number;
+              minutes?: number;
+              hours?: number;
+              days?: number;
+              weeks?: number;
+            };
+        /** each later ban's multiplier */
+        factor?: number;
+        /** the longest ban */
+        maxBan?:
+          | string
+          | {
+              ms?: number;
+              seconds?: number;
+              minutes?: number;
+              hours?: number;
+              days?: number;
+              weeks?: number;
+            };
+        /** how long earlier bans count */
+        memory?:
+          | string
+          | {
+              ms?: number;
+              seconds?: number;
+              minutes?: number;
+              hours?: number;
+              days?: number;
+              weeks?: number;
+            };
+        /** offence weights by source */
+        weights?: Record<string, number>;
+        /** enforce applies it; dryRun records what it would have done; off skips it */
+        mode?: "enforce" | "dryRun" | "off";
+        [key: string]: unknown;
+      }
+    | false;
+  /** request shape (layers.md L6); false for none */
+  shape?:
+    | {
+        /** paths compare case-sensitively; default false */
+        caseSensitive?: boolean;
+        /** the longest path, bytes */
+        maxPathBytes?: number;
+        /** the longest query, bytes */
+        maxQueryBytes?: number;
+        /** the most query parameters */
+        maxQueryParams?: number;
+        /** the deepest query nesting */
+        maxQueryDepth?: number;
+        /** the most headers */
+        maxHeaders?: number;
+        /** the largest header block, bytes */
+        maxHeaderBytes?: number;
+        /** the methods allowed */
+        methods?: string[];
+        /** the hosts allowed */
+        hosts?: string[];
+        /** the longest value per header name, bytes */
+        headerLimits?: Record<string, number>;
+        /** the largest body, bytes, or false for no limit */
+        maxBodySize?: number | false;
+        /** per-route shapes */
+        routes?: {
+          /** the routes it applies to */
+          routes?: string[];
+          /** the largest body, bytes */
+          maxBodySize?: number;
+          /** the content types allowed */
+          contentTypes?: string[];
+          /** accept %2F in the path; default false */
+          allowEncodedSlash?: boolean;
+          [key: string]: unknown;
+        }[];
+        /** enforce applies it; dryRun records what it would have done; off skips it */
+        mode?: "enforce" | "dryRun" | "off";
+        [key: string]: unknown;
+      }
+    | false;
+  /** deception (layers.md L8) */
+  deception?: {
+    /** honeypot routes: true for the defaults, false, or settings */
+    honeypots?:
+      | boolean
+      | {
+          /** the paths */
+          paths?: string[];
+          /** how a hit is answered */
+          answer?: "pass" | "not-found";
+          /** enforce applies it; dryRun records what it would have done; off skips it */
+          mode?: "enforce" | "dryRun" | "off";
+          [key: string]: unknown;
+        };
+    /** canary credentials, keyed by `id` */
+    canaries?: {
+      /** its id */
+      id?: string;
+      /** a user id (keyed on save) */
+      user?: string;
+      /** an API key id (keyed on save) */
+      apiKey?: string;
+      /** a user's key, 32 hex */
+      userHash?: string;
+      /** an API key's key, 32 hex */
+      apiKeyHash?: string;
+      [key: string]: unknown;
+    }[];
+    [key: string]: unknown;
+  };
+  /** request rules (layers.md L7) */
+  requestRules?: {
+    /** the rules, keyed by `id` */
+    rules?: {
+      /** a stable id, unique in its list: letters, digits, _, . and -, starting with a letter or digit, at most 64 */
+      id?: string;
+      /** the condition: a matcher, or all / any / not of conditions (layers.md L7; checked by the validator) */
+      when?: Record<string, unknown>;
+      /** what a match does (block, challenge, tag, log, ban, drop, delay) */
+      action?: string;
+      /** the offence weight a match adds */
+      weight?: number;
+      /** enforce applies it; dryRun records what it would have done; off skips it */
+      mode?: "enforce" | "dryRun" | "off";
+      /** the refusal's status */
+      status?: number;
+      /** the refusal's problem code */
+      code?: string;
+      /** a ban's length, or null until lifted */
+      duration?:
+        | string
+        | {
+            ms?: number;
+            seconds?: number;
+            minutes?: number;
+            hours?: number;
+            days?: number;
+            weeks?: number;
+          }
+        | null;
+      /** whether a verified crawler is held to it */
+      crawlers?: "apply" | "skip";
+      /** lower scopes cannot override or disable it; default false */
+      locked?: boolean;
+      [key: string]: unknown;
+    }[];
+    /** the managed probe set: true, false, or settings */
+    managed?:
+      | boolean
+      | {
+          /** its mode */
+          mode?: "enforce" | "dryRun";
+          /** rules left out */
+          exclude?: string[];
+          /** the offence weight a hit adds */
+          weight?: number;
+          [key: string]: unknown;
+        };
+    /** the most characters a regex reads */
+    maxRegexInput?: number;
+    [key: string]: unknown;
+  };
+  /** where counters live (topologies.md §3.2) */
+  state?: {
+    /** the default for limits */
+    mode?: "local" | "shared" | "hybrid";
+    /** the default when the shared store fails */
+    onStoreError?: "local" | "open" | "closed";
+    /** the processes sharing the limits, for local shares */
+    nodes?: number;
+    /** whose counters a store holds */
+    scope?: "shared" | "service";
+    [key: string]: unknown;
+  };
+  /** WebSocket message limits (layers.md L1) */
+  messages?: {
+    /** messages per connection, or false for none */
+    perConnection?:
+      | {
+          /** messages per window */
+          limit?: number;
+          /** a duration with its unit written: "30s", "1h 30m", or { minutes: 1, seconds: 30 } */
+          window?:
+            | string
+            | {
+                ms?: number;
+                seconds?: number;
+                minutes?: number;
+                hours?: number;
+                days?: number;
+                weeks?: number;
+              };
+          /** accept a window under one second */
+          subSecond?: boolean;
+          [key: string]: unknown;
+        }
+      | false;
+    /** messages allowed in a burst */
+    burst?: number;
+    /** how long over the limit before closing */
+    breach?:
+      | string
+      | {
+          ms?: number;
+          seconds?: number;
+          minutes?: number;
+          hours?: number;
+          days?: number;
+          weeks?: number;
+        };
+    /** the close code */
+    closeCode?: number;
+    /** message limits, as rate limits */
+    limits?: {
+      /** a stable id, unique in its list: letters, digits, _, . and -, starting with a letter or digit, at most 64 */
+      id?: string;
+      /** requests allowed per window (required in the effective policy) */
+      limit?: number;
+      /** the window (required in the effective policy) */
+      window?:
+        | string
+        | {
+            ms?: number;
+            seconds?: number;
+            minutes?: number;
+            hours?: number;
+            days?: number;
+            weeks?: number;
+          };
+      /** accept a window under one second; default false */
+      subSecond?: boolean;
+      /** who a request counts against: one part, or several for a composite key; default "ip" */
+      key?:
+        | "ip"
+        | "user"
+        | "session"
+        | "tenant"
+        | "apiKey"
+        | "route"
+        | "username"
+        | "destination"
+        | "destinationPrefix"
+        | "device"
+        | "crawler"
+        | (
+            | "ip"
+            | "user"
+            | "session"
+            | "tenant"
+            | "apiKey"
+            | "route"
+            | "username"
+            | "destination"
+            | "destinationPrefix"
+            | "device"
+            | "crawler"
+          )[];
+      /** the routes it applies to; every request when absent */
+      routes?: string[];
+      /** how it counts; default "sliding-window" */
+      algorithm?: "sliding-window" | "fixed-window" | "gcra";
+      /** what one request costs; default 1 */
+      cost?: number;
+      /** enforce applies it; dryRun records what it would have done; off skips it */
+      mode?: "enforce" | "dryRun" | "off";
+      /** lower scopes cannot override or disable it; default false */
+      locked?: boolean;
+      /** applies to a verified sibling service exempt from global limits; default false */
+      appliesToServices?: boolean;
+      /** still counts a request an allow entry let through; default false */
+      evenWhenAllowed?: boolean;
+      /** the 429 body's problem code; default "rate_limited" */
+      code?: string;
+      /** where it counts; default the policy's state.mode */
+      state?: "local" | "shared" | "hybrid";
+      /** what it does when the shared store fails; default the policy's state.onStoreError */
+      onStoreError?: "local" | "open" | "closed";
+      /** only requests of routes with this profile count (`securityProfile()`); every route when absent */
+      profile?: string;
+      /** only requests whose API key is on this plan count; every request when absent */
+      apiKeyPlan?: string;
+      [key: string]: unknown;
+    }[];
+    /** enforce applies it; dryRun records what it would have done; off skips it */
+    mode?: "enforce" | "dryRun" | "off";
+    [key: string]: unknown;
+  };
+  /** bot signals (layers.md L10) */
+  botSignals?: {
+    /** its mode */
+    mode?: "enforce" | "dryRun";
+    /** each signal's weight */
+    weights?: Record<string, number>;
+    /** the score that challenges */
+    challengeAt?: number;
+    /** paths only browsers load */
+    browserPaths?: string[];
+    /** an intel class's weight, 0 to 100 */
+    classes?: Record<string, number>;
+  };
+  /** the verified-crawler allowance (layers.md L3.2) */
+  crawlers?: {
+    /** enforce applies it; dryRun records what it would have done; off skips it */
+    mode?: "enforce" | "dryRun" | "off";
+    /** the crawlers allowed */
+    allow?: string[];
+    /** how a claimant is verified */
+    verify?: "ranges" | "rdns" | "ranges-then-rdns";
+    /** the methods covered */
+    methods?: ("GET" | "HEAD" | "OPTIONS")[];
+    /** the paths covered */
+    paths?: {
+      /** paths covered; every path when absent */
+      include?: string[];
+      /** paths left out */
+      exclude?: string[];
+    };
+    /** what a verified crawler is exempt from */
+    exempt?: (
+      | "notFound"
+      | "probeRules"
+      | "honeypots"
+      | "botSignals"
+      | "challenges"
+      | "hostingClass"
+      | "geo"
+      | "perIpLimits"
+      | "autoBans"
+    )[];
+    /** each verified crawler's own limit, "<count>/<window>" ("3000/1m"), or false */
+    limit?: string | false;
+    /** what a spoofed claimant gets */
+    spoofed?: {
+      /** default "block" */
+      action?: "log" | "block" | "challenge" | "drop";
+      /** its offence weight; default 5 */
+      weight?: number;
+    };
+    /** crawlers of the policy's own, keyed by `id` */
+    custom?: {
+      /** its id */
+      id?: string;
+      /** its tokens */
+      tokens?: string[];
+      /** its range file's URL */
+      ranges?: string;
+      /** its domains */
+      rdns?: string[];
+    }[];
+  };
+  /** API-key anomalies (layers.md L12) */
+  apiKeys?: {
+    /** a key used from a new autonomous system */
+    newAsn?:
+      | boolean
+      | {
+          /** enforce applies it; dryRun records what it would have done; off skips it */
+          mode?: "enforce" | "dryRun" | "off";
+          /** what it does */
+          action?: string;
+          /** a duration with its unit written: "30s", "1h 30m", or { minutes: 1, seconds: 30 } */
+          duration?:
+            | string
+            | {
+                ms?: number;
+                seconds?: number;
+                minutes?: number;
+                hours?: number;
+                days?: number;
+                weeks?: number;
+              };
+          /** a duration with its unit written: "30s", "1h 30m", or { minutes: 1, seconds: 30 } */
+          remember?:
+            | string
+            | {
+                ms?: number;
+                seconds?: number;
+                minutes?: number;
+                hours?: number;
+                days?: number;
+                weeks?: number;
+              };
+        };
+    /** a key used from many addresses */
+    manyAddresses?:
+      | boolean
+      | {
+          /** enforce applies it; dryRun records what it would have done; off skips it */
+          mode?: "enforce" | "dryRun" | "off";
+          /** what it does */
+          action?: string;
+          /** a duration with its unit written: "30s", "1h 30m", or { minutes: 1, seconds: 30 } */
+          duration?:
+            | string
+            | {
+                ms?: number;
+                seconds?: number;
+                minutes?: number;
+                hours?: number;
+                days?: number;
+                weeks?: number;
+              };
+          /** addresses */
+          limit?: number;
+          /** a duration with its unit written: "30s", "1h 30m", or { minutes: 1, seconds: 30 } */
+          window?:
+            | string
+            | {
+                ms?: number;
+                seconds?: number;
+                minutes?: number;
+                hours?: number;
+                days?: number;
+                weeks?: number;
+              };
+        };
+  };
+  /** presets switched: true (as it ships), "enforce", or false (off) */
+  presets?: Record<string, unknown>;
+  /** the sensitive endpoints' profiles (layers.md L11) */
+  profiles?: {
+    /** the login profile's account defences */
+    login?:
+      | {
+          /** failures per attempted username */
+          failures?: {
+            /** a duration with its unit written: "30s", "1h 30m", or { minutes: 1, seconds: 30 } */
+            window?:
+              | string
+              | {
+                  ms?: number;
+                  seconds?: number;
+                  minutes?: number;
+                  hours?: number;
+                  days?: number;
+                  weeks?: number;
+                };
+            /** failures before the delay */
+            delayAfter?: number;
+            /** failures before the challenge */
+            challengeAfter?: number;
+            /** failures before the soft lock */
+            lockAfter?: number;
+            /** a duration with its unit written: "30s", "1h 30m", or { minutes: 1, seconds: 30 } */
+            lockFor?:
+              | string
+              | {
+                  ms?: number;
+                  seconds?: number;
+                  minutes?: number;
+                  hours?: number;
+                  days?: number;
+                  weeks?: number;
+                };
+            /** a duration with its unit written: "30s", "1h 30m", or { minutes: 1, seconds: 30 } */
+            maxDelay?:
+              | string
+              | {
+                  ms?: number;
+                  seconds?: number;
+                  minutes?: number;
+                  hours?: number;
+                  days?: number;
+                  weeks?: number;
+                };
+            [key: string]: unknown;
+          };
+          /** distinct usernames failing from one address */
+          distinctUsernames?:
+            | {
+                /** a duration with its unit written: "30s", "1h 30m", or { minutes: 1, seconds: 30 } */
+                window?:
+                  | string
+                  | {
+                      ms?: number;
+                      seconds?: number;
+                      minutes?: number;
+                      hours?: number;
+                      days?: number;
+                      weeks?: number;
+                    };
+                /** default 10 */
+                challengeAt?: number;
+                /** default 30 */
+                banAt?: number;
+                /** a duration with its unit written: "30s", "1h 30m", or { minutes: 1, seconds: 30 } */
+                banFor?:
+                  | string
+                  | {
+                      ms?: number;
+                      seconds?: number;
+                      minutes?: number;
+                      hours?: number;
+                      days?: number;
+                      weeks?: number;
+                    };
+                [key: string]: unknown;
+              }
+            | false;
+          /** distinct addresses failing for one username */
+          distinctAddresses?:
+            | {
+                /** a duration with its unit written: "30s", "1h 30m", or { minutes: 1, seconds: 30 } */
+                window?:
+                  | string
+                  | {
+                      ms?: number;
+                      seconds?: number;
+                      minutes?: number;
+                      hours?: number;
+                      days?: number;
+                      weeks?: number;
+                    };
+                /** default 10 */
+                stepUpAt?: number;
+                [key: string]: unknown;
+              }
+            | false;
+          /** failures before a success is risky; false for none */
+          riskySuccessAfter?: number | false;
+          /** the device cookie */
+          device?:
+            | {
+                /** its name */
+                cookie?: string;
+                /** a duration with its unit written: "30s", "1h 30m", or { minutes: 1, seconds: 30 } */
+                maxAge?:
+                  | string
+                  | {
+                      ms?: number;
+                      seconds?: number;
+                      minutes?: number;
+                      hours?: number;
+                      days?: number;
+                      weeks?: number;
+                    };
+                [key: string]: unknown;
+              }
+            | false;
+          /** infer the outcome from the status */
+          inferOutcome?: boolean;
+          /** enforce applies it; dryRun records what it would have done; off skips it */
+          mode?: "enforce" | "dryRun" | "off";
+          /** the global failure-rate response */
+          failureRate?: {
+            /** a duration with its unit written: "30s", "1h 30m", or { minutes: 1, seconds: 30 } */
+            window?:
+              | string
+              | {
+                  ms?: number;
+                  seconds?: number;
+                  minutes?: number;
+                  hours?: number;
+                  days?: number;
+                  weeks?: number;
+                };
+            /** a duration with its unit written: "30s", "1h 30m", or { minutes: 1, seconds: 30 } */
+            baseline?:
+              | string
+              | {
+                  ms?: number;
+                  seconds?: number;
+                  minutes?: number;
+                  hours?: number;
+                  days?: number;
+                  weeks?: number;
+                };
+            /** times the baseline */
+            factor?: number;
+            /** failures before it can trip */
+            minFailures?: number;
+            /** a duration with its unit written: "30s", "1h 30m", or { minutes: 1, seconds: 30 } */
+            hold?:
+              | string
+              | {
+                  ms?: number;
+                  seconds?: number;
+                  minutes?: number;
+                  hours?: number;
+                  days?: number;
+                  weeks?: number;
+                };
+            /** what it does */
+            respond?: "challenge" | "tag" | "limit";
+            /** who it applies to */
+            to?: ("hosting" | "newDevice" | "all")[];
+            /** its limit */
+            limit?: {
+              /** attempts */
+              attempts?: number;
+              /** a duration with its unit written: "30s", "1h 30m", or { minutes: 1, seconds: 30 } */
+              window?:
+                | string
+                | {
+                    ms?: number;
+                    seconds?: number;
+                    minutes?: number;
+                    hours?: number;
+                    days?: number;
+                    weeks?: number;
+                  };
+              /** keyed by */
+              by?: "asn" | "hosting";
+              [key: string]: unknown;
+            };
+            [key: string]: unknown;
+          };
+          [key: string]: unknown;
+        }
+      | false;
+    [key: string]: unknown;
+  };
+  /** identifier checks (layers.md L11.7) */
+  identifiers?: {
+    /** the patterns, keyed by `id` */
+    patterns?: {
+      /** its id */
+      id?: string;
+      /** what it checks */
+      kind?: "email" | "phone" | "username" | "domain";
+      /** the glob */
+      pattern?: string;
+      /** why */
+      reason?: string;
+      /** enforce applies it; dryRun records what it would have done; off skips it */
+      mode?: "enforce" | "dryRun" | "off";
+      [key: string]: unknown;
+    }[];
+    /** refuse reserved names */
+    reserved?: boolean;
+    /** the service's own domains */
+    ownDomains?: string[];
+    /** the refusal's problem code */
+    code?: string;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
 
 export interface Routes {
   "GET /agent/artefacts/:sha256": {
@@ -192,6 +1162,15 @@ export interface Routes {
                 attemptedAt: number | null;
                 error?: string;
               }[];
+            };
+            crawlers?: {
+              conflicts: {
+                crawler: string;
+                entry?: string;
+                ban?: string;
+                range: string;
+              }[];
+              total: number;
             };
             warnings?: {
               kind: string;
@@ -397,6 +1376,15 @@ export interface Routes {
                 attemptedAt: number | null;
                 error?: string;
               }[];
+            };
+            crawlers?: {
+              conflicts: {
+                crawler: string;
+                entry?: string;
+                ban?: string;
+                range: string;
+              }[];
+              total: number;
             };
             warnings?: {
               kind: string;
@@ -669,6 +1657,15 @@ export interface Routes {
               error?: string;
             }[];
           };
+          crawlers?: {
+            conflicts: {
+              crawler: string;
+              entry?: string;
+              ban?: string;
+              range: string;
+            }[];
+            total: number;
+          };
           warnings?: {
             kind: string;
             since: number;
@@ -904,6 +1901,15 @@ export interface Routes {
               attemptedAt: number | null;
               error?: string;
             }[];
+          };
+          crawlers?: {
+            conflicts: {
+              crawler: string;
+              entry?: string;
+              ban?: string;
+              range: string;
+            }[];
+            total: number;
           };
           warnings?: {
             kind: string;
@@ -1176,6 +2182,15 @@ export interface Routes {
                 attemptedAt: number | null;
                 error?: string;
               }[];
+            };
+            crawlers?: {
+              conflicts: {
+                crawler: string;
+                entry?: string;
+                ban?: string;
+                range: string;
+              }[];
+              total: number;
             };
             warnings?: {
               kind: string;
@@ -3612,7 +4627,7 @@ export interface Routes {
           /** global, group:<id> or service:<id> */
           scope: string;
           severity: "info" | "warning" | "critical";
-          /** what the rule watches: threshold, rate, baseline, banStorm, agentSilent or agentWarning (README §9.3) */
+          /** what the rule watches: threshold, rate, baseline, sustained, banStorm, agentSilent or agentWarning (README §9.3) */
           condition: Record<string, unknown>;
           channels: Schema1[];
           enabled: boolean;
@@ -3780,7 +4795,7 @@ export interface Routes {
         /** global, group:<id> or service:<id> */
         scope: string;
         severity: "info" | "warning" | "critical";
-        /** what the rule watches: threshold, rate, baseline, banStorm, agentSilent or agentWarning (README §9.3) */
+        /** what the rule watches: threshold, rate, baseline, sustained, banStorm, agentSilent or agentWarning (README §9.3) */
         condition: Record<string, unknown>;
         channels: Schema1[];
         enabled: boolean;
@@ -3977,7 +4992,7 @@ export interface Routes {
       /** global, group:<id> or service:<id> */
       scope: string;
       severity: "info" | "warning" | "critical";
-      /** what the rule watches: threshold, rate, baseline, banStorm, agentSilent or agentWarning (README §9.3) */
+      /** what the rule watches: threshold, rate, baseline, sustained, banStorm, agentSilent or agentWarning (README §9.3) */
       condition: Record<string, unknown>;
       channels: string[];
       enabled?: boolean;
@@ -3990,7 +5005,7 @@ export interface Routes {
         /** global, group:<id> or service:<id> */
         scope: string;
         severity: "info" | "warning" | "critical";
-        /** what the rule watches: threshold, rate, baseline, banStorm, agentSilent or agentWarning (README §9.3) */
+        /** what the rule watches: threshold, rate, baseline, sustained, banStorm, agentSilent or agentWarning (README §9.3) */
         condition: Record<string, unknown>;
         channels: Schema1[];
         enabled: boolean;
@@ -4002,7 +5017,7 @@ export interface Routes {
         /** global, group:<id> or service:<id> */
         scope: string;
         severity: "info" | "warning" | "critical";
-        /** what the rule watches: threshold, rate, baseline, banStorm, agentSilent or agentWarning (README §9.3) */
+        /** what the rule watches: threshold, rate, baseline, sustained, banStorm, agentSilent or agentWarning (README §9.3) */
         condition: Record<string, unknown>;
         channels: Schema1[];
         enabled: boolean;
@@ -10943,9 +11958,9 @@ export interface Routes {
         /** letters, digits, _, . and - */
         group: string;
         policyVersions: string[];
-        /** a bun-security policy (a partial one at a scope, layered over the scopes above it) */
-        policy: Record<string, unknown>;
-        origins: Record<string, string>;
+        policy: SecurityPolicy;
+        origins: Record<string, Schema12>;
+        locked: Record<string, Schema12>;
       };
       400: {
         type: string;
@@ -12114,8 +13129,7 @@ export interface Routes {
         /** global, group:<id> or service:<id> */
         scope: string;
         draft: {
-          /** a bun-security policy (a partial one at a scope, layered over the scopes above it) */
-          policy: Record<string, unknown>;
+          policy: SecurityPolicy;
           baseHead: string | null;
           revision: number;
           updatedBy: string;
@@ -12524,14 +13538,12 @@ export interface Routes {
     query: Record<never, never>;
     headers: Record<never, never>;
     body: {
-      /** a bun-security policy (a partial one at a scope, layered over the scopes above it) */
-      policy: Record<string, unknown>;
+      policy: SecurityPolicy;
       revision: number | null;
     };
     responses: {
       200: {
-        /** a bun-security policy (a partial one at a scope, layered over the scopes above it) */
-        policy: Record<string, unknown>;
+        policy: SecurityPolicy;
         baseHead: string | null;
         revision: number;
         updatedBy: string;
@@ -13310,8 +14322,7 @@ export interface Routes {
           scope: Schema12;
           id: string;
           number: number;
-          /** a bun-security policy (a partial one at a scope, layered over the scopes above it) */
-          policy: Record<string, unknown>;
+          policy: SecurityPolicy;
           createdAt: number;
           createdBy: string | null;
           message: string | null;
@@ -13681,8 +14692,7 @@ export interface Routes {
           scope: Schema12;
           id: string;
           number: number;
-          /** a bun-security policy (a partial one at a scope, layered over the scopes above it) */
-          policy: Record<string, unknown>;
+          policy: SecurityPolicy;
           createdAt: number;
           createdBy: string | null;
           message: string | null;
@@ -14052,8 +15062,7 @@ export interface Routes {
           scope: string;
           id: string;
           number: number;
-          /** a bun-security policy (a partial one at a scope, layered over the scopes above it) */
-          policy: Record<string, unknown>;
+          policy: SecurityPolicy;
           createdAt: number;
           createdBy: string | null;
           message: string | null;
@@ -14256,8 +15265,7 @@ export interface Routes {
         scope: string;
         id: string;
         number: number;
-        /** a bun-security policy (a partial one at a scope, layered over the scopes above it) */
-        policy: Record<string, unknown>;
+        policy: SecurityPolicy;
         createdAt: number;
         createdBy: string | null;
         message: string | null;
@@ -17974,9 +18982,9 @@ export interface Routes {
         /** letters, digits, _, . and - */
         service: string;
         policyVersions: string[];
-        /** a bun-security policy (a partial one at a scope, layered over the scopes above it) */
-        policy: Record<string, unknown>;
-        origins: Record<string, string>;
+        policy: SecurityPolicy;
+        origins: Record<string, Schema12>;
+        locked: Record<string, Schema12>;
       };
       400: {
         type: string;
