@@ -9,8 +9,10 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { parseUiConfig, UiConfigError } from "../../../app/jobs/config";
 import {
   applyLayout,
+  clearLayout,
   CONTENT_MAX_WIDTH_PROPERTY,
 } from "../../../app/kit/layout";
+import { expectUndefined } from "../../harness/assert";
 import { JOBS_UI_CONFIG_ELEMENT_ID } from "../../../lib/jobs/browser/config.ts";
 import { act, LOADED, page, setupDom } from "./dom";
 import { uiConfig } from "./fixtures";
@@ -49,6 +51,39 @@ describe("applyLayout", () => {
     expect(root.style.getPropertyValue(CONTENT_MAX_WIDTH_PROPERTY)).toBe(
       "1400px",
     );
+  });
+});
+
+describe("applyLayout on a mount element (embedding.md §6)", () => {
+  it("sets the same attributes on the element, none on <html>", () => {
+    const element = document.createElement("div");
+    applyLayout({ align: "left", scope: "content", maxWidth: 960 }, element);
+    expect(element.dataset.align).toBe("left");
+    expect(element.style.getPropertyValue(CONTENT_MAX_WIDTH_PROPERTY)).toBe(
+      "960px",
+    );
+    expectUndefined(document.documentElement.dataset.align, "<html>'s align");
+  });
+
+  it('takes maxWidth "none": no cap, the host\'s area decides', () => {
+    const element = document.createElement("div");
+    applyLayout({ align: "left", scope: "content", maxWidth: "none" }, element);
+    expect(element.style.getPropertyValue(CONTENT_MAX_WIDTH_PROPERTY)).toBe(
+      "none",
+    );
+  });
+
+  it("clearLayout takes off what it set and leaves the element's own attributes and style", () => {
+    const element = document.createElement("div");
+    element.dataset.host = "kept";
+    element.style.setProperty("--accent", "#123456");
+    applyLayout({ align: "right", scope: "page", maxWidth: 1200 }, element);
+    clearLayout(element);
+    expectUndefined(element.dataset.align, "data-align");
+    expectUndefined(element.dataset.layoutScope, "data-layout-scope");
+    expect(element.style.getPropertyValue(CONTENT_MAX_WIDTH_PROPERTY)).toBe("");
+    expect(element.dataset.host).toBe("kept");
+    expect(element.style.getPropertyValue("--accent")).toBe("#123456");
   });
 });
 

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { NavItem } from "./nav";
 import { Chip } from "../../kit/components/Badge";
+import { FrameBar } from "../../kit/components/FrameBar";
 import { useUiConfig } from "../context";
 import { useMeta } from "../meta/hooks";
 import { Link } from "../router";
@@ -108,44 +109,95 @@ function NavList({
   );
 }
 
+/** The skip link to the main landmark. */
+function SkipLink() {
+  return (
+    <a
+      className="skip-link"
+      href="#main"
+      onClick={(event) => {
+        // Focus the main landmark directly: a fragment navigation would
+        // put `#main` in the app's URL, and not every browser moves focus.
+        const main = document.getElementById("main");
+        if (main) {
+          event.preventDefault();
+          main.focus();
+        }
+      }}
+    >
+      Skip to content
+    </a>
+  );
+}
+
+/** The screen's landmark. */
+function Main({ children }: { children: ReactNode }) {
+  return (
+    <main
+      id="main"
+      className="app-main"
+      tabIndex={-1}
+    >
+      {children}
+    </main>
+  );
+}
+
 /**
- * The app frame: a skip link to the main landmark, the header (banner), the
- * section nav and the screen in `<main>`, plus the keyboard shortcuts (`/`
- * and `?`, see `shortcuts.ts`). Its root carries `data-testid="app-ready"`:
- * it renders only once the bootstrap loaded, and the E2E smoke waits on it.
+ * The app frame, as the config's `chrome` asks (embedding.md §2, §12 item 7).
+ * `"full"`: a skip link to the main landmark, the header (banner), the
+ * section nav and the screen in `<main>`. `"tabs"`: the kit's compact bar,
+ * the top-level sections as tabs and the live status, above the screen.
+ * `"none"`: the screen alone. The keyboard shortcuts (`/` and `?`, see
+ * `shortcuts.ts`) are there in every mode. Its root carries
+ * `data-testid="app-ready"`: it renders only once the bootstrap loaded, and
+ * the E2E smoke waits on it.
  */
 export function Layout({ nav, children }: LayoutProps) {
+  const { chrome } = useUiConfig();
+  if (chrome === "full") {
+    return (
+      <div
+        className="app"
+        data-chrome="full"
+        data-testid="app-ready"
+      >
+        <SkipLink />
+        <Header />
+        <div className="app-body">
+          <Sidebar nav={nav} />
+          <Main>{children}</Main>
+        </div>
+        <KeyboardShortcuts />
+      </div>
+    );
+  }
   return (
     <div
       className="app"
+      data-chrome={chrome}
       data-testid="app-ready"
     >
-      <a
-        className="skip-link"
-        href="#main"
-        onClick={(event) => {
-          // Focus the main landmark directly: a fragment navigation would
-          // put `#main` in the app's URL, and not every browser moves focus.
-          const main = document.getElementById("main");
-          if (main) {
-            event.preventDefault();
-            main.focus();
-          }
-        }}
-      >
-        Skip to content
-      </a>
-      <Header />
-      <div className="app-body">
-        <Sidebar nav={nav} />
-        <main
-          id="main"
-          className="app-main"
-          tabIndex={-1}
-        >
-          {children}
-        </main>
-      </div>
+      {chrome === "tabs" && (
+        <>
+          <SkipLink />
+          <FrameBar
+            tabs={nav.map((item) => (
+              <li key={item.id}>
+                <Link
+                  to={item.to}
+                  activeMatch="prefix"
+                  className="app-tab"
+                >
+                  {item.label}
+                </Link>
+              </li>
+            ))}
+            controls={<LiveStatus />}
+          />
+        </>
+      )}
+      <Main>{children}</Main>
       <KeyboardShortcuts />
     </div>
   );

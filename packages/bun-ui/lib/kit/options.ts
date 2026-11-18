@@ -13,6 +13,8 @@ import type {
   UiLayoutScope,
   UiTheme,
 } from "./browser/shared";
+import type { UiChrome } from "./browser/mount";
+import { DEFAULT_SHELL_CHROME, isUiChrome } from "./browser/mount";
 import { DEFAULT_UI_LAYOUT, MIN_UI_MAX_WIDTH } from "./browser/shared";
 
 /**
@@ -147,6 +149,17 @@ export function resolveLayout(
     scope: scope as UiLayoutScope,
     maxWidth,
   };
+}
+
+/**
+ * Validates the `chrome` option (embedding.md §2): how much of its own frame
+ * the UI draws, `"full"` (the default: its header and side nav), `"tabs"` or
+ * `"none"`.
+ */
+export function resolveChrome(value: unknown, fail: ConfigFail): UiChrome {
+  if (value === undefined) return DEFAULT_SHELL_CHROME;
+  if (isUiChrome(value)) return value;
+  throw fail(`chrome must be "full", "tabs" or "none"`, { value });
 }
 
 /**

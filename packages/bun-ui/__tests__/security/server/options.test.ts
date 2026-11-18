@@ -116,6 +116,7 @@ describe("the config", () => {
       theme: "system",
       layout: { align: "center", scope: "content", maxWidth: 1400 },
       unauthorized: null,
+      chrome: "full",
     });
     expect(Object.isFrozen(config)).toBe(true);
   });

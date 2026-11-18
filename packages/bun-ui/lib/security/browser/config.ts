@@ -4,6 +4,7 @@
  * Published as `@kingsleyweb/bun-ui/security/browser`; no runtime import
  * beyond constants.
  */
+import type { UiChrome } from "../../kit/browser/mount";
 import type { UiLayout, UiTheme } from "../../kit/browser/shared";
 import type { UiUnauthorized } from "../../kit/browser/unauthorized";
 
@@ -40,6 +41,8 @@ export interface SecurityUiConfig {
   theme: UiTheme;
   /** Where the content sits on a wide screen (the `layout` option, checked). */
   layout: UiLayout;
+  /** How much of its own frame the UI draws (the `chrome` option, checked; `"full"` when unset). */
+  chrome: UiChrome;
   /** Where an authorization failure sends the browser, or `null` when off. */
   unauthorized: UiUnauthorized | null;
 }

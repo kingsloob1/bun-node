@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Button } from "../../kit/components/Button";
 import { useUiConfig } from "../context";
 import { applyTheme, initialTheme, nextTheme, storeTheme } from "../theme";
+import { useUiRoot } from "../../kit/frame";
 
 /** Labels of each theme, for the toggle. */
 const THEME_LABELS: Readonly<Record<UiTheme, string>> = {
@@ -14,6 +15,7 @@ const THEME_LABELS: Readonly<Record<UiTheme, string>> = {
 /** Cycles system → light → dark, remembering the choice in `localStorage`. */
 export function ThemeToggle() {
   const config = useUiConfig();
+  const root = useUiRoot();
   const [theme, setTheme] = useState<UiTheme>(() => initialTheme(config.theme));
   const next = nextTheme(theme);
   return (
@@ -26,7 +28,7 @@ export function ThemeToggle() {
       onClick={() => {
         setTheme(next);
         storeTheme(next);
-        applyTheme(next);
+        applyTheme(next, root);
       }}
     >
       <span aria-hidden="true">Theme:</span> {THEME_LABELS[theme]}

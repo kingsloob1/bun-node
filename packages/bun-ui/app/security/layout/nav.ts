@@ -6,48 +6,30 @@
  * reference; later PRs add theirs. Each names the
  * permission it needs on the scope on screen; one the operator lacks is
  * absent from the nav.
+ *
+ * The list itself is the browser contract's `SECURITY_SECTIONS`
+ * (`@kingsleyweb/bun-ui/security/browser`), so a host's side menu and this
+ * nav are one list (embedding.md §2), filtered the same way
+ * ({@link navSections}, the kit's `sectionsFor`).
  */
 import type { SecurityApiPermission } from "@kingsleyweb/bun-security/control/contract";
+import type { SecuritySection } from "../../../lib/security/browser/sections";
+import { sectionsFor } from "../../../lib/kit/browser/sections";
+import { SECURITY_SECTIONS } from "../../../lib/security/browser/sections";
 
 /** A section. */
-export interface Section {
-  /** Its id. */
-  readonly id: string;
-  /** Its label. */
-  readonly label: string;
-  /** Its path under the mount. */
-  readonly path: string;
-  /** What it needs on the scope; `null` for nothing beyond signing in. */
-  readonly needs: SecurityApiPermission | null;
-}
+export type Section = SecuritySection;
 
 /** The built sections, in nav order. */
-export const SECTIONS: readonly Section[] = [
-  { id: "analytics", label: "Analytics", path: "/", needs: "analytics:read" },
-  {
-    id: "services",
-    label: "Services",
-    path: "/services",
-    needs: "services:read",
-  },
-  {
-    id: "policies",
-    label: "Policies",
-    path: "/policies",
-    needs: "policy:read",
-  },
-  { id: "rules", label: "Rules", path: "/rules", needs: "policy:read" },
-  { id: "lists", label: "Lists", path: "/lists", needs: "policy:read" },
-  { id: "bans", label: "Bans", path: "/bans", needs: "bans:read" },
-  { id: "events", label: "Events", path: "/events", needs: "analytics:read" },
-  { id: "audit", label: "Audit", path: "/audit", needs: "audit:read" },
-  {
-    id: "approvals",
-    label: "Approvals",
-    path: "/approvals",
-    needs: "approvals:read",
-  },
-  { id: "agents", label: "Agents", path: "/agents", needs: "agents:read" },
-  { id: "alerts", label: "Alerts", path: "/alerts", needs: "alerts:read" },
-  { id: "api", label: "API reference", path: "/api", needs: null },
-];
+export const SECTIONS: readonly Section[] = SECURITY_SECTIONS;
+
+/** The sections the operator may use on the scope on screen, in nav order. */
+export function navSections(
+  scope: string | null,
+  can: (permission: SecurityApiPermission) => boolean,
+): Section[] {
+  return sectionsFor(
+    SECTIONS,
+    (permission) => scope !== null && can(permission),
+  );
+}

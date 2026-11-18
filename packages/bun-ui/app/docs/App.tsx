@@ -9,6 +9,7 @@ import {
   createUnauthorizedRedirect,
   watchAuthFailures,
 } from "../kit/unauthorized";
+import { DocsTabs } from "./layout/DocsTabs";
 import { DocsViewer } from "./screens/docs/viewer";
 import { findSearchBox, shortcutFor } from "./shortcuts";
 
@@ -44,7 +45,9 @@ function useSearchShortcut() {
  * `config.unauthorized`, a failed document read whose status it lists sends
  * the browser to the sign-in target, once (`unauthorized.ts`). Only the
  * viewer's own queries reach the cache: the try-it panel's calls do not, so
- * the documented API's 401 to a tried request never redirects.
+ * the documented API's 401 to a tried request never redirects. With
+ * `chrome: "tabs"`, the kit's compact bar names the document's section
+ * above it ({@link DocsTabs}).
  */
 export function App({ config, queryClient, fetch }: AppProps) {
   useSearchShortcut();
@@ -61,7 +64,11 @@ export function App({ config, queryClient, fetch }: AppProps) {
       <DocsFetchContext value={fetch ?? null}>
         <QueryClientProvider client={queryClient}>
           <RouterProvider basePath={config.basePath}>
-            <div className="docs-viewer">
+            {config.chrome === "tabs" && <DocsTabs />}
+            <div
+              className="docs-viewer"
+              data-chrome={config.chrome ?? "full"}
+            >
               <DocsViewer />
             </div>
           </RouterProvider>
