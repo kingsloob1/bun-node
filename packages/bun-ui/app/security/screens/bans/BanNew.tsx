@@ -149,24 +149,27 @@ export function BanNew({ scope }: BanNewProps) {
     >
       <h1>New ban on {scopeLabel(scope)}</h1>
       <Field label="Subject">
-        <select
-          className="input"
-          value={field}
-          data-testid="ban-field"
-          onChange={(event) => {
-            setField(event.target.value as SubjectField);
-            setValue("");
-          }}
-        >
-          {(Object.keys(FIELD_LABELS) as SubjectField[]).map((name) => (
-            <option
-              key={name}
-              value={name}
-            >
-              {FIELD_LABELS[name]}
-            </option>
-          ))}
-        </select>
+        {(control) => (
+          <select
+            {...control}
+            className="input"
+            value={field}
+            data-testid="ban-field"
+            onChange={(event) => {
+              setField(event.target.value as SubjectField);
+              setValue("");
+            }}
+          >
+            {(Object.keys(FIELD_LABELS) as SubjectField[]).map((name) => (
+              <option
+                key={name}
+                value={name}
+              >
+                {FIELD_LABELS[name]}
+              </option>
+            ))}
+          </select>
+        )}
       </Field>
       <Field
         label={FIELD_LABELS[field]}
@@ -192,34 +195,40 @@ export function BanNew({ scope }: BanNewProps) {
         </p>
       ) : null}
       <Field label="Action">
-        <select
-          className="input"
-          value={action}
-          data-testid="ban-action"
-          onChange={(e) => setAction(e.target.value as "ban" | "challenge")}
-        >
-          <option value="ban">Ban</option>
-          <option value="challenge">Challenge</option>
-        </select>
+        {(control) => (
+          <select
+            {...control}
+            className="input"
+            value={action}
+            data-testid="ban-action"
+            onChange={(e) => setAction(e.target.value as "ban" | "challenge")}
+          >
+            <option value="ban">Ban</option>
+            <option value="challenge">Challenge</option>
+          </select>
+        )}
       </Field>
       <Field label="How long">
-        <select
-          className="input"
-          value={duration}
-          data-testid="ban-duration"
-          onChange={(e) =>
-            setDuration(e.target.value as (typeof DURATIONS)[number])
-          }
-        >
-          {DURATIONS.map((option) => (
-            <option
-              key={option}
-              value={option}
-            >
-              {option === "permanent" ? "Until lifted" : option}
-            </option>
-          ))}
-        </select>
+        {(control) => (
+          <select
+            {...control}
+            className="input"
+            value={duration}
+            data-testid="ban-duration"
+            onChange={(e) =>
+              setDuration(e.target.value as (typeof DURATIONS)[number])
+            }
+          >
+            {DURATIONS.map((option) => (
+              <option
+                key={option}
+                value={option}
+              >
+                {option === "permanent" ? "Until lifted" : option}
+              </option>
+            ))}
+          </select>
+        )}
       </Field>
       <Field
         label="Reason (operators only)"

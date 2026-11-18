@@ -3,9 +3,15 @@
  * the alerts open now (read-only), the rules, the channels, the delivery
  * log and the dead letters. The channels, log and dead letters are the
  * control plane's own (`global`): their tabs are absent without
- * `alerts:read` there.
+ * `alerts:read` there. A control plane run without alerting (its `alerts`
+ * option unset, every `/alerts/*` route a `404`) says so instead of tabs.
  */
 import type { ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { dataOf } from "../../api/client";
+import { useSecurityClient } from "../../context";
+import { notConfigured } from "../agents/agentQueries";
+import { alertKeys } from "./alertQueries";
 import { Tabs } from "../../../kit/components/Tabs";
 import { useGlobalCanFn } from "../../meta/hooks";
 import { useRouter } from "../../routing";
@@ -55,6 +61,26 @@ export function AlertsScreen({ scope }: AlertsScreenProps) {
     ? (first as TabPath)
     : "";
   const scopeQuery = `scope=${encodeURIComponent(scope)}`;
+  const { client } = useSecurityClient();
+  // The open alerts' read (shared with the Open tab) tells whether alerting runs.
+  const probe = useQuery({
+    queryKey: alertKeys.open(),
+    queryFn: ({ signal }) => dataOf(client.get("/alerts/open", { signal })),
+  });
+  if (probe.isError && notConfigured(probe.error)) {
+    return (
+      <div
+        className="screen"
+        data-testid="alerts"
+      >
+        <h1>Alerts: {scopeLabel(scope)}</h1>
+        <p data-testid="alerts-off">
+          This control plane runs no alerting (its <code>alerts</code> option is
+          not set).
+        </p>
+      </div>
+    );
+  }
   let body: ReactNode;
   if (tab === "rules")
     body =

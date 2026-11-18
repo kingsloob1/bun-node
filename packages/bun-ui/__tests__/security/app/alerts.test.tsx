@@ -337,6 +337,17 @@ describe("permissions", () => {
     expectAbsent(page().queryByTestId("new-alert-rule"), "the new rule link");
   });
 
+  it("a control plane without alerting says so, with no tabs", async () => {
+    renderApp({
+      path: "/alerts",
+      routes: alertsRoutes({ "GET /alerts/open": problem(404, "not_found") }),
+    });
+    expect(
+      (await page().findByTestId("alerts-off", {}, LOADED)).textContent,
+    ).toContain("runs no alerting");
+    expectAbsent(page().queryByRole("tab"), "a tab");
+  });
+
   it("the control: with them, every tab and the new rule link", async () => {
     renderApp({ path: "/alerts/rules", routes: alertsRoutes() });
     await page().findAllByTestId("alert-rule-row", {}, LOADED);

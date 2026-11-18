@@ -66,7 +66,7 @@ export function AlertRuleForm({ scope, id }: AlertRuleFormProps) {
       <div className="screen">
         {back}
         <ErrorView
-          headingLevel={1}
+          headingLevel={2}
           error={rule.error}
           title="The alert rule could not be read"
           onRetry={() => void rule.refetch()}
@@ -205,7 +205,7 @@ function RuleEditor({
   );
   return (
     <>
-      <h1>{rule === null ? "New alert rule" : rule.title}</h1>
+      <h2>{rule === null ? "New alert rule" : rule.title}</h2>
       <form
         className="filters"
         aria-label="Alert rule"

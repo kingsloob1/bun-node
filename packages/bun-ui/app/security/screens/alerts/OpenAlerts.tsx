@@ -3,6 +3,7 @@
  * its rule's condition stops holding), for the rules the operator may
  * read; polled.
  */
+import { Table } from "../../../kit/components/Table";
 import { useQuery } from "@tanstack/react-query";
 import { dataOf } from "../../api/client";
 import { ErrorView } from "../../components/ErrorView";
@@ -42,7 +43,7 @@ export function OpenAlerts({ scope }: { scope: string }) {
       {open.data !== undefined && items.length === 0 ? (
         <p data-testid="alerts-open-none">No alert is open.</p>
       ) : (
-        <table className="table">
+        <Table label="Open alerts">
           <thead>
             <tr>
               <th scope="col">Rule</th>
@@ -68,7 +69,7 @@ export function OpenAlerts({ scope }: { scope: string }) {
               </tr>
             ))}
           </tbody>
-        </table>
+        </Table>
       )}
     </section>
   );

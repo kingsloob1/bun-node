@@ -5,6 +5,7 @@
  * its detail. Beside it, the chain's state and, with `audit:export`, the
  * export (JSON Lines of the filter's time range, behind a step-up).
  */
+import { Table } from "../../../kit/components/Table";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Button } from "../../../kit/components/Button";
@@ -202,9 +203,9 @@ export function AuditScreen({ scope }: AuditScreenProps) {
         />
       ) : (
         <>
-          <table
-            className="table"
-            data-testid="audit-table"
+          <Table
+            label="Audit entries"
+            testId="audit-table"
           >
             <thead>
               <tr>
@@ -235,7 +236,7 @@ export function AuditScreen({ scope }: AuditScreenProps) {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </Table>
           {page.data !== undefined && page.data.items.length === 0 ? (
             <p data-testid="audit-empty">No entry matches.</p>
           ) : null}

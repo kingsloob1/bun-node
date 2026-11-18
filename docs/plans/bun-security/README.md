@@ -2194,6 +2194,23 @@ How it is built:
 - **The effect** compares each service's effective policy as published with the one with the draft in its place (the impact estimate's `effectiveFor`), as `diffPolicies` reports them, after both are shown as a policy read shows them (account ids keyed, or `unkeyed`); a change's path naming an account id that is not a key is redacted as `origins` are. A service whose effective policy does not compile with the draft is listed with the reason and no changes; one whose published policy does not compile is skipped. `policy:read` on the draft's scope; each service needs `policy:read` on it (else skipped, saying so). Services past 200 are counted (`notCompared`), changes past 500 per service too (`more`). It shares the estimates' per-operator budget (the user's decision of 2026-11-18): 6 a minute an operator across the instances, a draft's and an approval's impact estimates (PR-U5's shared `estimate`) and draft effects together; past it a `429` with `Retry-After` (the seconds until the minute ends), which the impact estimate now sends too. The editor shows a `429` as a notice with **Try again**, never retried by itself. The editor shows it under the draft's changes for a group's or global's draft (a service's own draft is its own diff).
 - **Spoofed claimants**: the engine's `crawler.spoofed` hit carries `claimed`, the crawler the request named (in dry run too, where the claimant is let through); the recorder counts `crawlers { crawler: <claimed>, outcome: "spoofed" }` from it, never as that crawler's `request`. A claimant a ban refuses before the spoofed check runs is not counted (no hit). The crawler tab shows the column per crawler and its total; the earlier total from `rules { rule: "crawler.spoofed" }` is gone, so spoofed claimants recorded before this change do not show.
 
+### 17.44 Added with PR-U6, the security UI's e2e and accessibility (approved by the user, 2026-11-18)
+
+| Names | Where |
+|---|---|
+| The kit's `Table` gains `testId` (the `<table>`'s `data-testid`); the security screens' tables are the kit's `Table`: a labelled, keyboard-reachable scroll region with a hidden caption | `app/kit/components/Table.tsx`, `app/security/screens/**` |
+| `ChangesTable` gains `label` (its accessible name; default "Changes") | `app/security/components/ChangesTable.tsx` |
+| `notConfigured(error)` (was `agentsOff`): a `404` on a feature's route (agents, alerts); the Alerts screen says "This control plane runs no alerting" (`data-testid="alerts-off"`) without the `alerts` option | `app/security/screens/agents/agentQueries.ts`, `screens/alerts/AlertsScreen.tsx` |
+| The e2e harness: `startHost(label, { sizes })` (a real `createSecurityApi()` with cookie operators `alice` and `bob`, the host's `/step-up` page, two-person approvals, agents, alerts and a loopback `/hook`; a view per size), `chromePath`, `suiteName`, `DIALOG`, `ok`; the page checks `CHECK_STRUCTURE`, `CHECK_CONTRAST`, `FOCUSED`, `CHECK_WIDTH`, `PLANT` | `__tests__/security/e2e/harness.ts`, `a11yChecks.ts` |
+| `examples/bun-ui/security/`: `01-screens/permissions.ts` (`GATES`, one per row of the guide's table) and `run-all.ts`; the `all:security` script | `examples/bun-ui` |
+
+Decisions taken here:
+
+1. "Publish a policy with a conflict" is the draft another operator saved meanwhile (on the lists form and in the policy editor): said so, read again, and published behind a step-up.
+2. A view per width, since this Chrome has no device-metrics override (`Bun.WebView.resize` fails); a size is set when the view is made.
+3. The focus walk covers the first 30 Tab stops of each screen. A control whose only name would be its placeholder is reported as such: a placeholder is a hint, never the label (the user's rule, 2026-11-18; every text field's placeholder is PR BU-placeholders').
+4. Found and fixed: the tables of the bans, audit, approvals, agents and alerts screens, the rules' lists and test results, and every diff pushed the page sideways at 375 px (an approval's diff at 1440 px too): they scroll inside their own region now, and long code wraps. The alert rule and channel forms had a second `h1` inside the Alerts screen's (now `h2`). The new-ban form's three selects had no label tied to them (now through `Field`). The Alerts screen showed errors on a control plane without alerting (now says so).
+
 ### 17.45 Added with PR-X2, the playground's security demo (approved by the user, 2026-11-18)
 
 §17.44 belongs to another PR.

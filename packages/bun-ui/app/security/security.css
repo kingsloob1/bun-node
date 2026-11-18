@@ -141,3 +141,10 @@
   padding-left: 1.25rem;
   overflow-wrap: anywhere;
 }
+
+/* PR-U6: a long value (a hash, a policy path, JSON) wraps rather than
+   pushing the page sideways. */
+.table code,
+.key-value code {
+  overflow-wrap: anywhere;
+}

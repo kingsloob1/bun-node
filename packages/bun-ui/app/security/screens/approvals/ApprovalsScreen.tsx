@@ -4,6 +4,7 @@
  * expires and where it stands; each opens its detail. Read again every
  * 15 seconds.
  */
+import { Table } from "../../../kit/components/Table";
 import { useQuery } from "@tanstack/react-query";
 import { Badge } from "../../../kit/components/Badge";
 import { dataOf } from "../../api/client";
@@ -57,9 +58,9 @@ export function ApprovalsScreen({ scope }: ApprovalsScreenProps) {
         />
       ) : (
         <>
-          <table
-            className="table"
-            data-testid="approvals-table"
+          <Table
+            label="Approvals"
+            testId="approvals-table"
           >
             <thead>
               <tr>
@@ -97,7 +98,7 @@ export function ApprovalsScreen({ scope }: ApprovalsScreenProps) {
                 );
               })}
             </tbody>
-          </table>
+          </Table>
           {page.data !== undefined && page.data.items.length === 0 ? (
             <p data-testid="approvals-empty">No approval.</p>
           ) : null}

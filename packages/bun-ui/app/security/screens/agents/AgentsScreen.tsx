@@ -6,6 +6,7 @@
  * ban reports dropped). With `agents:write`, **New agent** makes a key for
  * a service, its secret shown once.
  */
+import { Table } from "../../../kit/components/Table";
 import { useQuery } from "@tanstack/react-query";
 import { Badge } from "../../../kit/components/Badge";
 import { dataOf } from "../../api/client";
@@ -16,7 +17,7 @@ import { when } from "../../components/urlParams";
 import { useSecurityClient } from "../../context";
 import { useCan } from "../../meta/hooks";
 import { Link } from "../../router";
-import { agentKeys, agentsOff, STATUS } from "./agentQueries";
+import { agentKeys, notConfigured, STATUS } from "./agentQueries";
 
 /** Props of {@link AgentsScreen}. */
 export interface AgentsScreenProps {
@@ -65,7 +66,7 @@ export function AgentsScreen({ scope }: AgentsScreenProps) {
         ) : null}
       </div>
       {page.isError ? (
-        agentsOff(page.error) ? (
+        notConfigured(page.error) ? (
           <p data-testid="agents-off">
             This control plane serves no agents (its <code>agents</code> option
             is not set).
@@ -79,9 +80,9 @@ export function AgentsScreen({ scope }: AgentsScreenProps) {
         )
       ) : (
         <>
-          <table
-            className="table"
-            data-testid="agents-table"
+          <Table
+            label="Agents"
+            testId="agents-table"
           >
             <thead>
               <tr>
@@ -147,7 +148,7 @@ export function AgentsScreen({ scope }: AgentsScreenProps) {
                 );
               })}
             </tbody>
-          </table>
+          </Table>
           {page.data !== undefined && page.data.items.length === 0 ? (
             <p data-testid="agents-empty">No agent yet.</p>
           ) : null}
