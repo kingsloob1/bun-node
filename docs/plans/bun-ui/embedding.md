@@ -264,6 +264,8 @@ peer), if a host asks.
 | `JOBS_SECTIONS`, `SECURITY_SECTIONS`, `DOCS_SECTIONS` (`{ id, label, path, needs }`), `UiSection`, `sectionsFor(sections, can)` | `/<ui>/browser`, the kit |
 | the stylesheets `/<ui>/mount.css`; the routers' `/mount.js`, `/mount.css`; `jobsUiMountTags()` (and per UI) | `/<ui>/mount`, each `xxxUi()` router |
 | the root attribute `data-bun-ui="<ui>"`, the layer `bun-ui.<ui>`, the portal container `data-bun-ui-portal` (for later) | the DOM |
+| Added in EM-1 (approved by the user, 2026-11-18): `UI_CHROMES`, `DEFAULT_SHELL_CHROME`, `DEFAULT_MOUNT_CHROME`, `DEFAULT_MOUNT_LAYOUT`; `UiChrome`, `MountTheme`, `MountLayout`, `MountLayoutOptions`, `SectionPermission`; `isUiChrome`, `resolveMountTheme`, `resolveMountLayout` | the kit (`lib/kit/browser/`), each `/<ui>/browser` |
+| Added in EM-1 (approved by the user, 2026-11-18): `resolveChrome` (server), `FrameBar`, `clearLayout(root)`, `useUiRoot()` (app) | `lib/kit/options.ts`, `app/kit/` |
 
 ## 12. Decisions (the five recommendations, accepted by the user, 2026-11-18)
 
@@ -280,3 +282,29 @@ peer), if a host asks.
    picture: the host's side menu is the nav), with `"tabs"` one option away.
 5. **History**: recommended the UI pushes history by default and `onNavigate`
    hands it to the host when given.
+
+### Decided while building EM-1 (the user's decisions, 2026-11-18)
+
+6. **A section needing either of two permissions.** `UiSection.needs` is a
+   permission, a list of permissions of which any one is enough, or `null`.
+   Only the jobs UI's Overview uses a list (`metrics.read` or
+   `queues.list`), so its behaviour is unchanged; `sectionsFor` treats a list
+   as "any of".
+7. **What `"tabs"` and `"none"` keep of the header.**
+   - `"tabs"`: a compact bar with the section tabs and the UI's working
+     controls (security: the scope picker, the break-glass badge and live
+     status; jobs: live status). No brand, chips or theme toggle: the host
+     themes the UI through `setTheme`.
+   - `"none"`: no nav and no header. The security UI keeps a thin bar with
+     the scope picker and the break-glass badge, so the operator can change
+     scope and always sees an elevated session; the jobs UI shows the screen
+     alone.
+   - The keyboard shortcuts stay in every mode.
+8. **`DOCS_SECTIONS`** is HTTP API (`/http`) and WebSocket API (`/ws`), each
+   `needs: null`. The viewer shows only the one matching its document;
+   `"full"` stays as it is today (the viewer has no header).
+
+EM-1 also makes `chrome` a kit option like `layout`: `resolveChrome` in
+`lib/kit/options.ts`, taken by every `xxxUi()` (default `"full"`) and carried
+in each UI's config. The `:root` selectors in the kit's CSS stay until EM-2's
+scoped stylesheet build.

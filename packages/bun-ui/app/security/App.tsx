@@ -7,7 +7,7 @@ import type { ComponentType, ReactNode } from "react";
 import { useCanFn } from "./meta/hooks";
 import { LiveProvider } from "./live/LiveProvider";
 import { Layout } from "./layout/Layout";
-import { SECTIONS } from "./layout/nav";
+import { navSections, SECTIONS } from "./layout/nav";
 import { Routes } from "./router";
 import { useLocation } from "./routing";
 import { ScopePermissions } from "./scope/ScopePermissions";
@@ -47,15 +47,13 @@ import { AnalyticsScreen } from "./analytics/AnalyticsScreen";
 function Sections({ scope }: { scope: string | null }) {
   const can = useCanFn();
   const { search } = useLocation();
-  const allowed = (needs: (typeof SECTIONS)[number]["needs"]) =>
-    needs === null || (scope !== null && can(needs));
-  const nav = SECTIONS.filter((section) => allowed(section.needs));
+  const nav = navSections(scope, can);
   const named = new URLSearchParams(search).get(SCOPE_PARAM);
   const query =
     named === null ? "" : `?${SCOPE_PARAM}=${encodeURIComponent(named)}`;
   const guard = (id: string, element: ReactNode) => {
     const section = SECTIONS.find((item) => item.id === id)!;
-    return allowed(section.needs) ? (
+    return nav.includes(section) ? (
       element
     ) : (
       <NoAccess

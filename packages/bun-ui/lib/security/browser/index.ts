@@ -14,3 +14,25 @@ export type {
   UiUnauthorized,
   UiUnauthorizedStatus,
 } from "../../kit/browser/unauthorized";
+export type {
+  HostColorScheme,
+  MountedUi,
+  MountLayout,
+  MountLayoutOptions,
+  MountOptions,
+  MountTheme,
+  UiChrome,
+} from "../../kit/browser/mount";
+export {
+  DEFAULT_MOUNT_CHROME,
+  DEFAULT_MOUNT_LAYOUT,
+  DEFAULT_SHELL_CHROME,
+  isUiChrome,
+  resolveMountLayout,
+  resolveMountTheme,
+  UI_CHROMES,
+} from "../../kit/browser/mount";
+export type { UiSection } from "../../kit/browser/sections";
+export { sectionsFor } from "../../kit/browser/sections";
+export type { SecuritySection, SecuritySectionPermission } from "./sections";
+export { SECURITY_SECTIONS } from "./sections";

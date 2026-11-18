@@ -4,6 +4,7 @@ import type {
   LoggerLike,
   RouterHandler,
 } from "@kingsleyweb/bun-common";
+import type { UiChrome } from "../kit/browser/mount";
 import type { UiLayoutOptions, UiThemeInput } from "../kit/browser/shared";
 import type { DocsUiConfig } from "./browser/config";
 import type { UnauthorizedOptions } from "../kit/browser/unauthorized";
@@ -144,6 +145,14 @@ export interface DocsUiOptions {
    * this option existed.
    */
   layout?: UiLayoutOptions;
+  /**
+   * How much of its own frame the UI draws (the kit's option, embedding.md
+   * §2): `"full"` (the default) its header and side nav; `"tabs"` a compact
+   * bar of its sections and working controls above the screen; `"none"` the
+   * screen alone, for a page whose own menu is the nav. A host that mounts
+   * the UI in its own page passes it to the mount function instead.
+   */
+  chrome?: UiChrome;
   /**
    * Where the bundle comes from. Unset (default): the prebuilt `dist/` when
    * present, else an in-memory `Bun.build` on the first request. `true`:

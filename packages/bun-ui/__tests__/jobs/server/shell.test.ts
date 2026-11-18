@@ -97,6 +97,7 @@ describe("the shell", () => {
       theme: "dark",
       layout: { align: "right", scope: "content", maxWidth: 1200 },
       unauthorized: null,
+      chrome: "full",
     });
     expect(shell.config).toEqual(ui.config);
   });

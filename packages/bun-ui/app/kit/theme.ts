@@ -44,7 +44,8 @@ export function initialTheme(key: string, configured: UiTheme): UiTheme {
 }
 
 /**
- * Applies a theme to the document: `data-theme="light"|"dark"` forces one,
+ * Applies a theme to the UI's root (the document's element in a shell page,
+ * the mount element when mounted): `data-theme="light"|"dark"` forces one,
  * no attribute follows `prefers-color-scheme` (see `styles/tokens.css`).
  */
 export function applyTheme(

@@ -211,6 +211,71 @@ describe("one export of ./docs/embed in a browser bundle", () => {
   });
 });
 
+/**
+ * A host's side menu built from a UI's sections (embedding.md §2): one
+ * export of each `/<ui>/browser` entry, which now also carries the kit's
+ * mount contract (`lib/kit/browser/mount.ts`). Measured (bytes with
+ * `sideEffects`, without): security 956 / 1,136, jobs 599 / 779, docs
+ * 154 / 361. Without the field, the mount contract's frozen `UI_CHROMES`
+ * and the shared default layout stay in.
+ */
+const SECTION_ROWS = [
+  [
+    "security",
+    `import { SECURITY_SECTIONS, sectionsFor } from "${MANIFEST.name}/security/browser";\nexport const sections = sectionsFor(SECURITY_SECTIONS, () => true);\n`,
+    "Analytics",
+    1024,
+  ],
+  [
+    "jobs",
+    `import { JOBS_SECTIONS } from "${MANIFEST.name}/jobs/browser";\nexport const sections = JOBS_SECTIONS;\n`,
+    "Overview",
+    700,
+  ],
+  [
+    "docs",
+    `import { DOCS_SECTIONS } from "${MANIFEST.name}/docs/browser";\nexport const sections = DOCS_SECTIONS;\n`,
+    "WebSocket API",
+    256,
+  ],
+] as const;
+
+/** Text from modules a sections-only app does not need: `UI_CHROMES`'s `"tabs"`, the default layout's `"center"`. */
+const UNRELATED_TO_SECTIONS = ['"tabs"', '"center"'];
+
+/** What is wrong with a sections-only app's JavaScript; empty when nothing is. */
+function sectionProblems(js: string, bound: number): string[] {
+  const found: string[] = [];
+  if (js.length > bound) found.push(`${js.length} bytes, over ${bound}`);
+  for (const text of UNRELATED_TO_SECTIONS) {
+    if (js.includes(text)) found.push(`contains ${text}`);
+  }
+  return found;
+}
+
+describe("one UI's sections in a browser bundle (a host's side menu)", () => {
+  for (const [ui, app, label, bound] of SECTION_ROWS) {
+    it(`${ui}: weighs the list, not the mount contract`, async () => {
+      const { js } = await bundle(WORK, app);
+      expect(sectionProblems(js, bound)).toEqual([]);
+      expect(js).toContain(label);
+    });
+
+    it(`${ui}: the same from a copy of the package as published`, async () => {
+      const { js } = await bundle(copyPackage(MANIFEST.sideEffects).app, app);
+      expect(sectionProblems(js, bound)).toEqual([]);
+    });
+
+    it(`${ui}: negative control: without sideEffects the check fails`, async () => {
+      const { js } = await bundle(copyPackage(undefined).app, app);
+      expect(sectionProblems(js, bound)).toEqual([
+        expect.stringMatching(/bytes, over/),
+        ...UNRELATED_TO_SECTIONS.map((text) => `contains ${text}`),
+      ]);
+    });
+  }
+});
+
 describe("the listed effects survive tree shaking", () => {
   it("a screen brings its stylesheets", async () => {
     const http = await bundle(

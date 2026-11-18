@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Button } from "../../kit/components/Button";
 import { useUiConfig } from "../context";
 import { applyTheme, initialTheme, nextTheme, storeTheme } from "../theme";
+import { useUiRoot } from "../../kit/frame";
 
 /** The themes' labels. */
 const LABELS: Readonly<Record<UiTheme, string>> = {
@@ -15,6 +16,7 @@ const LABELS: Readonly<Record<UiTheme, string>> = {
 /** See the module's description. */
 export function ThemeToggle() {
   const config = useUiConfig();
+  const root = useUiRoot();
   const [theme, setTheme] = useState<UiTheme>(() => initialTheme(config.theme));
   const next = nextTheme(theme);
   return (
@@ -26,7 +28,7 @@ export function ThemeToggle() {
       onClick={() => {
         setTheme(next);
         storeTheme(next);
-        applyTheme(next);
+        applyTheme(next, root);
       }}
     >
       <span aria-hidden="true">Theme:</span> {LABELS[theme]}

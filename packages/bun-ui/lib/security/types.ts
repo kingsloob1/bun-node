@@ -6,6 +6,7 @@ import type {
   RouterHandler,
 } from "@kingsleyweb/bun-common";
 import type { SecurityApi } from "@kingsleyweb/bun-security/control";
+import type { UiChrome } from "../kit/browser/mount";
 import type { UiLayoutOptions, UiThemeInput } from "../kit/browser/shared";
 import type { UnauthorizedOptions } from "../kit/browser/unauthorized";
 import type { UiAuthorizeContext } from "../kit/serve";
@@ -46,6 +47,14 @@ export interface SecurityUiBaseOptions {
   theme?: UiThemeInput;
   /** Where the content sits on a wide screen (the kit's option). */
   layout?: UiLayoutOptions;
+  /**
+   * How much of its own frame the UI draws (the kit's option, embedding.md
+   * §2): `"full"` (the default) its header and side nav; `"tabs"` a compact
+   * bar of its sections and working controls above the screen; `"none"` the
+   * screen alone, for a page whose own menu is the nav. A host that mounts
+   * the UI in its own page passes it to the mount function instead.
+   */
+  chrome?: UiChrome;
   /** Where the bundle comes from: unset, `dist/` when present else built in memory; `true` always build; `false` require `dist/`. */
   dev?: boolean;
   /** Logger, or anything `resolveLogger` accepts. */

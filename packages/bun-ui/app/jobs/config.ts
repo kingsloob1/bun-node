@@ -1,4 +1,8 @@
 import type { JobsUiConfig } from "../../lib/jobs/browser/config.ts";
+import {
+  DEFAULT_SHELL_CHROME,
+  isUiChrome,
+} from "../../lib/kit/browser/mount.ts";
 import { DEFAULT_UI_LAYOUT, isUiLayout } from "../../lib/kit/browser/shared.ts";
 import { isUiUnauthorized } from "../../lib/kit/browser/unauthorized";
 import { JOBS_UI_CONFIG_ELEMENT_ID } from "../../lib/jobs/browser/config.ts";
@@ -57,13 +61,22 @@ export function parseUiConfig(value: unknown): JobsUiConfig {
       `The UI configuration's "layout" must be { align, scope, maxWidth }.`,
     );
   }
+  // Missing in a shell from before the option, or a mirrored config without
+  // it (bun-common's self-hosted docs viewer): the shell's frame.
+  const chrome =
+    value.chrome === undefined ? DEFAULT_SHELL_CHROME : value.chrome;
+  if (!isUiChrome(chrome)) {
+    throw new UiConfigError(
+      `The UI configuration's "chrome" must be "full", "tabs" or "none".`,
+    );
+  }
   const unauthorized = value.unauthorized ?? null;
   if (unauthorized !== null && !isUiUnauthorized(unauthorized)) {
     throw new UiConfigError(
       `The UI configuration's "unauthorized" must be null or { redirectTo, returnParam, statuses }.`,
     );
   }
-  return { ...value, layout, unauthorized } as unknown as JobsUiConfig;
+  return { ...value, layout, chrome, unauthorized } as unknown as JobsUiConfig;
 }
 
 /** Reads the {@link JobsUiConfig} the server inlined as `<script type="application/json" id="bun-jobs-ui-config">`. */

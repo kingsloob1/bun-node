@@ -34,6 +34,7 @@ UI never loads another's code or bundle.
 - [Authorization and sign-in redirects](#authorization-and-sign-in-redirects)
 - [Colour themes](#colour-themes)
 - [Layout](#layout)
+- [Frame and sections](#frame-and-sections)
 - [What a UI serves](#what-a-ui-serves)
 - [Tree-shaking](#tree-shaking)
 - [Troubleshooting](#troubleshooting)
@@ -90,6 +91,7 @@ option when called and throws bun-jobs' `ConfigError` for anything unusable.
 | `middleware` | `[]` | Handlers run before `authorize` on the requests the UI answers. |
 | `theme` | `"system"` | `"system"`, `"light"` or `"dark"`, or `{ mode?, light?, dark? }` to set your own colours too ([Colour themes](#colour-themes)). |
 | `layout` | centred, 1400px | `{ align?, scope?, maxWidth? }`: where the content sits on a wide screen ([Layout](#layout)). |
+| `chrome` | `"full"` | `"full"`, `"tabs"` or `"none"`: how much of its own frame the UI draws ([Frame and sections](#frame-and-sections)). |
 | `dev` | unset | Unset or `false`: serve the prebuilt `dist/jobs/` (`false` throws without it). `true` rebuilds from the app's source, which the published package does not ship for `/jobs`: leave it unset. |
 | `logger` | console | Any `LoggerLike` bun-common's `resolveLogger` accepts. |
 
@@ -138,6 +140,7 @@ bun-common's `ConfigError` for an unusable option. Every URL under
 | `title` | `"API docs"` | Page title. |
 | `theme` | `"system"` | `"system"`, `"light"` or `"dark"`, or `{ mode?, light?, dark? }` to set your own colours too ([Colour themes](#colour-themes)). |
 | `layout` | centred, 1400px | `{ align?, scope?, maxWidth? }`: where the content sits on a wide screen ([Layout](#layout)). |
+| `chrome` | `"full"` | `"tabs"` names the document's section in a compact bar; `"full"` and `"none"` draw no frame ([Frame and sections](#frame-and-sections)). |
 | `extensions` | `["x-bun-common", "x-bun-jobs"]` | Specification-extension prefixes the viewer reads, first hit winning (`DEFAULT_EXTENSION_PREFIXES`). |
 | `csrfHeader` | none | A header the try-it panel adds on every mutation, or `false`. |
 | `authorize` | none | Guards the shell, the bundle and a thunk's document (not the documented API). Same shape and fail-closed rules as `jobsUi()`'s. |
@@ -208,9 +211,18 @@ reading the injected config) may import them:
 - **`@kingsleyweb/bun-ui/jobs/browser`**: `JobsUiConfig`, `JobsUiSections`,
   `UiTheme` and `JOBS_UI_CONFIG_ELEMENT_ID` (`"bun-jobs-ui-config"`, the id
   of the `<script type="application/json">` the shell inlines the config
-  in).
+  in), and `JOBS_SECTIONS`.
+- **`@kingsleyweb/bun-ui/security/browser`**: `SecurityUiConfig`,
+  `SECURITY_UI_CONFIG_ELEMENT_ID` and `SECURITY_SECTIONS`.
+- **Every `/<ui>/browser` entry** also carries the kit's frame and mount
+  contract: `UiSection` and `sectionsFor` ([Frame and
+  sections](#frame-and-sections)); `UiChrome`, `UI_CHROMES`,
+  `isUiChrome`, `MountOptions`, `MountedUi`, `MountTheme`, `MountLayout`
+  and their defaults and resolvers, which the mount functions of a later
+  release take.
 - **`@kingsleyweb/bun-ui/docs/browser`**: `DocsUiConfig`, `DocsUiTheme`,
-  `DOCS_UI_CONFIG_ELEMENT_ID`, `DEFAULT_EXTENSION_PREFIXES`, and the
+  `DOCS_UI_CONFIG_ELEMENT_ID`, `DEFAULT_EXTENSION_PREFIXES`, `DOCS_SECTIONS`,
+  and the
   redirect helpers: `unauthorizedRedirectUrl(redirect, returnPath)` (the
   target with the return parameter set), `relativeReturnPath(location)`
   (a location made safe to hand back: always starting with exactly one `/`)
@@ -322,6 +334,56 @@ docsUi({ document: "/api/openapi.json", layout: { align: "left", maxWidth: 1200 
 - **The CSP is unchanged.** The page applies it from its config before the
   first render (two attributes on `<html>` and one custom property); no
   inline style is served.
+
+## Frame and sections
+
+`chrome` decides how much of its own frame a UI draws. Every UI takes it,
+like `layout`:
+
+```ts
+jobsUi({ api });                      // "full", the default: header and side nav
+securityUi({ api, chrome: "tabs" });  // a compact bar of the sections above the screen
+jobsUi({ api, chrome: "none" });      // the screen alone: the page's own menu is the nav
+```
+
+- **`"full"`** is the frame as before: the header (brand, chips, live
+  status, theme toggle) and the side nav.
+- **`"tabs"`** draws one compact bar: the sections the caller may use, as
+  tabs, and the UI's working controls (the security UI's scope picker,
+  break-glass badge and live status; the jobs UI's live status). No brand,
+  chips or theme toggle. The jobs UI's API docs is one tab; its HTTP and
+  WebSocket pages are reached from it. The docs viewer's bar names the one
+  section matching its document.
+- **`"none"`** draws no nav and no header. The security UI keeps a thin bar
+  with the scope picker and the break-glass badge, so the operator can
+  change scope and always sees an elevated session; the jobs UI and the docs
+  viewer show the screen alone.
+- **The keyboard shortcuts** work in every mode.
+- **Checked when the UI is created**: anything else throws the UI's
+  `ConfigError`. The CSP is unchanged.
+
+**The sections are data**, from each UI's browser entry, so a page's own
+side menu lists what the UI's nav lists:
+
+```ts
+import { JOBS_SECTIONS, sectionsFor } from "@kingsleyweb/bun-ui/jobs/browser";
+
+// { id, label, path, needs }: `path` is under the UI's basePath.
+const menu = sectionsFor(JOBS_SECTIONS, (action) => permissions.actions[action] === true);
+```
+
+- `JOBS_SECTIONS`, `SECURITY_SECTIONS` and `DOCS_SECTIONS`, each
+  `{ id, label, path, needs }`, in the UI's nav order.
+- `needs` is the permission the section needs (a bun-jobs action, a
+  bun-security permission), a list of which any one is enough (the jobs
+  UI's Overview: `metrics.read` or `queues.list`), or `null`.
+- `sectionsFor(sections, can)` keeps those needing nothing and those whose
+  permission `can` grants, the filter the UI's own nav applies. The jobs UI
+  then also leaves out a section its API does not serve (its mode and
+  features, the `sections` option), so a menu built from permissions alone
+  may link to a page the UI answers with its not-found screen.
+- The docs viewer's two sections need nothing; it shows only the one
+  matching its document.
 
 ## What a UI serves
 
