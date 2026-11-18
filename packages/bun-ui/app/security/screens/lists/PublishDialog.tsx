@@ -7,10 +7,15 @@
  * name, which the dialog then asks for; under approvals the answer is a
  * `202` with the approval opened, which the screen shows. The impact
  * estimate (`POST /policies/:scope/impact`) is offered first to an
- * operator with `rules:test`.
+ * operator with `rules:test`. With `rollbackTo`, the same dialog rolls the
+ * scope back to an earlier version instead (`POST /policies/:scope/rollback`,
+ * a new publish of that version's content, under the same rules). A screen
+ * can add a `notice` above the message (the crawler conflicts the agents
+ * report).
  */
 import type { Routes } from "../../api/routes.gen";
 import { useMutation } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import { useState } from "react";
 import { Button } from "../../../kit/components/Button";
 import { ConfirmDialog } from "../../../kit/components/ConfirmDialog";
@@ -54,6 +59,10 @@ export interface PublishDialogProps {
   onPublished: (outcome: PublishOutcome) => void;
   /** Called when another publish (or draft save) went first: a `409`. */
   onConflict: () => void;
+  /** Shown above the message: what the screen wants read before publishing. */
+  notice?: ReactNode;
+  /** Roll back to this version instead of publishing the draft. */
+  rollbackTo?: { readonly id: string; readonly number: number };
 }
 
 /** See the module's description. */
@@ -100,6 +109,8 @@ function OpenPublishDialog({
   canEstimate,
   onPublished,
   onConflict,
+  notice,
+  rollbackTo,
 }: PublishDialogProps) {
   const { client } = useSecurityClient();
   const [message, setMessage] = useState("");
@@ -119,7 +130,12 @@ function OpenPublishDialog({
     };
     try {
       const result = await withStepUp(() =>
-        client.post("/policies/:scope/publish", { params: { scope }, body }),
+        rollbackTo === undefined
+          ? client.post("/policies/:scope/publish", { params: { scope }, body })
+          : client.post("/policies/:scope/rollback", {
+              params: { scope },
+              body: { ...body, versionId: rollbackTo.id },
+            }),
       );
       if (!result.ok) throw new Error(`HTTP ${result.status}`);
       onPublished(
@@ -144,10 +160,14 @@ function OpenPublishDialog({
     <ConfirmDialog
       open
       onClose={onClose}
-      title={`Publish the draft of ${scopeLabel(scope)}?`}
+      title={
+        rollbackTo === undefined
+          ? `Publish the draft of ${scopeLabel(scope)}?`
+          : `Roll ${scopeLabel(scope)} back to version ${rollbackTo.number}?`
+      }
       description={`${summary} Every service under ${scopeLabel(scope)} gets it.`}
-      confirmLabel="Publish"
-      pendingLabel="Publishing…"
+      confirmLabel={rollbackTo === undefined ? "Publish" : "Roll back"}
+      pendingLabel={rollbackTo === undefined ? "Publishing…" : "Rolling back…"}
       onConfirm={publish}
       isApiError={isApiError}
       {...(typedConfirm
@@ -169,6 +189,7 @@ function OpenPublishDialog({
           }
         : {})}
     >
+      {notice}
       <Field
         label="Message"
         hint="Optional: why, for the version history."
@@ -179,7 +200,7 @@ function OpenPublishDialog({
           maxLength={1000}
         />
       </Field>
-      {canEstimate ? (
+      {canEstimate && rollbackTo === undefined ? (
         <div className="lists-impact-block">
           <Button
             size="sm"

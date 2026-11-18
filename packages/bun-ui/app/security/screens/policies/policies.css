@@ -1,0 +1,92 @@
+/* The policy screens' few styles; the frame, width and controls are the kit's. */
+.policy-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin: var(--space-3) 0;
+}
+
+.policy-bar-actions,
+.policy-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.policy-tab,
+.policy-tab-body {
+  display: grid;
+  gap: var(--space-4);
+  margin-top: var(--space-3);
+}
+
+.policy-group {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.policy-field {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.policy-field[data-state="inherited"] .input,
+.policy-row-locked {
+  opacity: 0.7;
+}
+
+.policy-origin {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.policy-locked {
+  font-weight: 600;
+}
+
+.policy-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.policy-or-false {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.policy-item-form {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.policy-changes {
+  margin: 0;
+  padding-left: var(--space-4);
+  overflow-wrap: anywhere;
+}
+
+.policy-conflicts ul {
+  margin: 0 0 var(--space-2);
+  padding-left: var(--space-4);
+}
+
+.policy-json pre {
+  max-height: 40vh;
+  overflow: auto;
+}

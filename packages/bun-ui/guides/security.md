@@ -77,6 +77,51 @@ server-sent events, so `connect-src` allows no `ws(s)` origin.
   on its own and fails on its own; one a deployment does not record says
   so. Every chart is an image with a text summary and a **Table** button
   that shows the same data as a table.
+- **Services** (`/services`, `/services/new`, `/services/:id`): every
+  service a page at a time, with its groups, environment and topology, its
+  agents' health (their states, the bundle version they enforce against
+  the latest, the signing key), its requests a minute and blocked share
+  over the last hour, and its policy's mode with how many of its items run
+  in dry run (read for the first 50 rows of a page). A service's form: its
+  name, groups, environment, hosts, topology, labels and whether
+  publishing it asks for a step-up; saved at the revision read (someone
+  else's change since is shown with **Reload**); **Delete…** once its id is
+  typed.
+- **Groups** (`/groups`): the groups as a tree, each with its services and
+  a link to its policy; **New group**, **Edit** (its name, parent and
+  labels; a parent cannot be the group itself or one under it) and
+  **Delete**, each at the revision read.
+- **Policies** (`/policies`): the scope's policy editor, a tab per layer
+  (General, Identity and trust, Lists, Crawlers, Connections, Rate limits,
+  Counted rules and ladder, Request shape, Request rules, Deception, Bot
+  signals, Sign-in, API keys) and the whole policy as JSON. Each field says
+  whether it is **set here** (with **Reset to inherited**), **inherited
+  from** a scope (a link to it, with **Override**), or at its default; a
+  limit, counted rule or rule a scope above locked is greyed, **Locked by**
+  that scope, with no override. Rate limits, counted rules, rules, the
+  ladder and the crawler allowance are tables and forms of their own; the
+  simple sections are forms made from the policy's JSON Schema (the API's
+  OpenAPI document); a list of objects or a map is JSON; and every tab can
+  switch to **Edit as JSON**. Changes collect as unsaved changes over the
+  draft (else the published version): **Save draft** (a `422`'s issues show
+  on their fields; someone else's save since is shown with **Reload**),
+  **Forget changes**, **Discard draft**, and **Publish…** (U3's dialog: an
+  impact estimate, a typed confirmation for a dangerous change, a step-up,
+  or an approval). The draft's changes against the published version are
+  listed above the tabs. The **Crawlers** tab lists the conflicts the
+  services' agents report (an allowed crawler's published range covered by
+  a refusing entry or a manual ban), which the publish dialog repeats: they
+  are the published policy's, since only the agents hold the ranges, so a
+  draft's new conflicts show once it is published. Below them, a switch per
+  registry crawler, the allowance's settings, and each verified crawler's
+  requests, 404s, 429s from its own limit and the probe and honeypot hits
+  its allowance lifted over the last 24 hours, with the spoofed claimants.
+  The **Request rules** tab holds the rule editor (PR-U5's, embedded here)
+  and a link to **Test a request**.
+- **Versions** (`/policies/versions`): a scope's published versions, newest
+  first. Tick any two to compare them, or compare one with the published
+  version; **Roll back to this** publishes that version's content again as
+  a new version, through the publish dialog.
 - **Lists** (`/lists`, `/lists/new`): the scope's allow and deny entries
   (addresses and ranges, users, API keys, countries, ASNs), from its draft
   when there is one, else its published version, with the entries a
@@ -169,6 +214,22 @@ operator may not use is absent, not disabled.
 | Scope picker: every group and service | `policy:read`, `groups:read`, `services:read` on global |
 | Live updates: `bans:<scope>` topic | `bans:read` on the scope |
 | Live updates: `policy:<scope>` topic | `policy:read` on the scope |
+| Services (nav and route), the services list, a service's form, the groups | `services:read` on the scope |
+| Services: agents column | `agents:read` on global |
+| Services: requests/min and blocked columns | `analytics:read` on global |
+| Services: mode column | `policy:read` on global |
+| Services: the latest bundle beside an agent's | `bundles:read` on global |
+| Services: New service | `services:write` on global |
+| Services: a service's Save and Delete… | `services:write` on the service (a binding on a group above it covers it) |
+| Groups: New group | `groups:write` on global |
+| Groups: a group's Edit and Delete | `groups:write` on the group (a binding on a group above it covers it) |
+| Policies (nav and route), the editor, Versions | `policy:read` on the scope |
+| Policies: a field's or an item's origin and lock (a service's or a group's) | `policy:read` on the scope |
+| Policies: Override, Reset to inherited, Turn off here, New limit (and the other tables' New), Edit as JSON's changes, Save draft, Forget changes, Discard draft | `policy:draft` on the scope |
+| Policies: Publish…, Versions' Roll back to this | `policy:publish` on the scope (a step-up, or an approval under two-person approvals) |
+| Policies: Estimate impact (in the publish dialog), Request rules' Test a request link | `rules:test` on the scope |
+| Policies: Crawlers' conflicts (in the tab and the publish dialog) | `agents:read` on global |
+| Policies: Crawlers' traffic and spoofed claimants | `analytics:read` on the scope |
 | Bans (nav and route), the list, a ban's detail | `bans:read` on the scope |
 | Bans: New ban, Lift matching…, the New ban form | `bans:write` on the scope |
 | A ban: Extend, Make permanent, Widen, Lift | `bans:write` on the ban's scope |

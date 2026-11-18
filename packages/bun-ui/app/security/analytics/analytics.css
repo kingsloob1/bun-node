@@ -85,3 +85,8 @@
   outline: 1px dashed var(--border-strong);
   outline-offset: 4px;
 }
+
+/* A long subject (a full IPv6 address, a key) wraps rather than widening the table. */
+.offenders-subject {
+  overflow-wrap: anywhere;
+}

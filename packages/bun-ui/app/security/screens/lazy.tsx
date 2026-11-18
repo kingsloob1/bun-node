@@ -54,3 +54,33 @@ export const EventsScreen = onDemand<ScopeProps>(
   async () => (await import("./events/EventsScreen")).EventsScreen,
   "Loading the events",
 );
+
+/** `/services`, on demand. */
+export const ServicesScreen = onDemand<ScopeProps>(
+  async () => (await import("./services/ServicesScreen")).ServicesScreen,
+  "Loading the services",
+);
+
+/** `/services/new` and `/services/:id`, on demand. */
+export const ServiceFormScreen = onDemand<ScopeProps>(
+  async () => (await import("./services/ServiceForm")).ServiceForm,
+  "Loading the service",
+);
+
+/** `/groups`, on demand. */
+export const GroupsScreen = onDemand<ScopeProps>(
+  async () => (await import("./services/GroupsScreen")).GroupsScreen,
+  "Loading the groups",
+);
+
+/** `/policies`, on demand. */
+export const PolicyEditorScreen = onDemand<ScopeProps>(
+  async () => (await import("./policies/PolicyEditor")).PolicyEditor,
+  "Loading the policy",
+);
+
+/** `/policies/versions`, on demand. */
+export const VersionsScreen = onDemand<ScopeProps>(
+  async () => (await import("./policies/VersionsScreen")).VersionsScreen,
+  "Loading the versions",
+);

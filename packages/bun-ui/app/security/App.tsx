@@ -20,8 +20,13 @@ import {
   BanNewScreen,
   BansScreen,
   EventsScreen,
+  GroupsScreen,
   ListEntryNewScreen,
   ListsScreen,
+  PolicyEditorScreen,
+  ServiceFormScreen,
+  ServicesScreen,
+  VersionsScreen,
 } from "./screens/lazy";
 import { NoAccess } from "./screens/NoAccess";
 import { NotFound } from "./screens/NotFound";
@@ -72,6 +77,16 @@ function Sections({ scope }: { scope: string | null }) {
               scope === null ? null : <AnalyticsScreen scope={scope} />,
             ),
           },
+          ...scoped("services", [
+            ["/services/new", ServiceFormScreen],
+            ["/services/:id", ServiceFormScreen],
+            ["/services", ServicesScreen],
+            ["/groups", GroupsScreen],
+          ]),
+          ...scoped("policies", [
+            ["/policies/versions", VersionsScreen],
+            ["/policies", PolicyEditorScreen],
+          ]),
           ...scoped("lists", [
             ["/lists/new", ListEntryNewScreen],
             ["/lists", ListsScreen],
