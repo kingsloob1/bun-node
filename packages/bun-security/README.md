@@ -1617,7 +1617,10 @@ analytics page charts:
   identifier-pattern hits (`patterns`, `top.pattern`), and each verified
   crawler's traffic (`crawlers { crawler, outcome }`: every `request`,
   each `not-found` answered to it, each `limited` by its own limit, and
-  the `probe` and `honeypot` hits its allowance lifted). Exact refusals per
+  the `probe` and `honeypot` hits its allowance lifted; and each `spoofed`
+  claimant, a request with a crawler's name that failed verification,
+  under the crawler it claimed, which its `crawler.spoofed` hit names as
+  `claimed`). Exact refusals per
   subject are kept per hour too (`refused.hourly`, for sparklines), and an
   event carries its address's offence score. The reads add
   `groupBy=service` on a series, `GET /analytics/distinct` (distinct
@@ -1714,6 +1717,16 @@ const api = createSecurityApi({
   each event follows the caller's rights on its service. Per operator,
   across instances: 30 tests and 6 estimates a minute, one estimate at a
   time.
+- **`GET /policies/:scope/draft/effect`** shows what a draft does to each
+  service under its scope: each one's effective policy as published and
+  with the draft in its place, as their differences (a service the draft
+  would not compile for names why). At most 200 services (the rest
+  counted) and 500 changes each; `policy:read` on the draft's scope, and
+  each service compared only with `policy:read` on it (else listed as
+  skipped); its policies are shown as a policy read shows them. It counts
+  against the impact estimate's budget (6 a minute an operator, the two
+  together; past it a `429` with `Retry-After`, as the estimate answers
+  too). It reads only: nothing stored or audited.
 
 ## Deciding and explaining
 

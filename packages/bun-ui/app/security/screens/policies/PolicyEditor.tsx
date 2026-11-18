@@ -49,6 +49,7 @@ import { dryRunCount } from "../services/figures";
 import { ConflictList } from "./ConflictList";
 import { useCrawlerConflicts } from "./crawlers";
 import { CrawlersTab } from "./CrawlersTab";
+import { DraftEffect } from "./DraftEffect";
 import { PolicyEditorContext, usePolicyEditor } from "./editorContext";
 import { SchemaFields } from "./fields";
 import { KeyedItems } from "./KeyedItems";
@@ -586,6 +587,15 @@ export function PolicyEditor({ scope }: PolicyEditorProps) {
                 Unsaved changes are not in this list until saved.
               </p>
             ) : null}
+            {scope.startsWith("service:") ? null : (
+              <>
+                <h3>What it does to each service</h3>
+                <DraftEffect
+                  scope={scope}
+                  revision={draft.revision}
+                />
+              </>
+            )}
           </Card>
         )}
         <UrlTabs

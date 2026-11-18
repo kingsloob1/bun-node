@@ -388,20 +388,11 @@ describe("crawlers", () => {
                     point({ crawler: "google", outcome: "limited" }, 3),
                     point({ crawler: "bing", outcome: "request" }, 40),
                     point({ crawler: "bing", outcome: "honeypot" }, 1),
+                    // Spoofed claimants, under the crawler each claimed (PR-U4F).
+                    point({ crawler: "google", outcome: "spoofed" }, 5),
+                    point({ crawler: "yandex", outcome: "spoofed" }, 2),
                   ]
-                : metric === "rules" &&
-                    call.query.get("rule") === "crawler.spoofed"
-                  ? [
-                      point(
-                        {
-                          rule: "crawler.spoofed",
-                          action: "block",
-                          dryRun: "false",
-                        },
-                        7,
-                      ),
-                    ]
-                  : [],
+                : [],
           },
         };
       },
@@ -413,12 +404,18 @@ describe("crawlers", () => {
     );
     expect(
       [...google.querySelectorAll("td")].map((cell) => cell.textContent),
-    ).toEqual(["900", "12", "3", "0", "0"]);
+    ).toEqual(["900", "12", "3", "0", "0", "5"]);
     expect(
       [...page().getByTestId("crawler-series-bing").querySelectorAll("td")].map(
         (cell) => cell.textContent,
       ),
-    ).toEqual(["40", "0", "0", "0", "1"]);
+    ).toEqual(["40", "0", "0", "0", "1", "0"]);
+    // A crawler only claimed, never verified, still has its row.
+    expect(
+      [
+        ...page().getByTestId("crawler-series-yandex").querySelectorAll("td"),
+      ].map((cell) => cell.textContent),
+    ).toEqual(["0", "0", "0", "0", "0", "2"]);
     expect(page().getByTestId("crawler-spoofed").textContent).toContain(": 7");
   });
 
@@ -508,5 +505,102 @@ describe("the rules' slot", () => {
         },
       ],
     });
+  });
+});
+
+describe("a draft's effect on each service", () => {
+  /** The effect the fake answers. */
+  const EFFECT = {
+    scope: "group:payments",
+    services: [
+      {
+        service: "cards",
+        changes: [{ path: "limits[id=per-ip].limit", before: 100, after: 50 }],
+        more: 2,
+      },
+      { service: "ledger", changes: [], more: 0 },
+      {
+        service: "pay",
+        changes: [],
+        more: 0,
+        error: "limits[id=per-ip] is locked by global",
+      },
+    ],
+    skipped: [{ service: "vault", reason: "no policy:read on it" }],
+    notCompared: 3,
+  };
+
+  it("lists each service's changes, one the draft breaks, the unchanged, the skipped and those past the bound", async () => {
+    const fake = editorApi({ rest: {}, draft: [] });
+    const { api } = await openEditor("scope=group:payments", {
+      ...fake.routes,
+      "GET /policies/:scope/draft/effect": { body: EFFECT },
+    });
+    const effect = await page().findByTestId("draft-effect", {}, LOADED);
+    expect(page().getByTestId("draft-effect-summary").textContent).toBe(
+      "3 service(s) compared: 2 change(s) or would break.",
+    );
+    const cards = within(effect).getByTestId("draft-effect-cards");
+    expect(cards.textContent).toContain("Service cards: 3 change(s)");
+    expect(cards.textContent).toContain("limits[id=per-ip].limit: 100 → 50");
+    expect(cards.textContent).toContain("and 2 more");
+    expect(
+      within(effect).getByTestId("draft-effect-pay").textContent,
+    ).toContain("limits[id=per-ip] is locked by global");
+    expect(effect.textContent).toContain("Unchanged: ledger.");
+    expect(page().getByTestId("draft-effect-skipped").textContent).toContain(
+      "vault (no policy:read on it)",
+    );
+    expect(
+      page().getByTestId("draft-effect-not-compared").textContent,
+    ).toContain("3 more service(s) not compared");
+    expect(
+      api.calls
+        .filter((call) => call.path.endsWith("/draft/effect"))
+        .map((c) => c.path),
+    ).toEqual(["/policies/group%3Apayments/draft/effect"]);
+  });
+
+  it("a 429 (the estimates' shared budget) is a notice with Try again, not an error; Try again reads once more", async () => {
+    const fake = editorApi({ rest: {}, draft: [] });
+    let calls = 0;
+    await openEditor("scope=group:payments", {
+      ...fake.routes,
+      "GET /policies/:scope/draft/effect": () => {
+        calls += 1;
+        return calls === 1 ? problem(429, "rate_limited") : { body: EFFECT };
+      },
+    });
+    const limited = await page().findByTestId(
+      "draft-effect-limited",
+      {},
+      LOADED,
+    );
+    expect(limited.textContent).toContain("Too many estimates this minute");
+    expectAbsent(page().queryByRole("alert"), "an error banner");
+    expect(calls).toBe(1);
+    fireEvent.click(within(limited).getByTestId("draft-effect-retry"));
+    await page().findByTestId("draft-effect", {}, LOADED);
+    expect(calls).toBe(2);
+  });
+
+  it("negative control: a service's own draft does not ask for it", async () => {
+    const fake = editorApi({
+      rest: {},
+      draft: [],
+      effective: { body: EFFECTIVE },
+    });
+    const { api } = await openEditor("scope=service:checkout", {
+      ...fake.routes,
+      "GET /policies/:scope/draft/effect": { body: EFFECT },
+    });
+    await page().findByTestId("draft-changes-none", {}, LOADED);
+    expectAbsent(
+      page().queryByTestId("draft-effect"),
+      "the per-service effect",
+    );
+    expect(api.calls.some((call) => call.path.endsWith("/draft/effect"))).toBe(
+      false,
+    );
   });
 });

@@ -377,6 +377,7 @@
       "spelling": "@kingsleyweb/bun-security/control/contract",
       "browser": true,
       "values": [
+        "DRAFT_EFFECT_LIMITS",
         "SECURITY_API_PROTOCOL_VERSION",
         "SECURITY_API_PERMISSIONS",
         "SECURITY_ROLES",

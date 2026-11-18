@@ -105,6 +105,8 @@ const MUTATIONS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 /** Sends `problem`. */
 export function sendProblem(res: BunResponse, problem: ApiProblem): void {
+  for (const [name, value] of Object.entries(problem.headers))
+    res.set(name, value);
   res
     .status(problem.status)
     .set("content-type", "application/problem+json")

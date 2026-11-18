@@ -546,7 +546,10 @@ alert is the control plane's `crawlerLimited` preset, which fires when a
 crawler was limited in every one of the last 24 complete hours across the
 scope's services ("a day's worth of windows", read fleet-wide by the
 hour); and the agents report the conflicts in their heartbeats, since
-only they hold the ranges.
+only they hold the ranges. **As built (PR-U4F, plan §17.43):** a
+`crawler.spoofed` hit names the crawler its request claimed (`claimed`),
+and the series counts the spoofed claimants per claimed crawler
+(`outcome: "spoofed"`).
 
 ---
 

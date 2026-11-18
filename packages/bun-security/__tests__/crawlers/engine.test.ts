@@ -185,6 +185,8 @@ describe("T-L3-2: spoofed claimants", () => {
     expect(decision.hits[0]).toMatchObject({
       layer: "L10",
       rule: "crawler.spoofed",
+      // The crawler it claimed (PR-U4F).
+      claimed: "google",
     });
     expect(decision.crawler).toEqual({
       id: "google",
@@ -617,10 +619,26 @@ describe("the crawler series (layers.md L3.2, PR-AN2)", () => {
     });
   });
 
-  it("negative controls: an unverified claimant, a plain client and the allowance off count nothing", async () => {
+  it("counts a spoofed claimant under the crawler it claimed, never as that crawler's request (PR-U4F)", async () => {
+    const { security, rows } = counted(HAZARDS);
+    await visit(security, crawl("/", OUTSIDER));
+    // A second claimant, from another address (the first is banned now by
+    // the ladder, which answers before the spoofed check runs).
+    await visit(security, crawl("/a", "203.0.113.5"));
+    await visit(security, crawl("/"));
+    expect(rows()).toEqual({ "google/spoofed": 2, "google/request": 1 });
+    // In dry run the claimant is let through, and still counted.
+    const dry = counted({
+      ...HAZARDS,
+      crawlers: { spoofed: { action: "log" } },
+    });
+    await visit(dry.security, crawl("/", OUTSIDER));
+    expect(dry.rows()).toEqual({ "google/spoofed": 1 });
+  });
+
+  it("negative controls: a plain client and the allowance off count nothing", async () => {
     const { security, rows } = counted(HAZARDS);
     await visit(security, plain("/"), 404);
-    await visit(security, crawl("/", OUTSIDER), 404);
     expect(rows()).toEqual({});
     const off = counted({ ...HAZARDS, crawlers: { mode: "off" } });
     await visit(off.security, crawl("/"), 404);

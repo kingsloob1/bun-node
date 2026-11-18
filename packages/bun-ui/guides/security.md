@@ -108,14 +108,20 @@ server-sent events, so `connect-src` allows no `ws(s)` origin.
   **Forget changes**, **Discard draft**, and **Publish…** (U3's dialog: an
   impact estimate, a typed confirmation for a dangerous change, a step-up,
   or an approval). The draft's changes against the published version are
-  listed above the tabs. The **Crawlers** tab lists the conflicts the
+  listed above the tabs, and for a group's or global's draft, what it does to
+  each service under it: each one's effective policy as published against
+  with the draft (at most 200 services; a service the draft would not
+  compile for says why; one you may not read is named as skipped). It
+  shares the impact estimate's budget (6 a minute): past it, a notice with
+  **Try again**. The **Crawlers** tab lists the conflicts the
   services' agents report (an allowed crawler's published range covered by
   a refusing entry or a manual ban), which the publish dialog repeats: they
   are the published policy's, since only the agents hold the ranges, so a
   draft's new conflicts show once it is published. Below them, a switch per
   registry crawler, the allowance's settings, and each verified crawler's
   requests, 404s, 429s from its own limit and the probe and honeypot hits
-  its allowance lifted over the last 24 hours, with the spoofed claimants.
+  its allowance lifted over the last 24 hours, and the spoofed claimants
+  under the crawler each claimed.
   The **Request rules** tab holds the rule editor (PR-U5's, embedded here):
   each of the scope's rules edited in place with the matcher builder and
   saved with the rest of the draft, the inherited ones read-only with their
@@ -293,6 +299,7 @@ operator may not use is absent, not disabled.
 | Policies: Estimate impact (in the publish dialog), Request rules' Test a request link | `rules:test` on the scope |
 | Policies: Crawlers' conflicts (in the tab and the publish dialog) | `agents:read` on global |
 | Policies: Crawlers' traffic and spoofed claimants | `analytics:read` on the scope |
+| Policies: what a draft does to each service | `policy:read` on the scope, and on each service shown |
 | Bans (nav and route), the list, a ban's detail | `bans:read` on the scope |
 | Bans: New ban, Lift matching…, the New ban form | `bans:write` on the scope |
 | A ban: Extend, Make permanent, Widen, Lift | `bans:write` on the ban's scope |

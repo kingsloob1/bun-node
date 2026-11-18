@@ -5,7 +5,7 @@
  * by a refusing list entry or a manual ban; only the agents hold the
  * ranges, so a draft's new conflicts show once it is published), and each
  * verified crawler's counters (`crawlers { crawler, outcome }`) and the
- * spoofed claimants (`rules { rule: "crawler.spoofed" }`).
+ * spoofed claimants per claimed crawler (its `spoofed` outcome, PR-U4F).
  */
 import type { AgentsDto, SeriesDto } from "../../analytics/api";
 import { useQuery } from "@tanstack/react-query";
@@ -199,6 +199,7 @@ export function countsOf(series: SeriesDto): CrawlerCounts[] {
         limited: 0,
         probe: 0,
         honeypot: 0,
+        spoofed: 0,
       };
       by.set(crawler, counts);
     }
@@ -222,13 +223,11 @@ export function useCrawlerSeries(scope: string, enabled: boolean) {
         range: { kind: "preset", seconds: 86_400 } as const,
         signal,
       };
-      const [crawlers, spoofed] = await Promise.all([
-        readSeries(context, "crawlers"),
-        readSeries(context, "rules", { rule: "crawler.spoofed" }),
-      ]);
+      const counts = countsOf(await readSeries(context, "crawlers"));
       return {
-        counts: countsOf(crawlers),
-        spoofed: spoofed.points.reduce((sum, point) => sum + point.value, 0),
+        counts,
+        // Each claimed crawler's spoofed claimants, summed (PR-U4F).
+        spoofed: counts.reduce((sum, row) => sum + row.counts.spoofed, 0),
       };
     },
   });

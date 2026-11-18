@@ -32,6 +32,7 @@ const OUTCOME_LABELS: Readonly<
   limited: "429s (its limit)",
   probe: "Probe hits lifted",
   honeypot: "Honeypot hits lifted",
+  spoofed: "Spoofed claimants",
 };
 
 /** Props of {@link CrawlersTab}. */
@@ -159,7 +160,8 @@ export function CrawlersTab({ node }: CrawlersTabProps) {
                 </p>
               ) : null}
               <p data-testid="crawler-spoofed">
-                Spoofed claimants (a crawler&apos;s name, failing verification):{" "}
+                Spoofed claimants in all (a crawler&apos;s name, failing
+                verification; each counted under the crawler it claimed):{" "}
                 {series.data.spoofed.toLocaleString("en")}
               </p>
             </>

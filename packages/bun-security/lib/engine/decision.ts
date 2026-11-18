@@ -42,6 +42,12 @@ export interface RuleHit {
    * ban (`crawler.honeypot`). The analytics count them per crawler.
    */
   readonly lifted?: "probe" | "honeypot";
+  /**
+   * On a `crawler.spoofed` hit (layers.md L3.2, PR-U4F): the crawler the
+   * request claimed to be (`google`), which it failed verification as. The
+   * analytics count spoofed claimants per claimed crawler from it.
+   */
+  readonly claimed?: string;
 }
 
 /**

@@ -17,40 +17,12 @@ import type { ControlPlane } from "./plane";
 import type { Operator, ResolvedSecurityApiOptions } from "./options";
 import type { RuleTestInput } from "./contract/ruleTest";
 import { RULE_TEST_LIMITS } from "./contract/ruleTest";
+import { limitEstimates, limitRate, operatorKey } from "./estimateLimit";
 import { estimateImpact } from "./impact";
 import { ApiProblem } from "./problems";
 import { runRuleTest } from "./ruleTest";
 import * as R from "./ruleTestSchemas";
 import * as S from "./schemas";
-
-/** A short, stable digest of an operator's id, for a store key. */
-function operatorKey(operator: Operator): string {
-  return new Bun.CryptoHasher("sha256")
-    .update(operator.id)
-    .digest("hex")
-    .slice(0, 32);
-}
-
-/** Counts one call against the operator's minute; a `429` past `perMinute`. */
-async function limitRate(
-  plane: ControlPlane,
-  operator: Operator,
-  what: "test" | "estimate",
-  perMinute: number,
-): Promise<void> {
-  const minute = Math.floor(plane.now() / 60_000);
-  const counted = await plane.store.incrementCounter(
-    `ruleTest:${what}:${operatorKey(operator)}:${minute}`,
-    61_000,
-  );
-  if (counted.count > perMinute) {
-    throw new ApiProblem(
-      429,
-      "rate_limited",
-      `at most ${perMinute} ${what === "test" ? "tests" : "estimates"} a minute per operator`,
-    );
-  }
-}
 
 /** Checks a test's `trustProxy`: `true`, a hop count, or the trusted ranges. */
 function checkTrustProxy(value: unknown): void {
@@ -108,12 +80,9 @@ export function ruleTestRoutes(
         "the window must end after it starts, and span at most 7 days",
       );
     }
-    await limitRate(
-      plane,
-      operator,
-      "estimate",
-      RULE_TEST_LIMITS.estimatesPerMinute,
-    );
+    // The budget every estimate shares: the draft's, the approval's, and
+    // the draft's effect on each service (PR-U4F).
+    await limitEstimates(plane, operator);
     if (running >= RULE_TEST_LIMITS.estimatesPerInstance) {
       throw new ApiProblem(
         429,
