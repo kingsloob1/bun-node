@@ -41,6 +41,10 @@ standing rule).
 | [bun-security](../bun-security/README.md) | approved 2026-11-07 with a separate `@kingsleyweb/bun-security-ui`; **§7's edits applied** with this plan's approval: its UI is now bun-ui's `/security` entry |
 | Building | **BU-1 merged** (#666); **BU-2, BU-3 and BU-5 merged** (#708, #709, #710; the old packages' leftover names cleaned up in #713); released in **3.0.0-rc.1** (#712), the old two deprecated on npm. **BU-4** (the shared kit) **built** 2026-11-10, awaiting landing (§5.1) |
 
+### Sub-plans
+
+- [Embedding a UI in a host app](embedding.md) (2026-11-18, proposed): `mountJobsUi`, `mountSecurityUi`, `mountDocsUi` into a host's element, the sections a host's side menu shows, a kit-level `chrome` option.
+
 ### Contents
 
 0. [How to read this plan](#0-how-to-read-this-plan)
