@@ -106,6 +106,9 @@ export function TopOffenders({
     <Panel
       title="Top offenders"
       testId="panel-offenders"
+      // A row holds a full IPv6 address, a sparkline, a score, the ban state
+      // and two links: in one grid column it overflowed (PR-U4).
+      className="analytics-wide"
       states={[
         top,
         ...(kind === "ip" ? [scores] : []),
@@ -159,7 +162,7 @@ export function TopOffenders({
                   sparks[index]?.data?.points.map((point) => point.value) ?? [];
                 return (
                   <tr key={subject}>
-                    <td>
+                    <td className="offenders-subject">
                       <Subject
                         kind={kind}
                         value={subject}

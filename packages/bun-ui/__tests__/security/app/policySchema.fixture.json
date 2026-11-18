@@ -1,0 +1,2878 @@
+{
+  "title": "SecurityPolicy",
+  "description": "A bun-security policy (control-plane.md §2): a scope's own is partial, layered over the scopes above it; nothing is required. The shape only: securityPolicySchema checks the rest.",
+  "type": "object",
+  "properties": {
+    "version": {
+      "enum": [1],
+      "description": "the policy format version; default 1"
+    },
+    "service": {
+      "type": "string",
+      "description": "the service's name, as events and bans name it"
+    },
+    "environment": {
+      "type": "string",
+      "description": "the environment (`production`), for operators"
+    },
+    "public": {
+      "type": "boolean",
+      "description": "a public service: the trust check warns when its clients resolve inside"
+    },
+    "mode": {
+      "enum": ["enforce", "dryRun", "off"],
+      "description": "the whole policy's mode; default enforce"
+    },
+    "keys": {
+      "type": "object",
+      "description": "how subjects are keyed (layers.md L2.3)",
+      "properties": {
+        "ipv6Prefix": {
+          "type": "integer",
+          "description": "an IPv6 client is keyed by this prefix; default 64",
+          "minimum": 32,
+          "maximum": 128
+        }
+      },
+      "patternProperties": {
+        "^\\$": {}
+      },
+      "additionalProperties": false
+    },
+    "internal": {
+      "description": "the internal never-block list (layers.md L3.1): true (default), false, or narrowed to some of its ranges",
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "object",
+          "description": "the internal list narrowed",
+          "properties": {
+            "ranges": {
+              "type": "array",
+              "description": "the ranges kept",
+              "items": {
+                "type": "string",
+                "description": "a CIDR inside the internal ranges"
+              }
+            }
+          },
+          "patternProperties": {
+            "^\\$": {}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "lists": {
+      "type": "array",
+      "description": "allow and deny entries (layers.md L3), keyed by `id` or their subject",
+      "items": {
+        "type": "object",
+        "description": "an allow or deny entry (layers.md L3): exactly one subject and an action",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "a stable id, unique in the policy; default its subject"
+          },
+          "ip": {
+            "type": "string",
+            "description": "an IPv4 or IPv6 address or CIDR range"
+          },
+          "user": {
+            "type": "string",
+            "description": "a user id (the control plane keys it on save)"
+          },
+          "userHash": {
+            "type": "string",
+            "description": "a user's key, 32 hex",
+            "pattern": "^[0-9a-f]{32}$"
+          },
+          "apiKey": {
+            "type": "string",
+            "description": "an API key id (the control plane keys it on save)"
+          },
+          "apiKeyHash": {
+            "type": "string",
+            "description": "an API key's key, 32 hex",
+            "pattern": "^[0-9a-f]{32}$"
+          },
+          "country": {
+            "type": "string",
+            "description": "a country, ISO 3166-1 alpha-2",
+            "pattern": "^[A-Z]{2}$"
+          },
+          "asn": {
+            "type": "integer",
+            "description": "an autonomous system number",
+            "minimum": 0
+          },
+          "action": {
+            "enum": ["allow", "block", "challenge", "drop"],
+            "description": "what a match does (required in the effective policy)"
+          },
+          "override": {
+            "type": "boolean",
+            "description": "an allow that wins over a block in the same scope; default false"
+          },
+          "locked": {
+            "type": "boolean",
+            "description": "lower scopes cannot override it; default false"
+          },
+          "scope": {
+            "enum": ["global", "group", "service"],
+            "description": "where it was written; default \"service\""
+          },
+          "paths": {
+            "type": "array",
+            "description": "the routes it applies to",
+            "items": {
+              "type": "string",
+              "description": "a route prefix"
+            }
+          },
+          "expiresAt": {
+            "type": "string",
+            "description": "when it stops applying, ISO 8601 with a time zone",
+            "format": "date-time"
+          },
+          "mode": {
+            "enum": ["enforce", "dryRun", "off"],
+            "description": "enforce applies it; dryRun records what it would have done; off skips it"
+          },
+          "reason": {
+            "type": "string",
+            "description": "why it exists, for operators"
+          },
+          "createdBy": {
+            "type": "string",
+            "description": "who added it"
+          },
+          "code": {
+            "type": "string",
+            "description": "the refusal's problem code"
+          }
+        },
+        "patternProperties": {
+          "^\\$": {}
+        },
+        "additionalProperties": false
+      }
+    },
+    "serviceIdentity": {
+      "type": "object",
+      "description": "sibling services allowed to call under their own identity (layers.md L2.4)",
+      "properties": {
+        "header": {
+          "type": "string",
+          "description": "the header carrying a token; default \"x-service-token\""
+        },
+        "clientIpHeader": {
+          "type": "string",
+          "description": "the header carrying a forwarded end-user address; default \"x-service-client-ip\""
+        },
+        "services": {
+          "type": "array",
+          "description": "the services allowed to call",
+          "items": {
+            "type": "object",
+            "description": "a calling service",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "its name, unique in the policy"
+              },
+              "verifier": {
+                "description": "the SHA-256 of its token, \"sha256:<64 hex>\", or several during a rotation",
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "description": "a verifier",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  {
+                    "type": "array",
+                    "description": "verifiers",
+                    "items": {
+                      "type": "string",
+                      "description": "a verifier",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    }
+                  }
+                ]
+              },
+              "forwardsClientIp": {
+                "type": "boolean",
+                "description": "its forwarded end-user address is believed; default false"
+              },
+              "exempt": {
+                "type": "array",
+                "description": "what a verified call skips; default all four",
+                "items": {
+                  "enum": ["lists", "bans", "countedRules", "globalLimits"],
+                  "description": "an exemption"
+                }
+              }
+            },
+            "patternProperties": {
+              "^\\$": {}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "patternProperties": {
+        "^\\$": {}
+      },
+      "additionalProperties": false
+    },
+    "trustCheck": {
+      "description": "the trust-misconfiguration check (layers.md L2.5); false for none",
+      "anyOf": [
+        {
+          "type": "object",
+          "description": "the trust-misconfiguration check (layers.md L2.5); false for none",
+          "properties": {
+            "threshold": {
+              "type": "number",
+              "description": "the share of a minute's requests that marks it suspicious; default 0.5",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "window": {
+              "description": "how long before the warning; default \"5m\"",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "ms": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "seconds": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "minutes": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "hours": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "days": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "weeks": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false,
+                  "minProperties": 1
+                }
+              ]
+            },
+            "minRequests": {
+              "type": "integer",
+              "description": "a minute with fewer requests never counts; default 20",
+              "minimum": 1
+            }
+          },
+          "patternProperties": {
+            "^\\$": {}
+          },
+          "additionalProperties": false
+        },
+        {
+          "const": false
+        }
+      ]
+    },
+    "concurrency": {
+      "description": "connection and in-flight limits (layers.md L1); false for none",
+      "anyOf": [
+        {
+          "type": "object",
+          "description": "connection and in-flight limits (layers.md L1); false for none",
+          "properties": {
+            "perIp": {
+              "description": "in-flight requests per client address; default 64",
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "description": "a count",
+                  "minimum": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            "total": {
+              "description": "in-flight requests in all; none by default",
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "description": "a count",
+                  "minimum": 1
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            "releaseAfter": {
+              "description": "a slot held longer is released",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "ms": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "seconds": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "minutes": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "hours": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "days": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "weeks": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false,
+                  "minProperties": 1
+                }
+              ]
+            },
+            "mode": {
+              "enum": ["enforce", "dryRun", "off"],
+              "description": "enforce applies it; dryRun records what it would have done; off skips it"
+            }
+          },
+          "patternProperties": {
+            "^\\$": {}
+          },
+          "additionalProperties": false
+        },
+        {
+          "const": false
+        }
+      ]
+    },
+    "limits": {
+      "type": "array",
+      "description": "rate limits (layers.md L9), keyed by `id`",
+      "items": {
+        "type": "object",
+        "description": "a rate limit (layers.md L9): at most `limit` requests per `window` for one key; past it, 429",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "a stable id, unique in its list: letters, digits, _, . and -, starting with a letter or digit, at most 64",
+            "pattern": "^[A-Za-z0-9][\\w.-]{0,63}$"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "requests allowed per window (required in the effective policy)",
+            "minimum": 1
+          },
+          "window": {
+            "description": "the window (required in the effective policy)",
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "ms": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "seconds": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "minutes": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "hours": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "days": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "weeks": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                },
+                "additionalProperties": false,
+                "minProperties": 1
+              }
+            ]
+          },
+          "subSecond": {
+            "type": "boolean",
+            "description": "accept a window under one second; default false"
+          },
+          "key": {
+            "description": "who a request counts against: one part, or several for a composite key; default \"ip\"",
+            "anyOf": [
+              {
+                "enum": [
+                  "ip",
+                  "user",
+                  "session",
+                  "tenant",
+                  "apiKey",
+                  "route",
+                  "username",
+                  "destination",
+                  "destinationPrefix",
+                  "device",
+                  "crawler"
+                ],
+                "description": "a key part"
+              },
+              {
+                "type": "array",
+                "description": "a composite key",
+                "items": {
+                  "enum": [
+                    "ip",
+                    "user",
+                    "session",
+                    "tenant",
+                    "apiKey",
+                    "route",
+                    "username",
+                    "destination",
+                    "destinationPrefix",
+                    "device",
+                    "crawler"
+                  ],
+                  "description": "a key part"
+                },
+                "maxItems": 11
+              }
+            ]
+          },
+          "routes": {
+            "type": "array",
+            "description": "the routes it applies to; every request when absent",
+            "items": {
+              "type": "string",
+              "description": "a route: `POST /login`, `/login` (any method), or a prefix `/auth/*`"
+            }
+          },
+          "algorithm": {
+            "enum": ["sliding-window", "fixed-window", "gcra"],
+            "description": "how it counts; default \"sliding-window\""
+          },
+          "cost": {
+            "type": "number",
+            "description": "what one request costs; default 1",
+            "minimum": 0
+          },
+          "mode": {
+            "enum": ["enforce", "dryRun", "off"],
+            "description": "enforce applies it; dryRun records what it would have done; off skips it"
+          },
+          "locked": {
+            "type": "boolean",
+            "description": "lower scopes cannot override or disable it; default false"
+          },
+          "appliesToServices": {
+            "type": "boolean",
+            "description": "applies to a verified sibling service exempt from global limits; default false"
+          },
+          "evenWhenAllowed": {
+            "type": "boolean",
+            "description": "still counts a request an allow entry let through; default false"
+          },
+          "code": {
+            "type": "string",
+            "description": "the 429 body's problem code; default \"rate_limited\""
+          },
+          "state": {
+            "enum": ["local", "shared", "hybrid"],
+            "description": "where it counts; default the policy's state.mode"
+          },
+          "onStoreError": {
+            "enum": ["local", "open", "closed"],
+            "description": "what it does when the shared store fails; default the policy's state.onStoreError"
+          },
+          "profile": {
+            "type": "string",
+            "description": "only requests of routes with this profile count (`securityProfile()`); every route when absent"
+          },
+          "apiKeyPlan": {
+            "type": "string",
+            "description": "only requests whose API key is on this plan count; every request when absent"
+          }
+        },
+        "patternProperties": {
+          "^\\$": {}
+        },
+        "additionalProperties": false
+      }
+    },
+    "countedRules": {
+      "type": "array",
+      "description": "counted rules (layers.md §0.2), keyed by `id`",
+      "items": {
+        "type": "object",
+        "description": "a counted rule (layers.md §0.2): `threshold` occurrences of `event` in `window` → `action`",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "a stable id, unique in its list: letters, digits, _, . and -, starting with a letter or digit, at most 64",
+            "pattern": "^[A-Za-z0-9][\\w.-]{0,63}$"
+          },
+          "event": {
+            "type": "string",
+            "description": "the event counted: request, throttled, route.notFound, server.error, rule.hit, probe.hit, pattern.hit, or the app's signals (required in the effective policy)",
+            "pattern": "^[A-Za-z][\\w.-]{0,63}$"
+          },
+          "threshold": {
+            "type": "integer",
+            "description": "occurrences that trip it (required in the effective policy)",
+            "minimum": 1
+          },
+          "window": {
+            "description": "the window occurrences are counted in",
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "ms": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "seconds": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "minutes": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "hours": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "days": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "weeks": {
+                    "type": "number",
+                    "minimum": 0
+                  }
+                },
+                "additionalProperties": false,
+                "minProperties": 1
+              }
+            ]
+          },
+          "subSecond": {
+            "type": "boolean",
+            "description": "accept a window under one second; default false"
+          },
+          "key": {
+            "description": "who a request counts against: one part, or several for a composite key; default \"ip\"",
+            "anyOf": [
+              {
+                "enum": [
+                  "ip",
+                  "user",
+                  "session",
+                  "tenant",
+                  "apiKey",
+                  "route",
+                  "username",
+                  "destination",
+                  "destinationPrefix",
+                  "device",
+                  "crawler"
+                ],
+                "description": "a key part"
+              },
+              {
+                "type": "array",
+                "description": "a composite key",
+                "items": {
+                  "enum": [
+                    "ip",
+                    "user",
+                    "session",
+                    "tenant",
+                    "apiKey",
+                    "route",
+                    "username",
+                    "destination",
+                    "destinationPrefix",
+                    "device",
+                    "crawler"
+                  ],
+                  "description": "a key part"
+                },
+                "maxItems": 11
+              }
+            ]
+          },
+          "routes": {
+            "type": "array",
+            "description": "the routes it applies to; every request when absent",
+            "items": {
+              "type": "string",
+              "description": "a route: `POST /login`, `/login` (any method), or a prefix `/auth/*`"
+            }
+          },
+          "action": {
+            "enum": ["ban", "challenge", "ladder"],
+            "description": "what the tripped key gets; default \"ban\""
+          },
+          "duration": {
+            "description": "how long, or null until lifted; required except with action ladder",
+            "anyOf": [
+              {
+                "description": "a duration with its unit written: \"30s\", \"1h 30m\", or { minutes: 1, seconds: 30 }",
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "ms": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "seconds": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "minutes": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "hours": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "days": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "weeks": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    },
+                    "additionalProperties": false,
+                    "minProperties": 1
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mode": {
+            "enum": ["enforce", "dryRun", "off"],
+            "description": "enforce applies it; dryRun records what it would have done; off skips it"
+          },
+          "locked": {
+            "type": "boolean",
+            "description": "lower scopes cannot override or disable it; default false"
+          },
+          "appliesToServices": {
+            "type": "boolean",
+            "description": "counts a verified service's forwarded end users; default false"
+          },
+          "code": {
+            "type": "string",
+            "description": "its bans' problem code; default the policy's bans.code"
+          },
+          "weight": {
+            "type": "number",
+            "description": "the offence weight a trip adds; default 1",
+            "minimum": 0
+          },
+          "state": {
+            "enum": ["local", "shared"],
+            "description": "where its counters live"
+          },
+          "onStoreError": {
+            "enum": ["local", "open"],
+            "description": "what it does when the shared store fails"
+          },
+          "profile": {
+            "type": "string",
+            "description": "only requests of routes with this profile count (`securityProfile()`); every route when absent"
+          }
+        },
+        "patternProperties": {
+          "^\\$": {}
+        },
+        "additionalProperties": false
+      }
+    },
+    "bans": {
+      "type": "object",
+      "description": "bans (layers.md L4)",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "the problem code of a ban's refusal; default \"banned\""
+        },
+        "retryAfter": {
+          "type": "boolean",
+          "description": "answer Retry-After with a ban's end; default true"
+        },
+        "maxActive": {
+          "type": "integer",
+          "description": "the most bans held; default 100,000",
+          "minimum": 1
+        },
+        "mode": {
+          "enum": ["enforce", "dryRun", "off"],
+          "description": "enforce applies it; dryRun records what it would have done; off skips it"
+        }
+      },
+      "patternProperties": {
+        "^\\$": {}
+      },
+      "additionalProperties": false
+    },
+    "ladder": {
+      "description": "the offence ladder (layers.md §0.2); false for none",
+      "anyOf": [
+        {
+          "type": "object",
+          "description": "the offence ladder (layers.md §0.2); false for none",
+          "properties": {
+            "halfLife": {
+              "description": "how fast a score decays",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "ms": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "seconds": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "minutes": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "hours": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "days": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "weeks": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false,
+                  "minProperties": 1
+                }
+              ]
+            },
+            "steps": {
+              "type": "array",
+              "description": "the steps, by score",
+              "items": {
+                "type": "object",
+                "description": "a step: at `score`, a challenge or a ban",
+                "properties": {
+                  "score": {
+                    "type": "number",
+                    "description": "the score that reaches it",
+                    "minimum": 0
+                  },
+                  "action": {
+                    "enum": ["challenge", "ban"],
+                    "description": "what it does"
+                  },
+                  "duration": {
+                    "description": "a ban's length",
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "ms": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "seconds": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "minutes": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "hours": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "days": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "weeks": {
+                            "type": "number",
+                            "minimum": 0
+                          }
+                        },
+                        "additionalProperties": false,
+                        "minProperties": 1
+                      }
+                    ]
+                  }
+                },
+                "patternProperties": {
+                  "^\\$": {}
+                },
+                "additionalProperties": false
+              }
+            },
+            "base": {
+              "description": "the first escalating ban's length",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "ms": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "seconds": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "minutes": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "hours": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "days": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "weeks": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false,
+                  "minProperties": 1
+                }
+              ]
+            },
+            "factor": {
+              "type": "number",
+              "description": "each later ban's multiplier",
+              "minimum": 1
+            },
+            "maxBan": {
+              "description": "the longest ban",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "ms": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "seconds": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "minutes": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "hours": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "days": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "weeks": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false,
+                  "minProperties": 1
+                }
+              ]
+            },
+            "memory": {
+              "description": "how long earlier bans count",
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "ms": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "seconds": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "minutes": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "hours": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "days": {
+                      "type": "number",
+                      "minimum": 0
+                    },
+                    "weeks": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false,
+                  "minProperties": 1
+                }
+              ]
+            },
+            "weights": {
+              "type": "object",
+              "description": "offence weights by source",
+              "additionalProperties": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "mode": {
+              "enum": ["enforce", "dryRun", "off"],
+              "description": "enforce applies it; dryRun records what it would have done; off skips it"
+            }
+          },
+          "patternProperties": {
+            "^\\$": {}
+          },
+          "additionalProperties": false
+        },
+        {
+          "const": false
+        }
+      ]
+    },
+    "shape": {
+      "description": "request shape (layers.md L6); false for none",
+      "anyOf": [
+        {
+          "type": "object",
+          "description": "request shape (layers.md L6); false for none",
+          "properties": {
+            "caseSensitive": {
+              "type": "boolean",
+              "description": "paths compare case-sensitively; default false"
+            },
+            "maxPathBytes": {
+              "type": "integer",
+              "description": "the longest path, bytes",
+              "minimum": 1
+            },
+            "maxQueryBytes": {
+              "type": "integer",
+              "description": "the longest query, bytes",
+              "minimum": 1
+            },
+            "maxQueryParams": {
+              "type": "integer",
+              "description": "the most query parameters",
+              "minimum": 1
+            },
+            "maxQueryDepth": {
+              "type": "integer",
+              "description": "the deepest query nesting",
+              "minimum": 1
+            },
+            "maxHeaders": {
+              "type": "integer",
+              "description": "the most headers",
+              "minimum": 1
+            },
+            "maxHeaderBytes": {
+              "type": "integer",
+              "description": "the largest header block, bytes",
+              "minimum": 1
+            },
+            "methods": {
+              "type": "array",
+              "description": "the methods allowed",
+              "items": {
+                "type": "string",
+                "description": "a method",
+                "pattern": "^[A-Z][A-Z0-9-]{0,31}$"
+              }
+            },
+            "hosts": {
+              "type": "array",
+              "description": "the hosts allowed",
+              "items": {
+                "type": "string",
+                "description": "a host, with an optional port"
+              }
+            },
+            "headerLimits": {
+              "type": "object",
+              "description": "the longest value per header name, bytes",
+              "additionalProperties": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "maxBodySize": {
+              "description": "the largest body, bytes, or false for no limit",
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "description": "bytes",
+                  "minimum": 0
+                },
+                {
+                  "const": false
+                }
+              ]
+            },
+            "routes": {
+              "type": "array",
+              "description": "per-route shapes",
+              "items": {
+                "type": "object",
+                "description": "a per-route shape",
+                "properties": {
+                  "routes": {
+                    "type": "array",
+                    "description": "the routes it applies to",
+                    "items": {
+                      "type": "string",
+                      "description": "a route"
+                    }
+                  },
+                  "maxBodySize": {
+                    "type": "integer",
+                    "description": "the largest body, bytes",
+                    "minimum": 0
+                  },
+                  "contentTypes": {
+                    "type": "array",
+                    "description": "the content types allowed",
+                    "items": {
+                      "type": "string",
+                      "description": "a media type (`application/json`, `image/*`)"
+                    }
+                  },
+                  "allowEncodedSlash": {
+                    "type": "boolean",
+                    "description": "accept %2F in the path; default false"
+                  }
+                },
+                "patternProperties": {
+                  "^\\$": {}
+                },
+                "additionalProperties": false
+              }
+            },
+            "mode": {
+              "enum": ["enforce", "dryRun", "off"],
+              "description": "enforce applies it; dryRun records what it would have done; off skips it"
+            }
+          },
+          "patternProperties": {
+            "^\\$": {}
+          },
+          "additionalProperties": false
+        },
+        {
+          "const": false
+        }
+      ]
+    },
+    "deception": {
+      "type": "object",
+      "description": "deception (layers.md L8)",
+      "properties": {
+        "honeypots": {
+          "description": "honeypot routes: true for the defaults, false, or settings",
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "object",
+              "description": "honeypot settings",
+              "properties": {
+                "paths": {
+                  "type": "array",
+                  "description": "the paths",
+                  "items": {
+                    "type": "string",
+                    "description": "a path, a limit's route grammar"
+                  }
+                },
+                "answer": {
+                  "enum": ["pass", "not-found"],
+                  "description": "how a hit is answered"
+                },
+                "mode": {
+                  "enum": ["enforce", "dryRun", "off"],
+                  "description": "enforce applies it; dryRun records what it would have done; off skips it"
+                }
+              },
+              "patternProperties": {
+                "^\\$": {}
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "canaries": {
+          "type": "array",
+          "description": "canary credentials, keyed by `id`",
+          "items": {
+            "type": "object",
+            "description": "a canary credential: a user or an API key no one should use (keyed by the control plane)",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "its id"
+              },
+              "user": {
+                "type": "string",
+                "description": "a user id (keyed on save)"
+              },
+              "apiKey": {
+                "type": "string",
+                "description": "an API key id (keyed on save)"
+              },
+              "userHash": {
+                "type": "string",
+                "description": "a user's key, 32 hex",
+                "pattern": "^[0-9a-f]{32}$"
+              },
+              "apiKeyHash": {
+                "type": "string",
+                "description": "an API key's key, 32 hex",
+                "pattern": "^[0-9a-f]{32}$"
+              }
+            },
+            "patternProperties": {
+              "^\\$": {}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "patternProperties": {
+        "^\\$": {}
+      },
+      "additionalProperties": false
+    },
+    "requestRules": {
+      "type": "object",
+      "description": "request rules (layers.md L7)",
+      "properties": {
+        "rules": {
+          "type": "array",
+          "description": "the rules, keyed by `id`",
+          "items": {
+            "type": "object",
+            "description": "a request rule",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "a stable id, unique in its list: letters, digits, _, . and -, starting with a letter or digit, at most 64",
+                "pattern": "^[A-Za-z0-9][\\w.-]{0,63}$"
+              },
+              "when": {
+                "type": "object",
+                "description": "the condition: a matcher, or all / any / not of conditions (layers.md L7; checked by the validator)"
+              },
+              "action": {
+                "type": "string",
+                "description": "what a match does (block, challenge, tag, log, ban, drop, delay)"
+              },
+              "weight": {
+                "type": "number",
+                "description": "the offence weight a match adds",
+                "minimum": 0
+              },
+              "mode": {
+                "enum": ["enforce", "dryRun", "off"],
+                "description": "enforce applies it; dryRun records what it would have done; off skips it"
+              },
+              "status": {
+                "type": "integer",
+                "description": "the refusal's status",
+                "minimum": 400,
+                "maximum": 599
+              },
+              "code": {
+                "type": "string",
+                "description": "the refusal's problem code"
+              },
+              "duration": {
+                "description": "a ban's length, or null until lifted",
+                "anyOf": [
+                  {
+                    "description": "a duration with its unit written: \"30s\", \"1h 30m\", or { minutes: 1, seconds: 30 }",
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "ms": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "seconds": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "minutes": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "hours": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "days": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "weeks": {
+                            "type": "number",
+                            "minimum": 0
+                          }
+                        },
+                        "additionalProperties": false,
+                        "minProperties": 1
+                      }
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "crawlers": {
+                "enum": ["apply", "skip"],
+                "description": "whether a verified crawler is held to it"
+              },
+              "locked": {
+                "type": "boolean",
+                "description": "lower scopes cannot override or disable it; default false"
+              }
+            },
+            "patternProperties": {
+              "^\\$": {}
+            },
+            "additionalProperties": false
+          }
+        },
+        "managed": {
+          "description": "the managed probe set: true, false, or settings",
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "object",
+              "description": "managed probe settings",
+              "properties": {
+                "mode": {
+                  "enum": ["enforce", "dryRun"],
+                  "description": "its mode"
+                },
+                "exclude": {
+                  "type": "array",
+                  "description": "rules left out",
+                  "items": {
+                    "type": "string",
+                    "description": "a managed rule id"
+                  }
+                },
+                "weight": {
+                  "type": "number",
+                  "description": "the offence weight a hit adds",
+                  "minimum": 0
+                }
+              },
+              "patternProperties": {
+                "^\\$": {}
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "maxRegexInput": {
+          "type": "integer",
+          "description": "the most characters a regex reads",
+          "minimum": 1
+        }
+      },
+      "patternProperties": {
+        "^\\$": {}
+      },
+      "additionalProperties": false
+    },
+    "state": {
+      "type": "object",
+      "description": "where counters live (topologies.md §3.2)",
+      "properties": {
+        "mode": {
+          "enum": ["local", "shared", "hybrid"],
+          "description": "the default for limits"
+        },
+        "onStoreError": {
+          "enum": ["local", "open", "closed"],
+          "description": "the default when the shared store fails"
+        },
+        "nodes": {
+          "type": "integer",
+          "description": "the processes sharing the limits, for local shares",
+          "minimum": 1
+        },
+        "scope": {
+          "enum": ["shared", "service"],
+          "description": "whose counters a store holds"
+        }
+      },
+      "patternProperties": {
+        "^\\$": {}
+      },
+      "additionalProperties": false
+    },
+    "messages": {
+      "type": "object",
+      "description": "WebSocket message limits (layers.md L1)",
+      "properties": {
+        "perConnection": {
+          "description": "messages per connection, or false for none",
+          "anyOf": [
+            {
+              "type": "object",
+              "description": "a per-connection limit",
+              "properties": {
+                "limit": {
+                  "type": "integer",
+                  "description": "messages per window",
+                  "minimum": 1
+                },
+                "window": {
+                  "description": "a duration with its unit written: \"30s\", \"1h 30m\", or { minutes: 1, seconds: 30 }",
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "ms": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "seconds": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "minutes": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "hours": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "days": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "weeks": {
+                          "type": "number",
+                          "minimum": 0
+                        }
+                      },
+                      "additionalProperties": false,
+                      "minProperties": 1
+                    }
+                  ]
+                },
+                "subSecond": {
+                  "type": "boolean",
+                  "description": "accept a window under one second"
+                }
+              },
+              "patternProperties": {
+                "^\\$": {}
+              },
+              "additionalProperties": false
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "burst": {
+          "type": "integer",
+          "description": "messages allowed in a burst",
+          "minimum": 1
+        },
+        "breach": {
+          "description": "how long over the limit before closing",
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "object",
+              "properties": {
+                "ms": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "seconds": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "minutes": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "hours": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "days": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "weeks": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false,
+              "minProperties": 1
+            }
+          ]
+        },
+        "closeCode": {
+          "type": "integer",
+          "description": "the close code",
+          "minimum": 1000,
+          "maximum": 4999
+        },
+        "limits": {
+          "type": "array",
+          "description": "message limits, as rate limits",
+          "items": {
+            "type": "object",
+            "description": "a rate limit (layers.md L9): at most `limit` requests per `window` for one key; past it, 429",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "a stable id, unique in its list: letters, digits, _, . and -, starting with a letter or digit, at most 64",
+                "pattern": "^[A-Za-z0-9][\\w.-]{0,63}$"
+              },
+              "limit": {
+                "type": "integer",
+                "description": "requests allowed per window (required in the effective policy)",
+                "minimum": 1
+              },
+              "window": {
+                "description": "the window (required in the effective policy)",
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "ms": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "seconds": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "minutes": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "hours": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "days": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "weeks": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    },
+                    "additionalProperties": false,
+                    "minProperties": 1
+                  }
+                ]
+              },
+              "subSecond": {
+                "type": "boolean",
+                "description": "accept a window under one second; default false"
+              },
+              "key": {
+                "description": "who a request counts against: one part, or several for a composite key; default \"ip\"",
+                "anyOf": [
+                  {
+                    "enum": [
+                      "ip",
+                      "user",
+                      "session",
+                      "tenant",
+                      "apiKey",
+                      "route",
+                      "username",
+                      "destination",
+                      "destinationPrefix",
+                      "device",
+                      "crawler"
+                    ],
+                    "description": "a key part"
+                  },
+                  {
+                    "type": "array",
+                    "description": "a composite key",
+                    "items": {
+                      "enum": [
+                        "ip",
+                        "user",
+                        "session",
+                        "tenant",
+                        "apiKey",
+                        "route",
+                        "username",
+                        "destination",
+                        "destinationPrefix",
+                        "device",
+                        "crawler"
+                      ],
+                      "description": "a key part"
+                    },
+                    "maxItems": 11
+                  }
+                ]
+              },
+              "routes": {
+                "type": "array",
+                "description": "the routes it applies to; every request when absent",
+                "items": {
+                  "type": "string",
+                  "description": "a route: `POST /login`, `/login` (any method), or a prefix `/auth/*`"
+                }
+              },
+              "algorithm": {
+                "enum": ["sliding-window", "fixed-window", "gcra"],
+                "description": "how it counts; default \"sliding-window\""
+              },
+              "cost": {
+                "type": "number",
+                "description": "what one request costs; default 1",
+                "minimum": 0
+              },
+              "mode": {
+                "enum": ["enforce", "dryRun", "off"],
+                "description": "enforce applies it; dryRun records what it would have done; off skips it"
+              },
+              "locked": {
+                "type": "boolean",
+                "description": "lower scopes cannot override or disable it; default false"
+              },
+              "appliesToServices": {
+                "type": "boolean",
+                "description": "applies to a verified sibling service exempt from global limits; default false"
+              },
+              "evenWhenAllowed": {
+                "type": "boolean",
+                "description": "still counts a request an allow entry let through; default false"
+              },
+              "code": {
+                "type": "string",
+                "description": "the 429 body's problem code; default \"rate_limited\""
+              },
+              "state": {
+                "enum": ["local", "shared", "hybrid"],
+                "description": "where it counts; default the policy's state.mode"
+              },
+              "onStoreError": {
+                "enum": ["local", "open", "closed"],
+                "description": "what it does when the shared store fails; default the policy's state.onStoreError"
+              },
+              "profile": {
+                "type": "string",
+                "description": "only requests of routes with this profile count (`securityProfile()`); every route when absent"
+              },
+              "apiKeyPlan": {
+                "type": "string",
+                "description": "only requests whose API key is on this plan count; every request when absent"
+              }
+            },
+            "patternProperties": {
+              "^\\$": {}
+            },
+            "additionalProperties": false
+          }
+        },
+        "mode": {
+          "enum": ["enforce", "dryRun", "off"],
+          "description": "enforce applies it; dryRun records what it would have done; off skips it"
+        }
+      },
+      "patternProperties": {
+        "^\\$": {}
+      },
+      "additionalProperties": false
+    },
+    "botSignals": {
+      "type": "object",
+      "description": "bot signals (layers.md L10)",
+      "properties": {
+        "mode": {
+          "enum": ["enforce", "dryRun"],
+          "description": "its mode"
+        },
+        "weights": {
+          "type": "object",
+          "description": "each signal's weight",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "challengeAt": {
+          "type": "number",
+          "description": "the score that challenges",
+          "minimum": 0
+        },
+        "browserPaths": {
+          "type": "array",
+          "description": "paths only browsers load",
+          "items": {
+            "type": "string",
+            "description": "a path glob starting with /"
+          }
+        },
+        "classes": {
+          "type": "object",
+          "description": "an intel class's weight, 0 to 100",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "crawlers": {
+      "type": "object",
+      "description": "the verified-crawler allowance (layers.md L3.2)",
+      "properties": {
+        "mode": {
+          "enum": ["enforce", "dryRun", "off"],
+          "description": "enforce applies it; dryRun records what it would have done; off skips it"
+        },
+        "allow": {
+          "type": "array",
+          "description": "the crawlers allowed",
+          "items": {
+            "type": "string",
+            "description": "a crawler id (`google`)"
+          }
+        },
+        "verify": {
+          "enum": ["ranges", "rdns", "ranges-then-rdns"],
+          "description": "how a claimant is verified"
+        },
+        "methods": {
+          "type": "array",
+          "description": "the methods covered",
+          "items": {
+            "enum": ["GET", "HEAD", "OPTIONS"],
+            "description": "a method"
+          }
+        },
+        "paths": {
+          "type": "object",
+          "description": "the paths covered",
+          "properties": {
+            "include": {
+              "type": "array",
+              "description": "paths covered; every path when absent",
+              "items": {
+                "type": "string",
+                "description": "a path glob"
+              }
+            },
+            "exclude": {
+              "type": "array",
+              "description": "paths left out",
+              "items": {
+                "type": "string",
+                "description": "a path glob"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "exempt": {
+          "type": "array",
+          "description": "what a verified crawler is exempt from",
+          "items": {
+            "enum": [
+              "notFound",
+              "probeRules",
+              "honeypots",
+              "botSignals",
+              "challenges",
+              "hostingClass",
+              "geo",
+              "perIpLimits",
+              "autoBans"
+            ],
+            "description": "an exemption"
+          }
+        },
+        "limit": {
+          "description": "each verified crawler's own limit, \"<count>/<window>\" (\"3000/1m\"), or false",
+          "anyOf": [
+            {
+              "type": "string",
+              "description": "a limit",
+              "pattern": "^\\d+/.+$"
+            },
+            {
+              "const": false
+            }
+          ]
+        },
+        "spoofed": {
+          "type": "object",
+          "description": "what a spoofed claimant gets",
+          "properties": {
+            "action": {
+              "enum": ["log", "block", "challenge", "drop"],
+              "description": "default \"block\""
+            },
+            "weight": {
+              "type": "number",
+              "description": "its offence weight; default 5",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "custom": {
+          "type": "array",
+          "description": "crawlers of the policy's own, keyed by `id`",
+          "items": {
+            "type": "object",
+            "description": "a crawler of the policy's own",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "its id"
+              },
+              "tokens": {
+                "type": "array",
+                "description": "its tokens",
+                "items": {
+                  "type": "string",
+                  "description": "a User-Agent token"
+                }
+              },
+              "ranges": {
+                "type": "string",
+                "description": "its range file's URL"
+              },
+              "rdns": {
+                "type": "array",
+                "description": "its domains",
+                "items": {
+                  "type": "string",
+                  "description": "a reverse-DNS domain"
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 64
+        }
+      },
+      "additionalProperties": false
+    },
+    "apiKeys": {
+      "type": "object",
+      "description": "API-key anomalies (layers.md L12)",
+      "properties": {
+        "newAsn": {
+          "description": "a key used from a new autonomous system",
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "object",
+              "description": "settings",
+              "properties": {
+                "mode": {
+                  "enum": ["enforce", "dryRun", "off"],
+                  "description": "enforce applies it; dryRun records what it would have done; off skips it"
+                },
+                "action": {
+                  "type": "string",
+                  "description": "what it does"
+                },
+                "duration": {
+                  "description": "a duration with its unit written: \"30s\", \"1h 30m\", or { minutes: 1, seconds: 30 }",
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "ms": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "seconds": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "minutes": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "hours": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "days": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "weeks": {
+                          "type": "number",
+                          "minimum": 0
+                        }
+                      },
+                      "additionalProperties": false,
+                      "minProperties": 1
+                    }
+                  ]
+                },
+                "remember": {
+                  "description": "a duration with its unit written: \"30s\", \"1h 30m\", or { minutes: 1, seconds: 30 }",
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "ms": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "seconds": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "minutes": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "hours": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "days": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "weeks": {
+                          "type": "number",
+                          "minimum": 0
+                        }
+                      },
+                      "additionalProperties": false,
+                      "minProperties": 1
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "manyAddresses": {
+          "description": "a key used from many addresses",
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "object",
+              "description": "settings",
+              "properties": {
+                "mode": {
+                  "enum": ["enforce", "dryRun", "off"],
+                  "description": "enforce applies it; dryRun records what it would have done; off skips it"
+                },
+                "action": {
+                  "type": "string",
+                  "description": "what it does"
+                },
+                "duration": {
+                  "description": "a duration with its unit written: \"30s\", \"1h 30m\", or { minutes: 1, seconds: 30 }",
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "ms": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "seconds": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "minutes": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "hours": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "days": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "weeks": {
+                          "type": "number",
+                          "minimum": 0
+                        }
+                      },
+                      "additionalProperties": false,
+                      "minProperties": 1
+                    }
+                  ]
+                },
+                "limit": {
+                  "type": "integer",
+                  "description": "addresses",
+                  "minimum": 1
+                },
+                "window": {
+                  "description": "a duration with its unit written: \"30s\", \"1h 30m\", or { minutes: 1, seconds: 30 }",
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "ms": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "seconds": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "minutes": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "hours": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "days": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "weeks": {
+                          "type": "number",
+                          "minimum": 0
+                        }
+                      },
+                      "additionalProperties": false,
+                      "minProperties": 1
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "presets": {
+      "type": "object",
+      "description": "presets switched: true (as it ships), \"enforce\", or false (off)",
+      "propertyNames": {
+        "anyOf": [
+          {
+            "enum": [
+              "per-ip",
+              "per-user",
+              "login.account",
+              "login.ip",
+              "login.ip-failures",
+              "login.ip-failures-ban",
+              "mfa.account",
+              "mfa.ip",
+              "mfa.failures",
+              "otp.ip",
+              "otp.ip-hour",
+              "otp.destination",
+              "otp.destination-day",
+              "otp.prefix",
+              "reset.ip",
+              "reset.ip-hour",
+              "reset.destination",
+              "signup.ip",
+              "not_found_per_minute",
+              "login.failure-rate"
+            ]
+          },
+          {
+            "pattern": "^\\$"
+          }
+        ]
+      },
+      "patternProperties": {
+        "^\\$": {}
+      },
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "const": "enforce"
+          }
+        ]
+      }
+    },
+    "profiles": {
+      "type": "object",
+      "description": "the sensitive endpoints' profiles (layers.md L11)",
+      "properties": {
+        "login": {
+          "description": "the login profile's account defences",
+          "anyOf": [
+            {
+              "type": "object",
+              "description": "the login profile's account defences",
+              "properties": {
+                "failures": {
+                  "type": "object",
+                  "description": "failures per attempted username",
+                  "properties": {
+                    "window": {
+                      "description": "a duration with its unit written: \"30s\", \"1h 30m\", or { minutes: 1, seconds: 30 }",
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "ms": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "seconds": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "minutes": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "hours": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "days": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "weeks": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          },
+                          "additionalProperties": false,
+                          "minProperties": 1
+                        }
+                      ]
+                    },
+                    "delayAfter": {
+                      "type": "integer",
+                      "description": "failures before the delay",
+                      "minimum": 1
+                    },
+                    "challengeAfter": {
+                      "type": "integer",
+                      "description": "failures before the challenge",
+                      "minimum": 1
+                    },
+                    "lockAfter": {
+                      "type": "integer",
+                      "description": "failures before the soft lock",
+                      "minimum": 1
+                    },
+                    "lockFor": {
+                      "description": "a duration with its unit written: \"30s\", \"1h 30m\", or { minutes: 1, seconds: 30 }",
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "ms": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "seconds": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "minutes": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "hours": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "days": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "weeks": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          },
+                          "additionalProperties": false,
+                          "minProperties": 1
+                        }
+                      ]
+                    },
+                    "maxDelay": {
+                      "description": "a duration with its unit written: \"30s\", \"1h 30m\", or { minutes: 1, seconds: 30 }",
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "ms": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "seconds": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "minutes": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "hours": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "days": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "weeks": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          },
+                          "additionalProperties": false,
+                          "minProperties": 1
+                        }
+                      ]
+                    }
+                  },
+                  "patternProperties": {
+                    "^\\$": {}
+                  },
+                  "additionalProperties": false
+                },
+                "distinctUsernames": {
+                  "description": "distinct usernames failing from one address",
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "description": "distinct usernames failing from one address",
+                      "properties": {
+                        "window": {
+                          "description": "a duration with its unit written: \"30s\", \"1h 30m\", or { minutes: 1, seconds: 30 }",
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "ms": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "seconds": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "minutes": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "hours": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "days": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "weeks": {
+                                  "type": "number",
+                                  "minimum": 0
+                                }
+                              },
+                              "additionalProperties": false,
+                              "minProperties": 1
+                            }
+                          ]
+                        },
+                        "challengeAt": {
+                          "type": "integer",
+                          "description": "default 10",
+                          "minimum": 1
+                        },
+                        "banAt": {
+                          "type": "integer",
+                          "description": "default 30",
+                          "minimum": 1
+                        },
+                        "banFor": {
+                          "description": "a duration with its unit written: \"30s\", \"1h 30m\", or { minutes: 1, seconds: 30 }",
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "ms": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "seconds": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "minutes": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "hours": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "days": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "weeks": {
+                                  "type": "number",
+                                  "minimum": 0
+                                }
+                              },
+                              "additionalProperties": false,
+                              "minProperties": 1
+                            }
+                          ]
+                        }
+                      },
+                      "patternProperties": {
+                        "^\\$": {}
+                      },
+                      "additionalProperties": false
+                    },
+                    {
+                      "const": false
+                    }
+                  ]
+                },
+                "distinctAddresses": {
+                  "description": "distinct addresses failing for one username",
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "description": "distinct addresses failing for one username",
+                      "properties": {
+                        "window": {
+                          "description": "a duration with its unit written: \"30s\", \"1h 30m\", or { minutes: 1, seconds: 30 }",
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "ms": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "seconds": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "minutes": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "hours": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "days": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "weeks": {
+                                  "type": "number",
+                                  "minimum": 0
+                                }
+                              },
+                              "additionalProperties": false,
+                              "minProperties": 1
+                            }
+                          ]
+                        },
+                        "stepUpAt": {
+                          "type": "integer",
+                          "description": "default 10",
+                          "minimum": 1
+                        }
+                      },
+                      "patternProperties": {
+                        "^\\$": {}
+                      },
+                      "additionalProperties": false
+                    },
+                    {
+                      "const": false
+                    }
+                  ]
+                },
+                "riskySuccessAfter": {
+                  "description": "failures before a success is risky; false for none",
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "description": "failures",
+                      "minimum": 1
+                    },
+                    {
+                      "const": false
+                    }
+                  ]
+                },
+                "device": {
+                  "description": "the device cookie",
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "description": "the device cookie",
+                      "properties": {
+                        "cookie": {
+                          "type": "string",
+                          "description": "its name"
+                        },
+                        "maxAge": {
+                          "description": "a duration with its unit written: \"30s\", \"1h 30m\", or { minutes: 1, seconds: 30 }",
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "ms": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "seconds": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "minutes": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "hours": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "days": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "weeks": {
+                                  "type": "number",
+                                  "minimum": 0
+                                }
+                              },
+                              "additionalProperties": false,
+                              "minProperties": 1
+                            }
+                          ]
+                        }
+                      },
+                      "patternProperties": {
+                        "^\\$": {}
+                      },
+                      "additionalProperties": false
+                    },
+                    {
+                      "const": false
+                    }
+                  ]
+                },
+                "inferOutcome": {
+                  "type": "boolean",
+                  "description": "infer the outcome from the status"
+                },
+                "mode": {
+                  "enum": ["enforce", "dryRun", "off"],
+                  "description": "enforce applies it; dryRun records what it would have done; off skips it"
+                },
+                "failureRate": {
+                  "type": "object",
+                  "description": "the global failure-rate response",
+                  "properties": {
+                    "window": {
+                      "description": "a duration with its unit written: \"30s\", \"1h 30m\", or { minutes: 1, seconds: 30 }",
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "ms": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "seconds": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "minutes": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "hours": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "days": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "weeks": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          },
+                          "additionalProperties": false,
+                          "minProperties": 1
+                        }
+                      ]
+                    },
+                    "baseline": {
+                      "description": "a duration with its unit written: \"30s\", \"1h 30m\", or { minutes: 1, seconds: 30 }",
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "ms": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "seconds": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "minutes": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "hours": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "days": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "weeks": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          },
+                          "additionalProperties": false,
+                          "minProperties": 1
+                        }
+                      ]
+                    },
+                    "factor": {
+                      "type": "number",
+                      "description": "times the baseline",
+                      "minimum": 1
+                    },
+                    "minFailures": {
+                      "type": "integer",
+                      "description": "failures before it can trip",
+                      "minimum": 1
+                    },
+                    "hold": {
+                      "description": "a duration with its unit written: \"30s\", \"1h 30m\", or { minutes: 1, seconds: 30 }",
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "ms": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "seconds": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "minutes": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "hours": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "days": {
+                              "type": "number",
+                              "minimum": 0
+                            },
+                            "weeks": {
+                              "type": "number",
+                              "minimum": 0
+                            }
+                          },
+                          "additionalProperties": false,
+                          "minProperties": 1
+                        }
+                      ]
+                    },
+                    "respond": {
+                      "enum": ["challenge", "tag", "limit"],
+                      "description": "what it does"
+                    },
+                    "to": {
+                      "type": "array",
+                      "description": "who it applies to",
+                      "items": {
+                        "enum": ["hosting", "newDevice", "all"],
+                        "description": "a target"
+                      }
+                    },
+                    "limit": {
+                      "type": "object",
+                      "description": "its limit",
+                      "properties": {
+                        "attempts": {
+                          "type": "integer",
+                          "description": "attempts",
+                          "minimum": 1
+                        },
+                        "window": {
+                          "description": "a duration with its unit written: \"30s\", \"1h 30m\", or { minutes: 1, seconds: 30 }",
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "ms": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "seconds": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "minutes": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "hours": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "days": {
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "weeks": {
+                                  "type": "number",
+                                  "minimum": 0
+                                }
+                              },
+                              "additionalProperties": false,
+                              "minProperties": 1
+                            }
+                          ]
+                        },
+                        "by": {
+                          "enum": ["asn", "hosting"],
+                          "description": "keyed by"
+                        }
+                      },
+                      "patternProperties": {
+                        "^\\$": {}
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "patternProperties": {
+                    "^\\$": {}
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "patternProperties": {
+                "^\\$": {}
+              },
+              "additionalProperties": false
+            },
+            {
+              "const": false
+            }
+          ]
+        }
+      },
+      "patternProperties": {
+        "^\\$": {}
+      },
+      "additionalProperties": false
+    },
+    "identifiers": {
+      "type": "object",
+      "description": "identifier checks (layers.md L11.7)",
+      "properties": {
+        "patterns": {
+          "type": "array",
+          "description": "the patterns, keyed by `id`",
+          "items": {
+            "type": "object",
+            "description": "a pattern",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "its id"
+              },
+              "kind": {
+                "enum": ["email", "phone", "username", "domain"],
+                "description": "what it checks"
+              },
+              "pattern": {
+                "type": "string",
+                "description": "the glob"
+              },
+              "reason": {
+                "type": "string",
+                "description": "why"
+              },
+              "mode": {
+                "enum": ["enforce", "dryRun", "off"],
+                "description": "enforce applies it; dryRun records what it would have done; off skips it"
+              }
+            },
+            "patternProperties": {
+              "^\\$": {}
+            },
+            "additionalProperties": false
+          }
+        },
+        "reserved": {
+          "type": "boolean",
+          "description": "refuse reserved names"
+        },
+        "ownDomains": {
+          "type": "array",
+          "description": "the service's own domains",
+          "items": {
+            "type": "string",
+            "description": "a domain"
+          }
+        },
+        "code": {
+          "type": "string",
+          "description": "the refusal's problem code"
+        }
+      },
+      "patternProperties": {
+        "^\\$": {}
+      },
+      "additionalProperties": false
+    }
+  },
+  "patternProperties": {
+    "^\\$": {
+      "description": "a note, ignored"
+    }
+  },
+  "additionalProperties": false
+}

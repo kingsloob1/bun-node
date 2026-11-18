@@ -48,6 +48,8 @@ describe("the nav", () => {
     renderApp({ path: "/?scope=group:payments" });
     expect(await navLabels()).toEqual([
       "Analytics",
+      "Services",
+      "Policies",
       "Lists",
       "Bans",
       "Events",
@@ -59,6 +61,8 @@ describe("the nav", () => {
       .map((link) => link.getAttribute("href"));
     expect(hrefs).toEqual([
       "/security?scope=group%3Apayments",
+      "/security/services?scope=group%3Apayments",
+      "/security/policies?scope=group%3Apayments",
       "/security/lists?scope=group%3Apayments",
       "/security/bans?scope=group%3Apayments",
       "/security/events?scope=group%3Apayments",

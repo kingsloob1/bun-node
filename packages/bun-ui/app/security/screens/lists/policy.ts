@@ -24,6 +24,11 @@ import { entryKey, isRecord, listsOf } from "./entries";
 /** `GET /policies/:scope`. */
 export type PolicyDto = Routes["GET /policies/:scope"]["responses"][200];
 
+/** A service's or a group's effective policy: the merged policy, each field's origin and each locked item's locking scope. */
+export type EffectiveDto =
+  | Routes["GET /services/:id/effective"]["responses"][200]
+  | Routes["GET /groups/:id/effective"]["responses"][200];
+
 /** `PUT /policies/:scope/draft`'s answer. */
 export type DraftDto = Routes["PUT /policies/:scope/draft"]["responses"][200];
 
@@ -70,6 +75,11 @@ export interface PolicyLists {
   readonly inherited: ListRow[];
   /** Why the inherited entries could not be read, if they could not. */
   readonly inheritedError: unknown;
+  /**
+   * The service's or group's effective policy (its fields' origins and
+   * locks), as last published; `undefined` on global or until read.
+   */
+  readonly effective: EffectiveDto | undefined;
   /** Reads everything again. */
   readonly reload: () => Promise<void>;
 }
@@ -149,6 +159,7 @@ export function usePolicyLists(scope: string, poll = true): PolicyLists {
     inherited,
     // A service whose effective policy does not compile still has its own lists.
     inheritedError: effective.error,
+    effective: effective.data,
     reload,
   };
 }
