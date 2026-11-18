@@ -51,6 +51,7 @@ import {
   SECURITY_ROLES,
 } from "./contract/constants";
 import { s } from "./schema";
+import { inlinePolicyJsonSchema } from "../policy/jsonSchema";
 
 /** An entity id. */
 const Id = s.string({
@@ -71,9 +72,17 @@ const Scope = s.string({
 /** Labels. */
 const Labels = s.record(s.string({ max: 200 }), 50);
 
-/** A policy (partial, layered), documented as an object: its own validator checks it (securityPolicySchema). */
-const PolicyObject = s.anyObject(
-  "a bun-security policy (a partial one at a scope, layered over the scopes above it)",
+/**
+ * A policy (partial, layered): checked here as an object, since its own
+ * validator (securityPolicySchema) runs in the handlers, and documented by
+ * the policy's JSON Schema, which the OpenAPI document lifts into its
+ * `SecurityPolicy` component (PR-AN2).
+ */
+const PolicyObject = s.documented(
+  s.anyObject(
+    "a bun-security policy (a partial one at a scope, layered over the scopes above it)",
+  ),
+  inlinePolicyJsonSchema(),
 );
 
 /** Path parameters with an `id`. */
@@ -372,6 +381,7 @@ export const Effective: Schema<EffectivePolicyDto> = s.object({
   policyVersions: s.array(s.string(), 100),
   policy: PolicyObject,
   origins: s.record(Scope, 100_000),
+  locked: s.record(Scope, 100_000),
 });
 
 /** A group's effective policy. */
@@ -380,6 +390,7 @@ export const GroupEffective: Schema<GroupEffectivePolicyDto> = s.object({
   policyVersions: s.array(s.string(), 100),
   policy: PolicyObject,
   origins: s.record(Scope, 100_000),
+  locked: s.record(Scope, 100_000),
 });
 
 /** A signed bundle, documented as an object (`bun-security.bundle/1`). */
@@ -659,6 +670,20 @@ export const Agent: Schema<AgentDto> = s.object({
             }),
             32,
           ),
+        }),
+      ),
+      crawlers: s.optional(
+        s.object({
+          conflicts: s.array(
+            s.object({
+              crawler: s.string(),
+              entry: s.optional(s.string()),
+              ban: s.optional(s.string()),
+              range: s.string(),
+            }),
+            32,
+          ),
+          total: s.int({ min: 0 }),
         }),
       ),
       warnings: s.optional(

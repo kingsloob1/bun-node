@@ -48,6 +48,12 @@ export interface MergedPolicy {
   readonly origins: Readonly<Record<string, PolicyScopeId>>;
   /** Overrides of locked items, dropped. */
   readonly locked: readonly LockedOverride[];
+  /**
+   * Each locked keyed item's path → the scope that locked it (PR-AN2): the
+   * outermost scope that set `locked: true` on it, since nothing below can
+   * change it after that.
+   */
+  readonly locks: Readonly<Record<string, PolicyScopeId>>;
 }
 
 /** The arrays merged by key, by their path in the policy. */
@@ -190,7 +196,7 @@ export function mergePolicies(layers: readonly PolicyLayer[]): MergedPolicy {
   };
 
   for (const layer of layers) mergeInto(policy, layer.policy, "", layer.scope);
-  return { policy, origins, locked };
+  return { policy, origins, locked, locks: Object.fromEntries(lockedBy) };
 }
 
 /** The list-entry scope a policy scope is (`global`, `group`, `service`). */

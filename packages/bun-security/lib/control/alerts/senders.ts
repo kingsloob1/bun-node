@@ -27,8 +27,9 @@ export interface AlertEmail {
  * against their threshold, the window, the time, the rule id (redacted
  * when it names an account), the service and agent, the warning's kind,
  * the route's template (`POST /login`; anything else under `route`, such as
- * a raw path with a query, is dropped), and an address only on an alert
- * about it. Anything else a condition
+ * a raw path with a query, is dropped), an address only on an alert
+ * about it, and a sustained condition's hours and crawler id (PR-AN2; an
+ * id not shaped like one is dropped). Anything else a condition
  * reports is left out here, whatever it is.
  */
 export const ALERT_FACTS = Object.freeze([
@@ -49,7 +50,12 @@ export const ALERT_FACTS = Object.freeze([
   "since",
   "ip",
   "route",
+  "hours",
+  "crawler",
 ] as const);
+
+/** A crawler's id, as the registry and a policy's `custom` name them. */
+const CRAWLER_ID = /^[a-z0-9][\w.-]{0,63}$/i;
 
 /** A route template as the recorder keys it (`POST /login`, `GET /users/:id`): a method, a path, no query. */
 const ROUTE_TEMPLATE = /^[A-Z]{3,10} \/[^\s?#]{0,190}$/;
@@ -109,6 +115,11 @@ export function renderMessage(
     if (
       name === "route" &&
       (typeof value !== "string" || !ROUTE_TEMPLATE.test(value))
+    )
+      continue;
+    if (
+      name === "crawler" &&
+      (typeof value !== "string" || !CRAWLER_ID.test(value))
     )
       continue;
     facts[name] = value;

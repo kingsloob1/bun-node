@@ -4,6 +4,8 @@
     {
       "spelling": "@kingsleyweb/bun-security",
       "values": [
+        "SECURITY_POLICY_JSON_SCHEMA",
+        "inlinePolicyJsonSchema",
         "createSecurity",
         "compilePolicy",
         "securityPolicySchema",
@@ -468,6 +470,7 @@
       "$comment": "The agent (control-plane.md §7, PR-CP4): connectAgent keeps an engine on the service's signed bundle and signed bans; never loads the control plane.",
       "spelling": "@kingsleyweb/bun-security/agent",
       "values": [
+        "MAX_HEARTBEAT_CONFLICTS",
         "connectAgent",
         "createEventBatcher",
         "AGENT_PROTOCOL_VERSION",
@@ -575,6 +578,7 @@
       "$comment": "Events and analytics (README §8, PR-CP1): the enforcement point's recorder, event ring, redaction and batcher, and the control plane's ingestion and maintenance.",
       "spelling": "@kingsleyweb/bun-security/analytics",
       "values": [
+        "CRAWLER_OUTCOMES",
         "createAnalyticsRecorder",
         "createEventRing",
         "createRedactor",

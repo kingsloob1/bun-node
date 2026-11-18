@@ -51,6 +51,7 @@ import {
   agentEnvelope,
   agentRouteOf,
   artefactSignedBody,
+  MAX_HEARTBEAT_CONFLICTS,
   MAX_HEARTBEAT_FEEDS,
   MAX_BAN_REPORTS,
   MAX_HEARTBEAT_WARNINGS,
@@ -62,6 +63,7 @@ import type { ControlPlane } from "./plane";
 import { auditContext } from "./audit/context";
 import { SHA256_PATTERN, sha256Of } from "./artefacts";
 import { ApiProblem } from "./problems";
+import { parseCidr } from "../ip/address";
 import { serviceScope } from "./scopes";
 
 /** A verified agent request, as a route handler gets it. */
@@ -566,7 +568,42 @@ export function isHeartbeat(
     (value.intel === undefined || isIntel(value.intel)) &&
     (value.bansDropped === undefined ||
       (Number.isSafeInteger(value.bansDropped) &&
-        (value.bansDropped as number) >= 0))
+        (value.bansDropped as number) >= 0)) &&
+    (value.crawlers === undefined || isCrawlers(value.crawlers))
+  );
+}
+
+/** A crawler's id, as the registry and a policy's `custom` name them. */
+const CRAWLER_ID = /^[a-z0-9][\w.-]{0,63}$/i;
+
+/** Whether `value` is a heartbeat's crawler conflicts (bounded, PR-AN2). */
+function isCrawlers(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const { conflicts, total, ...rest } = value as Record<string, unknown>;
+  return (
+    Object.keys(rest).length === 0 &&
+    Array.isArray(conflicts) &&
+    conflicts.length <= MAX_HEARTBEAT_CONFLICTS &&
+    Number.isSafeInteger(total) &&
+    (total as number) >= conflicts.length &&
+    conflicts.every((item: unknown) => {
+      if (typeof item !== "object" || item === null) return false;
+      const c = item as Record<string, unknown>;
+      const text = (v: unknown, max: number) =>
+        typeof v === "string" && v.length > 0 && v.length <= max;
+      return (
+        Object.keys(c).every((key) =>
+          ["crawler", "entry", "ban", "range"].includes(key),
+        ) &&
+        typeof c.crawler === "string" &&
+        CRAWLER_ID.test(c.crawler) &&
+        (c.entry === undefined) !== (c.ban === undefined) &&
+        (c.entry === undefined || text(c.entry, 300)) &&
+        (c.ban === undefined || text(c.ban, 200)) &&
+        typeof c.range === "string" &&
+        parseCidr(c.range) !== null
+      );
+    })
   );
 }
 

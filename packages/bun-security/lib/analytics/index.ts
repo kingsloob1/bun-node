@@ -48,7 +48,9 @@ export {
   type AnalyticsRecorderOptions,
   type AnalyticsRecorderStats,
   type AnalyticsSubjectKind,
+  CRAWLER_OUTCOMES,
   createAnalyticsRecorder,
+  type CrawlerOutcome,
   type DecisionExtras,
   LATENCY_BUCKETS_MS,
   LOGIN_FAILURE_MEMORY_MS,
@@ -112,6 +114,7 @@ export function analyticsSignalHook(options: {
           : { username: subject.username }),
       },
       ...(detail?.pattern === undefined ? {} : { pattern: detail.pattern }),
+      ...(detail?.crawler === undefined ? {} : { crawler: detail.crawler }),
     });
   };
 }

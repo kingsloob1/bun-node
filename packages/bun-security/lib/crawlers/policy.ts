@@ -220,7 +220,10 @@ export function validateCrawlers(input: unknown): CrawlerIssue[] {
         }
         for (const key of Object.keys(crawler)) {
           if (!["id", "tokens", "ranges", "rdns"].includes(key))
-            at(["custom", i, key], "is not a custom crawler setting");
+            at(
+              ["custom", i, key],
+              "is not a custom crawler setting (id, tokens, ranges, rdns)",
+            );
         }
       });
     }
@@ -263,6 +266,10 @@ export function validateCrawlers(input: unknown): CrawlerIssue[] {
   if (input.paths !== undefined) {
     if (!isRecord(input.paths)) at(["paths"], "must be { include, exclude }");
     else {
+      for (const key of Object.keys(input.paths)) {
+        if (key !== "include" && key !== "exclude")
+          at(["paths", key], "is not a paths setting (include, exclude)");
+      }
       for (const side of ["include", "exclude"] as const) {
         const list = input.paths[side];
         if (list === undefined) continue;
@@ -322,7 +329,7 @@ export function validateCrawlers(input: unknown): CrawlerIssue[] {
       }
       for (const key of Object.keys(input.spoofed)) {
         if (key !== "action" && key !== "weight")
-          at(["spoofed", key], "is not a spoofed setting");
+          at(["spoofed", key], "is not a spoofed setting (action, weight)");
       }
     }
   }

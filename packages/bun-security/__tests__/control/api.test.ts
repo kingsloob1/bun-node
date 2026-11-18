@@ -336,6 +336,9 @@ describe("drafts, publishing and inheritance", () => {
     ]);
     expect(effective.origins["limits[id=per-route]"]).toBe("group:payments");
     expect(effective.origins["limits[id=scanners]"]).toBe("global");
+    // Each locked item and the scope that locked it (PR-AN2); the unlocked
+    // one is not there.
+    expect(effective.locked).toEqual({ "limits[id=scanners]": "global" });
     expect(effective.policy.service).toBe("checkout");
     const diff = await call("GET", "/policies/global/diff?from=head&to=head");
     expect(diff.body.changes).toEqual([]);

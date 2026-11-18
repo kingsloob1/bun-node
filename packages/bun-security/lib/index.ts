@@ -149,6 +149,11 @@ export {
   SECURITY_POLICY_VERSION,
   securityPolicySchema,
 } from "./policy/schema";
+export {
+  inlinePolicyJsonSchema,
+  SECURITY_POLICY_JSON_SCHEMA,
+} from "./policy/jsonSchema";
+export type { PolicyJsonSchema } from "./policy/jsonSchema";
 export type {
   BanPolicy,
   CanaryPolicy,

@@ -22,6 +22,14 @@ export interface CrawlerConflict {
   readonly crawler: string;
   /** The entry or ban that covers them (`lists[3] country:US`, `ban ip:66.249.66.1`). */
   readonly entry: string;
+  /**
+   * The list entry's key, as the effective policy's paths name it
+   * (`lists[id=<key>]`: its `id`, else its subject and any paths), when a
+   * list entry covers them (PR-AN2).
+   */
+  readonly entryId?: string;
+  /** The manual ban's id, when a ban covers them (PR-AN2). */
+  readonly banId?: string;
   /** One range of the crawler's it covers. */
   readonly range: string;
   /** The warning's text. */
@@ -37,6 +45,23 @@ function overlaps(a: ParsedCidr, b: ParsedCidr): boolean {
   return a.bits <= b.bits
     ? cidrContains(a, { family: b.family, words: b.words, text: b.text })
     : cidrContains(b, { family: a.family, words: a.words, text: a.text });
+}
+
+/**
+ * A list entry's key as the control plane's merge names it: its `id`,
+ * else its subject (`ip:`, `country:`, `asn:`) and any `|paths`.
+ */
+function entryKey(entry: ListEntry): string {
+  if (entry.id !== undefined) return entry.id;
+  const subject =
+    entry.ip !== undefined
+      ? `ip:${entry.ip}`
+      : entry.country !== undefined
+        ? `country:${entry.country}`
+        : `asn:${String(entry.asn)}`;
+  return entry.paths === undefined
+    ? subject
+    : `${subject}|${entry.paths.join(",")}`;
 }
 
 /** Whether a list entry refuses (an allow never conflicts). */
@@ -72,12 +97,17 @@ export function crawlerConflicts(
       .map((text) => parseCidr(text))
       .filter((range): range is ParsedCidr => range !== null);
     if (ranges.length === 0) continue;
-    const add = (entry: string, range: ParsedCidr) => {
+    const add = (
+      entry: string,
+      range: ParsedCidr,
+      id: { entryId: string } | { banId: string },
+    ) => {
       if (found.some((c) => c.crawler === crawler.id && c.entry === entry))
         return;
       found.push({
         crawler: crawler.id,
         entry,
+        ...id,
         range: range.text,
         message: `${entry} covers ${crawler.id}'s published range ${range.text}: a verified ${crawler.id} crawler would be refused there, and the site may drop out of its index`,
       });
@@ -90,7 +120,7 @@ export function crawlerConflicts(
           cidr === null
             ? undefined
             : ranges.find((range) => overlaps(cidr, range));
-        if (hit) add(name, hit);
+        if (hit) add(name, hit, { entryId: entryKey(entry) });
       } else if (entry.country !== undefined || entry.asn !== undefined) {
         const hit = ranges.find((range) => {
           const record = intel.lookup({
@@ -102,7 +132,7 @@ export function crawlerConflicts(
             ? record.country === entry.country
             : record.asn === entry.asn;
         });
-        if (hit) add(name, hit);
+        if (hit) add(name, hit, { entryId: entryKey(entry) });
       }
     }
     for (const ban of manual) {
@@ -111,7 +141,7 @@ export function crawlerConflicts(
         cidr === null
           ? undefined
           : ranges.find((range) => overlaps(cidr, range));
-      if (hit) add(`ban ${ban.id}`, hit);
+      if (hit) add(`ban ${ban.id}`, hit, { banId: ban.id });
     }
   }
   return found;

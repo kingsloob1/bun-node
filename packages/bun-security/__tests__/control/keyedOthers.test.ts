@@ -335,7 +335,7 @@ describe("rows stored before the keying", () => {
   it("without a keyring, are shown unkeyed: a raw id never leaves in a read, and a raw id is refused on a write", async () => {
     const t = await setup({ bans: { users: false, apiKeys: false } });
     const legacy = {
-      lists: [{ user: RAW_USER, action: "block" }],
+      lists: [{ user: RAW_USER, action: "block", locked: true }],
       ...POLICY,
     };
     await t.store.appendVersion(
@@ -351,11 +351,19 @@ describe("rows stored before the keying", () => {
     );
     const shown = await reads(t, "global");
     expect(holdsRaw(shown)).toBe(false);
+    // The locked entry's path is redacted in `locked` as in `origins`
+    // (PR-AN2); negative control: the plane's own answer holds the raw id.
+    const effective = (await t.call("GET", "/services/pay/effective")).body;
+    expect(Object.keys(effective.locked)).toEqual(["lists[id=user:[unkeyed]]"]);
+    expect(
+      holdsRaw(JSON.stringify((await t.api.plane.effective("pay")).locked)),
+    ).toBe(true);
     const version = (await t.call("GET", "/policies/global/versions/pv_old"))
       .body;
     expect(version.policy.lists[0]).toEqual({
       unkeyed: "user",
       action: "block",
+      locked: true,
     });
     expect(version.policy.deception.canaries).toEqual([
       { id: "backup-2026-q3", unkeyed: "user" },
@@ -486,6 +494,10 @@ describe("GET /groups/:id/effective", () => {
     expect(effective.body.origins["lists[id=asn:64501]"]).toBe(
       "group:payments",
     );
+    // The locked entry, by who locked it (PR-AN2); the group's own is not.
+    expect(effective.body.locked).toEqual({
+      "lists[id=country:KP]": "global",
+    });
     expect((await t.call("GET", "/groups/nope/effective")).status).toBe(404);
     // Someone with no role on the group may not read it.
     expect(

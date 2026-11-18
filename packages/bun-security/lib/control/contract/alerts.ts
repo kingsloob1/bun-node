@@ -68,6 +68,18 @@ export type AlertCondition =
       readonly value: number;
       readonly source?: "auto" | "manual";
     }
+  | (AlertMetric & {
+      /**
+       * Sustained (PR-AN2): fires, per `groupBy` value (or for the rule as
+       * a whole), when every one of the last `hours` complete clock hours
+       * counted above zero; it clears after a complete hour with none.
+       */
+      readonly type: "sustained";
+      /** How many complete clock hours, 1 to 168. */
+      readonly hours: number;
+      /** The dimension each group is (`crawler`). */
+      readonly groupBy?: string;
+    })
   | {
       readonly type: "agentSilent";
       readonly afterMs: number;

@@ -138,6 +138,22 @@ export const ALERT_RULE_PRESETS = Object.freeze({
     severity: "warning",
     condition: { type: "agentWarning", kinds: ["store.distinct-fallback"] },
   },
+  /**
+   * A verified crawler limited by its own limit (a `429`) in each of the
+   * last 24 complete hours, across every agent in the scope (layers.md
+   * L3.2, PR-AN2): a URL that keeps answering 429 drops out of the index.
+   */
+  crawlerLimited: {
+    title: "Crawler limited for a day",
+    severity: "warning",
+    condition: {
+      type: "sustained",
+      metric: "crawlers",
+      dims: { outcome: "limited" },
+      groupBy: "crawler",
+      hours: 24,
+    },
+  },
   /** An agent heard from before, silent for 2 minutes. */
   agentSilent: {
     title: "Agent silent",

@@ -114,6 +114,26 @@ export interface AgentFeedStatus {
   readonly error?: string;
 }
 
+/** The most crawler conflicts a heartbeat carries (PR-AN2). */
+export const MAX_HEARTBEAT_CONFLICTS = 32;
+
+/**
+ * One crawler conflict in a heartbeat (layers.md L3.2, PR-AN2): an allowed
+ * crawler, the refusing list entry or manual ban whose subject covers its
+ * published ranges, and one range covered. Exactly one of `entry` and
+ * `ban`.
+ */
+export interface AgentCrawlerConflict {
+  /** The crawler's id (`google`). */
+  readonly crawler: string;
+  /** The list entry's key (`lists[id=<key>]` in the effective policy), when an entry covers it. */
+  readonly entry?: string;
+  /** The manual ban's id, when a ban covers it. */
+  readonly ban?: string;
+  /** One of the crawler's published ranges it covers. */
+  readonly range: string;
+}
+
 /** What an agent's heartbeat says (`POST /agent/heartbeat`). */
 export interface AgentHeartbeat {
   /** The route: `heartbeat`. */
@@ -140,6 +160,15 @@ export interface AgentHeartbeat {
   readonly intel?: { readonly feeds: readonly AgentFeedStatus[] };
   /** Ban reports dropped since the last heartbeat (past the agent's rate cap, or unsendable); absent from an older agent. */
   readonly bansDropped?: number;
+  /**
+   * The engine's crawler conflicts (PR-AN2): at most
+   * {@link MAX_HEARTBEAT_CONFLICTS}, and how many it found; absent from an
+   * engine that reports none or an older agent.
+   */
+  readonly crawlers?: {
+    readonly conflicts: readonly AgentCrawlerConflict[];
+    readonly total: number;
+  };
 }
 
 /** The most bans one report batch holds (`POST /agent/ban-reports`). */

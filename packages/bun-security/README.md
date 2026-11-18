@@ -1071,6 +1071,11 @@ than a list of unknown keys), so an older service tells a newer policy from a
 broken one; that issue carries `code: "policy.newer"`, for a program to
 tell "upgrade needed" from "malformed". `securityPolicySchema` is
 the same validation as a [Standard Schema](https://standardschema.dev).
+`SECURITY_POLICY_JSON_SCHEMA` describes the format's shape as a JSON
+Schema (draft 2020-12: keys, types, enumerations, bounds; nothing required,
+since a scope's policy is partial), for editors and form builders; the
+validator stays the authority on the rest. The control plane's OpenAPI
+document carries it as the `SecurityPolicy` component.
 `security.load(policy)` swaps a new policy in at once, keeping the old one if
 the new one is refused.
 
@@ -1312,8 +1317,10 @@ const admin = await secureAdmin({ port: 9443, api }); // 127.0.0.1 unless told o
   objects merge by key, limits, counted rules, request rules and list
   entries by `id` (a lower scope overrides one, or turns it off with
   `{ id, mode: "off" }`), lists union. An item marked `locked: true` cannot
-  be overridden below it. `GET /services/:id/effective` shows the result
-  with each field's origin.
+  be overridden below it. `GET /services/:id/effective` (and
+  `GET /groups/:id/effective`) shows the result with each field's origin
+  (`origins`, path → scope) and each locked item's locking scope
+  (`locked`, path → the outermost scope that set `locked: true`).
 - **Drafts and publishing.** `PUT /policies/:scope/draft` saves a draft by
   the revision read (a stale one is a `409` with the current draft); it must
   compile over the scopes above it. `POST /policies/:scope/publish` names
@@ -1544,7 +1551,13 @@ await agent.ready; // the last known good is in, before the control plane is ask
   (`events.dropped`, `{ reason: "agent-queue" }`).
 - **Heartbeats** every 30 s say what the agent enforces; `GET /agents`
   shows each agent `ok`, `late` (3 missed), `offline` (10 missed),
-  `signature-failing`, `revoked` or `never-seen`.
+  `signature-failing`, `revoked` or `never-seen`. A heartbeat also carries
+  the engine's warnings, its IP feeds' state and its crawler conflicts
+  (`reported.crawlers`: up to 32, each the crawler, the list entry's key
+  or the ban's id, and one range covered, with the count found; checked
+  again when the bundle or the bans change, else every 5 minutes). Only an
+  agent holds the crawlers' ranges, so a draft's new conflicts show once it
+  is published.
 - **Rotation**: `POST /agents/:id/rotate` (a step-up) shows a new secret
   once; the old one is accepted until the agent first signs with the new
   one, or 24 hours. `POST /agents/:id/revoke` refuses the key at once.
@@ -1594,7 +1607,10 @@ analytics page charts:
   `onSignal: analyticsSignalHook({ recorder })` beside `onDecision`, and
   the recorder counts challenge answers (`challenges`), sign-ins
   (`login`, `login.success-after-failures`, `top.usernames-per-ip`) and
-  identifier-pattern hits (`patterns`, `top.pattern`). Exact refusals per
+  identifier-pattern hits (`patterns`, `top.pattern`), and each verified
+  crawler's traffic (`crawlers { crawler, outcome }`: every `request`,
+  each `not-found` answered to it, each `limited` by its own limit, and
+  the `probe` and `honeypot` hits its allowance lifted). Exact refusals per
   subject are kept per hour too (`refused.hourly`, for sparklines), and an
   event carries its address's offence score. The reads add
   `groupBy=service` on a series, `GET /analytics/distinct` (distinct
@@ -1626,7 +1642,11 @@ const api = createSecurityApi({
   and a condition over the analytics counters, the bans and the agents:
   `threshold` (a metric's sum over a window, per group with `groupBy`,
   narrowed by `prefix`), `rate` (per minute), `baseline` (a share against
-  the same hour on earlier days), `banStorm`, `agentSilent` and
+  the same hour on earlier days), `sustained` (every one of the last
+  `hours` complete clock hours counted, per group; the `crawlerLimited`
+  preset fires for a crawler limited in each of the last 24 hours, across
+  the scope's services, since a URL that keeps answering 429 drops out of
+  the index), `banStorm`, `agentSilent` and
   `agentWarning` (an enforcement point's warning: its store down, its
   trust settings wrong, a feed not refreshing, evictions, a login failure
   rate, distinct counts falling back). `alertRulePreset(name, …)` gives

@@ -42,7 +42,7 @@ const ChannelType = s.enum(["webhook", "slack", "email"] as const);
 
 /** A condition: checked by the rule engine (`checkCondition`), documented as an object. */
 const Condition = s.anyObject(
-  "what the rule watches: threshold, rate, baseline, banStorm, agentSilent or agentWarning (README §9.3)",
+  "what the rule watches: threshold, rate, baseline, sustained, banStorm, agentSilent or agentWarning (README §9.3)",
 ) as Schema<unknown> as Schema<AlertCondition>;
 
 /** A URL, write-only. */

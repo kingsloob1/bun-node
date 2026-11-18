@@ -346,6 +346,19 @@ export class AgentRegistry {
               })),
             },
           }),
+      ...(beat.crawlers === undefined
+        ? {}
+        : {
+            crawlers: {
+              conflicts: beat.crawlers.conflicts.map((c) => ({
+                crawler: c.crawler,
+                ...(c.entry === undefined ? {} : { entry: c.entry }),
+                ...(c.ban === undefined ? {} : { ban: c.ban }),
+                range: c.range,
+              })),
+              total: beat.crawlers.total,
+            },
+          }),
       ...(beat.warnings === undefined
         ? {}
         : {

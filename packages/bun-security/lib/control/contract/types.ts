@@ -309,6 +309,12 @@ export interface GroupEffectivePolicyDto {
   readonly policy: Readonly<Record<string, unknown>>;
   /** Each field's path → the scope it comes from. */
   readonly origins: Readonly<Record<string, PolicyScopeId>>;
+  /**
+   * Each locked item's path (as in {@link origins}) → the scope that locked
+   * it (PR-AN2). A scope below that one cannot override or disable it; the
+   * locking scope itself still can.
+   */
+  readonly locked: Readonly<Record<string, PolicyScopeId>>;
 }
 
 export interface EffectivePolicyDto {
@@ -320,6 +326,12 @@ export interface EffectivePolicyDto {
   readonly policy: Readonly<Record<string, unknown>>;
   /** Where each field came from: a path to a scope (`limits[id=per-ip]` → `group:payments`). */
   readonly origins: Readonly<Record<string, PolicyScopeId>>;
+  /**
+   * Each locked item's path (as in {@link origins}) → the scope that locked
+   * it (PR-AN2). A scope below that one cannot override or disable it; the
+   * locking scope itself still can.
+   */
+  readonly locked: Readonly<Record<string, PolicyScopeId>>;
 }
 
 /** An approval (control-plane.md §5.4): a change waiting for a second operator. */
@@ -656,6 +668,22 @@ export interface AgentDto {
         readonly attemptedAt: number | null;
         readonly error?: string;
       }[];
+    };
+    /**
+     * The engine's crawler conflicts (layers.md L3.2, PR-AN2): each an
+     * allowed crawler, the refusing list entry (its key, as the effective
+     * policy's `lists[id=<key>]` names it) or manual ban (its id) covering
+     * its published ranges, and one range covered; at most 32, and how many
+     * the engine found. Absent from an older agent.
+     */
+    readonly crawlers?: {
+      readonly conflicts: readonly {
+        readonly crawler: string;
+        readonly entry?: string;
+        readonly ban?: string;
+        readonly range: string;
+      }[];
+      readonly total: number;
     };
     /** The engine's warnings in force (PR-CP6): kind, since, share; at most 16. */
     readonly warnings?: readonly {
