@@ -41,3 +41,44 @@ export function useRefetchInterval(pollMs: number): number {
   const { state } = useLiveStatus();
   return state === "live" ? Math.max(pollMs * 6, 60_000) : pollMs;
 }
+
+/** The live messages a screen may listen for (the API's `GET /live` events, and `$gap` for a lost resume point). */
+export type LiveMessageName =
+  | "ban"
+  | "ban.changed"
+  | "policy.published"
+  | "bundle.compiled"
+  | "approval.created"
+  | "approval.decided"
+  | "event"
+  | "$gap";
+
+/** A screen's listener: the message's data, as sent. */
+export type LiveListener = (data: unknown) => void;
+
+/** What the live provider offers screens beyond invalidation. */
+export interface LiveFeed {
+  /** Listens for a message by name; the unsubscribe. */
+  readonly listen: (
+    name: LiveMessageName,
+    listener: LiveListener,
+  ) => () => void;
+  /** Asks for an extra topic on the scope while it is wanted (`events`: the activity feed); the release. */
+  readonly want: (kind: "events") => () => void;
+}
+
+/** The feed (default: nothing arrives). */
+export const LiveFeedContext = createContext<LiveFeed>({
+  listen: () => () => {},
+  want: () => () => {},
+});
+
+/**
+ * Query keys (their first element) a live message never invalidates: the
+ * lists that count new rows in a chip instead ("N new — show", ui.md §5),
+ * so a page never reshuffles under the operator.
+ */
+export const LIVE_COUNTED_LISTS: ReadonlySet<string> = new Set([
+  "bansList",
+  "eventsList",
+]);

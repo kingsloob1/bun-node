@@ -88,6 +88,7 @@ export function allPermissions(
     "events:read",
     "alerts:read",
     "alerts:write",
+    "rules:test",
   ] as const;
   return Object.fromEntries(
     names.map((name) => [name, value]),
@@ -125,6 +126,8 @@ export function defaultRoutes(
     permissions?: PermissionTable;
     /** The operator's role bindings. */
     roles?: Routes["GET /operators/me"]["responses"][200]["roles"];
+    /** The client address `/operators/me` reports. Default `null`. */
+    address?: string | null;
   } = {},
 ): Record<string, MockHandler | MockReply> {
   const table = options.permissions;
@@ -149,6 +152,7 @@ export function defaultRoutes(
         roles: options.roles ?? [
           { role: "owner", scope: "global", source: "owners" },
         ],
+        address: options.address ?? null,
       },
     },
     "GET /groups": { body: { items: [{ id: "payments" }] } },

@@ -12,7 +12,12 @@ import { join } from "node:path";
 import process from "node:process";
 import { afterAll, describe, expect, it } from "bun:test";
 import { ConfigError } from "@kingsleyweb/bun-common";
-import { sqliteStore, storeTables } from "../../lib/store/index";
+import {
+  AUDIT_GENESIS_HASH,
+  DEFAULT_STORE_PREFIX,
+  sqliteStore,
+  storeTables,
+} from "../../lib/store/index";
 
 const dir = mkdtempSync(join(tmpdir(), "bun-security-sqlite-store-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -150,5 +155,95 @@ describe("sqliteStore", () => {
     await store.connect();
     await store.close();
     await expect(store.get("service", "a")).rejects.toThrow("closed");
+  });
+});
+
+describe("the bans table's filter columns (PR-U3)", () => {
+  /** A store file whose bans table has one ban and none of the filter columns, as an earlier version left it. */
+  async function oldShapeFile(): Promise<{ path: string; id: string }> {
+    const path = fresh();
+    const store = sqliteStore({ path, codec: sealing });
+    const ban = await store.upsertBan({
+      scope: "global",
+      subject: { type: "ip", value: "203.0.113.50" },
+      action: "ban",
+      reason: "old row",
+      source: "manual",
+      expiresAt: null,
+    });
+    const audited = await store.appendAudit(
+      {
+        hash: "a".repeat(64),
+        prevHash: AUDIT_GENESIS_HASH,
+        at: 1,
+        actor: "op",
+        action: "ban.create",
+        scope: "global",
+        entry: { target: { kind: "ban", id: ban.id } },
+      },
+      null,
+    );
+    expect(audited.ok).toBe(true);
+    await store.close();
+    const sql = new SQL(`sqlite://${path}`);
+    const { bans, audit } = storeTables(DEFAULT_STORE_PREFIX);
+    await sql.unsafe(`DROP INDEX ix_${DEFAULT_STORE_PREFIX}audit_target`);
+    await sql.unsafe(`ALTER TABLE ${audit} DROP COLUMN target`);
+    for (const index of ["created", "expires", "subject"]) {
+      await sql.unsafe(`DROP INDEX ix_${DEFAULT_STORE_PREFIX}bans_${index}`);
+    }
+    for (const column of [
+      "kind",
+      "subject",
+      "source",
+      "rule",
+      "created_at",
+      "expires_sort",
+      "country",
+      "asn",
+    ]) {
+      await sql.unsafe(`ALTER TABLE ${bans} DROP COLUMN ${column}`);
+    }
+    await sql.close();
+    return { path, id: ban.id };
+  }
+
+  it("refuses an old bans table without syncSchema, naming the fix", async () => {
+    const { path } = await oldShapeFile();
+    const store = sqliteStore({ path, codec: sealing });
+    let caught: unknown;
+    try {
+      await store.listBans({ limit: 1 });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ConfigError);
+    expect((caught as Error).message).toContain("syncSchema");
+    await store.close();
+  });
+
+  it("syncSchema adds the columns and fills them from each row, so filters find old rows", async () => {
+    const { path, id } = await oldShapeFile();
+    const store = sqliteStore({ path, codec: sealing, syncSchema: true });
+    const page = await store.listBans({
+      limit: 10,
+      kind: "ip",
+      source: "manual",
+      values: ["203.0.113.50"],
+      sort: "expires",
+    });
+    expect(page.items.map((ban) => ban.id)).toEqual([id]);
+    expect(
+      (await store.listAudit({ limit: 10, target: `ban:${id}` })).items.map(
+        (entry) => entry.action,
+      ),
+    ).toEqual(["ban.create"]);
+    await store.close();
+    // Control: a dry run changes nothing, so the table is still refused.
+    const { path: other } = await oldShapeFile();
+    const dry = sqliteStore({ path: other, codec: sealing });
+    await dry.syncSchema!({ dryRun: true }).catch(() => undefined);
+    await expect(dry.listBans({ limit: 1 })).rejects.toThrow("syncSchema");
+    await dry.close();
   });
 });

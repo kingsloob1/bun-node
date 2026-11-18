@@ -17,6 +17,7 @@ import {
   SECURITY_API_PROTOCOL_VERSION,
 } from "./contract/constants";
 import { diffPolicies } from "./merge";
+import { parseAddress } from "../ip/address";
 import { ApiProblem } from "./problems";
 import * as A from "./analyticsSchemas";
 import { analyticsRoutes } from "./analyticsRoutes";
@@ -27,7 +28,7 @@ import { LIVE_LIMITS } from "./contract/live";
 import type { LiveHub } from "./live/hub";
 import { parseResume } from "./live/transports";
 import * as S from "./schemas";
-import { serviceScope } from "./scopes";
+import { groupScope, serviceScope } from "./scopes";
 
 /** A route of any shape, for the list. */
 export type AnyRoute = RouteSpec<any, any, any>;
@@ -158,17 +159,23 @@ export function routes(
       summary: "The calling operator and their roles",
       tag: "roles",
       responses: { 200: S.Me },
-      handle: async ({ plane, operator }) => ({
-        status: 200,
-        body: {
-          id: operator.id,
-          name: operator.name ?? null,
-          roles:
-            options.authorize === undefined
-              ? await plane.rolesOf(operator.id)
-              : [],
-        },
-      }),
+      handle: async ({ plane, operator, req }) => {
+        // The client address as this API sees it (its trust-proxy rules):
+        // the manual-ban form warns before banning it.
+        const address = parseAddress(req.ip)?.text ?? null;
+        return {
+          status: 200,
+          body: {
+            id: operator.id,
+            name: operator.name ?? null,
+            roles:
+              options.authorize === undefined
+                ? await plane.rolesOf(operator.id)
+                : [],
+            address,
+          },
+        };
+      },
     },
 
     // ── Services ──────────────────────────────────────────────────────────
@@ -275,7 +282,28 @@ export function routes(
         const { id } = params as { id: string };
         await require("policy:read", serviceScope(id));
         await plane.getService(id);
-        return { status: 200, body: await plane.effective(id) };
+        return {
+          status: 200,
+          body: plane.showEffective(await plane.effective(id)),
+        };
+      },
+    },
+    {
+      method: "get",
+      path: "/groups/:id/effective",
+      summary:
+        "A group's effective policy: global's and its ancestors' heads merged down to its own, each field with its origin",
+      tag: "policies",
+      params: S.IdParams,
+      responses: { 200: S.GroupEffective },
+      problems: [404, 422],
+      handle: async ({ plane, require, params }) => {
+        const { id } = params as { id: string };
+        await require("policy:read", groupScope(id));
+        return {
+          status: 200,
+          body: plane.showEffective(await plane.groupEffective(id)),
+        };
       },
     },
     {
@@ -596,6 +624,24 @@ export function routes(
       },
     },
     {
+      method: "delete",
+      path: "/policies/:scope/draft",
+      summary:
+        "Discards a scope's draft at the revision read (the head stays; a stale revision is a 409)",
+      tag: "policies",
+      params: S.ScopeParams,
+      query: S.RevisionQuery,
+      responses: { 204: null },
+      problems: [404, 409],
+      handle: async ({ plane, require, params, query }) => {
+        const { scope } = params as { scope: string };
+        const { revision } = query as { revision: number };
+        await require("policy:draft", scope);
+        await plane.discardDraft(scope, revision);
+        return { status: 204 };
+      },
+    },
+    {
       method: "get",
       path: "/policies/:scope/versions",
       summary: "A scope's published versions, newest first",
@@ -650,8 +696,8 @@ export function routes(
         await require("policy:read", scope);
         await plane.checkScope(scope);
         const changes = diffPolicies(
-          await plane.policyAt(scope, from),
-          await plane.policyAt(scope, to),
+          plane.showPolicy(await plane.policyAt(scope, from)),
+          plane.showPolicy(await plane.policyAt(scope, to)),
         );
         return { status: 200, body: { from, to, changes } };
       },
@@ -857,7 +903,7 @@ export function routes(
       method: "get",
       path: "/bans",
       summary:
-        "Bans, a page at a time, by scope (and what is under it) and state",
+        "Bans, a page at a time, by scope (and what is under it), state, subject kind, source, rule and subject (an address finds the ranges holding it), sorted by id, start or end",
       tag: "bans",
       query: S.BansQuery,
       responses: { 200: S.Bans },
@@ -870,8 +916,112 @@ export function routes(
             ...(q.cursor === undefined ? {} : { cursor: q.cursor }),
             ...(q.scope === undefined ? {} : { scope: q.scope }),
             ...(q.active === undefined ? {} : { active: q.active }),
+            ...(q.kind === undefined ? {} : { kind: q.kind }),
+            ...(q.source === undefined ? {} : { source: q.source }),
+            ...(q.rule === undefined ? {} : { rule: q.rule }),
+            ...(q.search === undefined ? {} : { search: q.search }),
+            ...(q.sort === undefined ? {} : { sort: q.sort }),
+            ...(q.direction === undefined ? {} : { direction: q.direction }),
           }),
         );
+      },
+    },
+    {
+      method: "post",
+      path: "/bans/lift",
+      summary:
+        "Lifts every active ban a filter matches (at most 10,000), or with dryRun counts them; a step-up, or an approval",
+      tag: "bans",
+      body: S.BanLiftBody,
+      responses: { 200: S.BanLiftResult, 202: S.Approval },
+      problems: [404],
+      handle: async ({ plane, require, body, operator, stepUp }) => {
+        const input = body as Infer<typeof S.BanLiftBody>;
+        const scope = input.scope ?? "global";
+        await require("bans:write", scope);
+        if (input.dryRun === true) {
+          return { status: 200, body: await plane.liftBans(input, operator) };
+        }
+        const { dryRun: _dryRun, ...filter } = input;
+        return await guarded(
+          stepUp,
+          async () => ({
+            status: 200,
+            body: await plane.liftBans(filter, operator),
+          }),
+          async () => {
+            const counted = await plane.liftBans(
+              { ...filter, dryRun: true },
+              operator,
+            );
+            return await plane.requestApproval(
+              "bans.lift",
+              scope,
+              operator,
+              { kind: "bans.lift", filter },
+              { filter: { ...filter }, matched: counted.matched },
+            );
+          },
+        );
+      },
+    },
+    {
+      method: "get",
+      path: "/bans/:id",
+      summary:
+        "One ban with its audit history, the subject's events that led to it and its hits since (under analytics:read; events:read for an account), and its bans in other scopes",
+      tag: "bans",
+      params: S.IdParams,
+      responses: { 200: A.BanDetail },
+      problems: [404],
+      handle: async ({ plane, require, params, operator }) => {
+        const { id } = params as { id: string };
+        const ban = await plane.store.getBan(id);
+        if (ban === undefined)
+          throw new ApiProblem(404, "not_found", `ban "${id}" not found`);
+        await require("bans:read", ban.scope);
+        return { status: 200, body: await plane.banDetail(id, operator) };
+      },
+    },
+    {
+      method: "post",
+      path: "/bans/:id/extend",
+      summary:
+        "Lengthens a ban in force, or makes it permanent (duration null); works on an account's key with no raw id",
+      tag: "bans",
+      params: S.IdParams,
+      body: S.BanExtendBody,
+      responses: { 200: S.Ban },
+      problems: [404, 409],
+      handle: async ({ plane, require, params, body }) => {
+        const { id } = params as { id: string };
+        const { duration } = body as Infer<typeof S.BanExtendBody>;
+        const ban = await plane.store.getBan(id);
+        if (ban === undefined)
+          throw new ApiProblem(404, "not_found", `ban "${id}" not found`);
+        await require("bans:write", ban.scope);
+        return {
+          status: 200,
+          body: await plane.extendBan(id, duration),
+        };
+      },
+    },
+    {
+      method: "post",
+      path: "/bans/:id/widen",
+      summary:
+        "Bans the /24 (IPv4) or /64 (IPv6) around a banned address on its scope, with the same action and end",
+      tag: "bans",
+      params: S.IdParams,
+      responses: { 201: S.Ban },
+      problems: [404, 409],
+      handle: async ({ plane, require, params, operator }) => {
+        const { id } = params as { id: string };
+        const ban = await plane.store.getBan(id);
+        if (ban === undefined)
+          throw new ApiProblem(404, "not_found", `ban "${id}" not found`);
+        await require("bans:write", ban.scope);
+        return { status: 201, body: await plane.widenBan(id, operator) };
       },
     },
     {

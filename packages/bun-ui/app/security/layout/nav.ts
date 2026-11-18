@@ -1,6 +1,7 @@
 /**
  * The sections (ui.md §2), only those built (the user's decision): U1 has
- * the Overview and the API reference; later PRs add theirs. Each names the
+ * the Overview and the API reference, U3 lists, bans and events; later PRs
+ * add theirs. Each names the
  * permission it needs on the scope on screen; one the operator lacks is
  * absent from the nav.
  */
@@ -21,5 +22,8 @@ export interface Section {
 /** The built sections, in nav order. */
 export const SECTIONS: readonly Section[] = [
   { id: "overview", label: "Overview", path: "/", needs: "policy:read" },
+  { id: "lists", label: "Lists", path: "/lists", needs: "policy:read" },
+  { id: "bans", label: "Bans", path: "/bans", needs: "bans:read" },
+  { id: "events", label: "Events", path: "/events", needs: "analytics:read" },
   { id: "api", label: "API reference", path: "/api", needs: null },
 ];

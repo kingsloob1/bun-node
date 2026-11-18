@@ -4,7 +4,7 @@
  * `manifest` it takes. Do not edit; regenerate it, and run the same command
  * with `--check` in CI.
  *
- * typesHash: 95f8b929951d0875
+ * typesHash: 8e8506cfd4d527e3
  *
  * Warnings:
  * - GET /agent/artefacts/:sha256: no response is declared; typed `{ 200: unknown }`
@@ -22,7 +22,7 @@ import type { RouteManifest } from "@kingsleyweb/bun-client";
  * The documents' hash, as the header records it: the `buster` of a
  * persisted query cache (`@kingsleyweb/bun-client/persist`).
  */
-export const typesHash = "95f8b929951d0875";
+export const typesHash = "8e8506cfd4d527e3";
 
 /** letters, digits, _, . and - */
 export type Schema1 = string;
@@ -30,14 +30,43 @@ export type Schema1 = string;
 /** global, group:<id> or service:<id> */
 export type Schema12 = string;
 
-export type Schema13 = string;
+export interface Schema13 {
+  id: string;
+  scope: string;
+  subject: {
+    type: "ip" | "cidr" | "user" | "apiKey";
+    value: string;
+  };
+  action: "ban" | "challenge";
+  reason: string;
+  source: "auto" | "manual";
+  createdAt: number;
+  expiresAt: number | null;
+  createdBy?: string;
+  rule?: string;
+  count: number;
+  liftedAt: number | null;
+  liftedBy?: string;
+  active: boolean;
+  revision: number;
+  entered?: {
+    apiKey?: string;
+    user?: string;
+  };
+  /** the subject's country when written, from its latest event */
+  country?: string;
+  /** the subject's ASN when written, from its latest event */
+  asn?: number;
+}
 
 export type Schema14 = string;
 
-export type Schema15 =
+export type Schema15 = string;
+
+export type Schema16 =
   "allow" | "log" | "tag" | "delay" | "challenge" | "block" | "ban" | "drop";
 
-export type Schema16 = "allow" | "challenge" | "refuse";
+export type Schema17 = "allow" | "challenge" | "refuse";
 
 export interface Routes {
   "GET /agent/artefacts/:sha256": {
@@ -4579,23 +4608,23 @@ export interface Routes {
       to: number;
       /** the tier read (default by the range) */
       tier?: "minute" | "hour" | "day";
-      action?: Schema13;
-      route?: Schema13;
-      rule?: Schema13;
-      country?: Schema13;
-      asn?: Schema13;
+      action?: Schema14;
+      route?: Schema14;
+      rule?: Schema14;
+      country?: Schema14;
+      asn?: Schema14;
       /** a subject metric's kind */
       kind?: "ip" | "user" | "username" | "apiKey";
-      subject?: Schema13;
+      subject?: Schema14;
       /** a rule's dry run */
       dryRun?: "true" | "false";
-      class?: Schema13;
-      le?: Schema13;
-      what?: Schema13;
-      reason?: Schema13;
-      cap?: Schema13;
-      outcome?: Schema13;
-      pattern?: Schema13;
+      class?: Schema14;
+      le?: Schema14;
+      what?: Schema14;
+      reason?: Schema14;
+      cap?: Schema14;
+      outcome?: Schema14;
+      pattern?: Schema14;
     };
     headers: Record<never, never>;
     body: undefined;
@@ -4798,17 +4827,17 @@ export interface Routes {
       from?: number;
       /** only events before (ms) */
       to?: number;
-      action?: Schema13;
-      rule?: Schema13;
-      route?: Schema13;
-      ip?: Schema13;
-      country?: Schema13;
+      action?: Schema14;
+      rule?: Schema14;
+      route?: Schema14;
+      ip?: Schema14;
+      country?: Schema14;
       asn?: number;
       /** dry-run hits only, or enforced only */
       dryRun?: boolean;
-      user?: Schema13;
-      username?: Schema13;
-      apiKey?: Schema13;
+      user?: Schema14;
+      username?: Schema14;
+      apiKey?: Schema14;
     };
     headers: Record<never, never>;
     body: undefined;
@@ -5453,23 +5482,23 @@ export interface Routes {
       tier?: "minute" | "hour" | "day";
       /** one point per service as well (PR-AN; at most 1,000 services) */
       groupBy?: "service";
-      action?: Schema13;
-      route?: Schema13;
-      rule?: Schema13;
-      country?: Schema13;
-      asn?: Schema13;
+      action?: Schema14;
+      route?: Schema14;
+      rule?: Schema14;
+      country?: Schema14;
+      asn?: Schema14;
       /** a subject metric's kind */
       kind?: "ip" | "user" | "username" | "apiKey";
-      subject?: Schema13;
+      subject?: Schema14;
       /** a rule's dry run */
       dryRun?: "true" | "false";
-      class?: Schema13;
-      le?: Schema13;
-      what?: Schema13;
-      reason?: Schema13;
-      cap?: Schema13;
-      outcome?: Schema13;
-      pattern?: Schema13;
+      class?: Schema14;
+      le?: Schema14;
+      what?: Schema14;
+      reason?: Schema14;
+      cap?: Schema14;
+      outcome?: Schema14;
+      pattern?: Schema14;
     };
     headers: Record<never, never>;
     body: undefined;
@@ -5678,23 +5707,23 @@ export interface Routes {
       tier?: "minute" | "hour" | "day";
       /** how many (default 10, at most 100) */
       limit?: number;
-      action?: Schema13;
-      route?: Schema13;
-      rule?: Schema13;
-      country?: Schema13;
-      asn?: Schema13;
+      action?: Schema14;
+      route?: Schema14;
+      rule?: Schema14;
+      country?: Schema14;
+      asn?: Schema14;
       /** a subject metric's kind */
       kind?: "ip" | "user" | "username" | "apiKey";
-      subject?: Schema13;
+      subject?: Schema14;
       /** a rule's dry run */
       dryRun?: "true" | "false";
-      class?: Schema13;
-      le?: Schema13;
-      what?: Schema13;
-      reason?: Schema13;
-      cap?: Schema13;
-      outcome?: Schema13;
-      pattern?: Schema13;
+      class?: Schema14;
+      le?: Schema14;
+      what?: Schema14;
+      reason?: Schema14;
+      cap?: Schema14;
+      outcome?: Schema14;
+      pattern?: Schema14;
     };
     headers: Record<never, never>;
     body: undefined;
@@ -5904,7 +5933,8 @@ export interface Routes {
             | "roleBinding.create"
             | "roleBinding.delete"
             | "serviceIdentity.put"
-            | "serviceIdentity.delete";
+            | "serviceIdentity.delete"
+            | "bans.lift";
           /** global, group:<id> or service:<id> */
           scope: string;
           status:
@@ -6089,7 +6119,8 @@ export interface Routes {
           | "roleBinding.create"
           | "roleBinding.delete"
           | "serviceIdentity.put"
-          | "serviceIdentity.delete";
+          | "serviceIdentity.delete"
+          | "bans.lift";
         /** global, group:<id> or service:<id> */
         scope: string;
         status:
@@ -6305,7 +6336,8 @@ export interface Routes {
             | "roleBinding.create"
             | "roleBinding.delete"
             | "serviceIdentity.put"
-            | "serviceIdentity.delete";
+            | "serviceIdentity.delete"
+            | "bans.lift";
           /** global, group:<id> or service:<id> */
           scope: string;
           status:
@@ -6564,7 +6596,8 @@ export interface Routes {
             | "roleBinding.create"
             | "roleBinding.delete"
             | "serviceIdentity.put"
-            | "serviceIdentity.delete";
+            | "serviceIdentity.delete"
+            | "bans.lift";
           /** global, group:<id> or service:<id> */
           scope: string;
           status:
@@ -7697,7 +7730,7 @@ export interface Routes {
       };
     };
   };
-  /** Bans, a page at a time, by scope (and what is under it) and state */
+  /** Bans, a page at a time, by scope (and what is under it), state, subject kind, source, rule and subject (an address finds the ranges holding it), sorted by id, start or end */
   "GET /bans": {
     operationId: "getBans";
     params: Record<never, never>;
@@ -7710,6 +7743,15 @@ export interface Routes {
       scope?: string;
       /** true: in force now; false: lifted or expired */
       active?: boolean;
+      kind?: "ip" | "cidr" | "user" | "apiKey";
+      source?: "auto" | "manual";
+      /** the rule that wrote it */
+      rule?: string;
+      /** an address (and every range holding it), a CIDR range (and every range holding it) or an account key */
+      search?: string;
+      /** the order (default id; expires puts a permanent ban last) */
+      sort?: "id" | "created" | "expires";
+      direction?: "asc" | "desc";
     };
     headers: Record<never, never>;
     body: undefined;
@@ -7738,6 +7780,10 @@ export interface Routes {
             apiKey?: string;
             user?: string;
           };
+          /** the subject's country when written, from its latest event */
+          country?: string;
+          /** the subject's ASN when written, from its latest event */
+          asn?: number;
         }[];
         next?: string;
         totalEstimate?: number;
@@ -7897,6 +7943,10 @@ export interface Routes {
       ip?: string;
       user?: string;
       apiKey?: string;
+      /** a user's key as the API reports it, used as it is */
+      userHash?: string;
+      /** an API key's key as the API reports it, used as it is */
+      apiKeyHash?: string;
       action?: "ban" | "challenge";
       reason: string;
       duration?: string | null;
@@ -7925,6 +7975,10 @@ export interface Routes {
           apiKey?: string;
           user?: string;
         };
+        /** the subject's country when written, from its latest event */
+        country?: string;
+        /** the subject's ASN when written, from its latest event */
+        asn?: number;
       };
       400: {
         type: string;
@@ -8103,9 +8157,9 @@ export interface Routes {
       };
     };
   };
-  /** Lifts a ban (its record is kept as history); pushed to the agents under it */
-  "POST /bans/:id/lift": {
-    operationId: "postBansByIdLift";
+  /** One ban with its audit history, the subject's events that led to it and its hits since (under analytics:read; events:read for an account), and its bans in other scopes */
+  "GET /bans/:id": {
+    operationId: "getBansById";
     params: {
       /** letters, digits, _, . and - */
       id: string;
@@ -8113,6 +8167,244 @@ export interface Routes {
     query: Record<never, never>;
     headers: Record<never, never>;
     body: undefined;
+    responses: {
+      200: {
+        ban: Schema13;
+        history: {
+          n: number;
+          at: number;
+          hash: string;
+          prevHash: string;
+          actor: string;
+          action: string;
+          scope: string;
+          phase: "intent" | "done" | "event";
+          status?: "done" | "completed-unconfirmed" | "not-applied";
+          /** the hashed entry: who, from where, what, before and after */
+          entry: Record<string, unknown>;
+        }[];
+        historyTruncated: boolean;
+        events?: {
+          id: string;
+          at: number;
+          service: string;
+          action: string;
+          rule?: string;
+          rules?: string[];
+          dryRun?: boolean;
+          route?: string;
+          subjects?: {
+            ip?: string;
+            user?: string;
+            apiKey?: string;
+            username?: string;
+          };
+          country?: string;
+          asn?: number;
+          latencyMs?: number;
+          status?: number;
+          score?: number;
+          falsePositive?: boolean;
+          /** on a sampled allow: the share of allows kept */
+          sampleRate?: number;
+          /** the redacted request (events:read) */
+          sample?: unknown;
+        }[];
+        hitsSince?: number;
+        hitsSinceCapped?: boolean;
+        otherBans: Schema13[];
+        /** the escalation ladder's step: absent until agents report their engines' bans */
+        ladderStep?: number;
+      };
+      400: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      401: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      403: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      404: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      500: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+    };
+  };
+  /** Lengthens a ban in force, or makes it permanent (duration null); works on an account's key with no raw id */
+  "POST /bans/:id/extend": {
+    operationId: "postBansByIdExtend";
+    params: {
+      /** letters, digits, _, . and - */
+      id: string;
+    };
+    query: Record<never, never>;
+    headers: Record<never, never>;
+    body: {
+      duration: string | null;
+    };
     responses: {
       200: {
         id: string;
@@ -8137,6 +8429,10 @@ export interface Routes {
           apiKey?: string;
           user?: string;
         };
+        /** the subject's country when written, from its latest event */
+        country?: string;
+        /** the subject's ASN when written, from its latest event */
+        asn?: number;
       };
       400: {
         type: string;
@@ -8279,6 +8575,736 @@ export interface Routes {
         dangerous?: string[];
       };
       409: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      500: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+    };
+  };
+  /** Lifts a ban (its record is kept as history); pushed to the agents under it */
+  "POST /bans/:id/lift": {
+    operationId: "postBansByIdLift";
+    params: {
+      /** letters, digits, _, . and - */
+      id: string;
+    };
+    query: Record<never, never>;
+    headers: Record<never, never>;
+    body: undefined;
+    responses: {
+      200: {
+        id: string;
+        scope: string;
+        subject: {
+          type: "ip" | "cidr" | "user" | "apiKey";
+          value: string;
+        };
+        action: "ban" | "challenge";
+        reason: string;
+        source: "auto" | "manual";
+        createdAt: number;
+        expiresAt: number | null;
+        createdBy?: string;
+        rule?: string;
+        count: number;
+        liftedAt: number | null;
+        liftedBy?: string;
+        active: boolean;
+        revision: number;
+        entered?: {
+          apiKey?: string;
+          user?: string;
+        };
+        /** the subject's country when written, from its latest event */
+        country?: string;
+        /** the subject's ASN when written, from its latest event */
+        asn?: number;
+      };
+      400: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      401: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      403: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      404: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      409: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      500: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+    };
+  };
+  /** Bans the /24 (IPv4) or /64 (IPv6) around a banned address on its scope, with the same action and end */
+  "POST /bans/:id/widen": {
+    operationId: "postBansByIdWiden";
+    params: {
+      /** letters, digits, _, . and - */
+      id: string;
+    };
+    query: Record<never, never>;
+    headers: Record<never, never>;
+    body: undefined;
+    responses: {
+      201: {
+        id: string;
+        scope: string;
+        subject: {
+          type: "ip" | "cidr" | "user" | "apiKey";
+          value: string;
+        };
+        action: "ban" | "challenge";
+        reason: string;
+        source: "auto" | "manual";
+        createdAt: number;
+        expiresAt: number | null;
+        createdBy?: string;
+        rule?: string;
+        count: number;
+        liftedAt: number | null;
+        liftedBy?: string;
+        active: boolean;
+        revision: number;
+        entered?: {
+          apiKey?: string;
+          user?: string;
+        };
+        /** the subject's country when written, from its latest event */
+        country?: string;
+        /** the subject's ASN when written, from its latest event */
+        asn?: number;
+      };
+      400: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      401: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      403: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      404: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      409: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      500: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+    };
+  };
+  /** Lifts every active ban a filter matches (at most 10,000), or with dryRun counts them; a step-up, or an approval */
+  "POST /bans/lift": {
+    operationId: "postBansLift";
+    params: Record<never, never>;
+    query: Record<never, never>;
+    headers: Record<never, never>;
+    body: {
+      /** global, group:<id> or service:<id> */
+      scope?: string;
+      kind?: "ip" | "cidr" | "user" | "apiKey";
+      source?: "auto" | "manual";
+      rule?: string;
+      search?: string;
+      /** started at or after (ms) */
+      createdFrom?: number;
+      /** started before (ms) */
+      createdTo?: number;
+      /** true: count, change nothing */
+      dryRun?: boolean;
+    };
+    responses: {
+      200: {
+        dryRun: boolean;
+        matched: number;
+        lifted: number;
+      };
+      202: {
+        id: string;
+        action:
+          | "policy.publish"
+          | "policy.rollback"
+          | "roleBinding.create"
+          | "roleBinding.delete"
+          | "serviceIdentity.put"
+          | "serviceIdentity.delete"
+          | "bans.lift";
+        /** global, group:<id> or service:<id> */
+        scope: string;
+        status:
+          "pending" | "review" | "approved" | "rejected" | "expired" | "stale";
+        author: string;
+        createdAt: number;
+        expiresAt: number;
+        decidedBy: string | null;
+        decidedAt: number | null;
+        reason: string | null;
+        dangerous: string[];
+        /** what the change does */
+        summary: Record<string, unknown>;
+        revision: number;
+      };
+      400: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      401: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      403: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      404: {
         type: string;
         title: string;
         status: number;
@@ -9869,6 +10895,237 @@ export interface Routes {
       };
     };
   };
+  /** A group's effective policy: global's and its ancestors' heads merged down to its own, each field with its origin */
+  "GET /groups/:id/effective": {
+    operationId: "getGroupsByIdEffective";
+    params: {
+      /** letters, digits, _, . and - */
+      id: string;
+    };
+    query: Record<never, never>;
+    headers: Record<never, never>;
+    body: undefined;
+    responses: {
+      200: {
+        /** letters, digits, _, . and - */
+        group: string;
+        policyVersions: string[];
+        /** a bun-security policy (a partial one at a scope, layered over the scopes above it) */
+        policy: Record<string, unknown>;
+        origins: Record<string, string>;
+      };
+      400: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      401: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      403: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      404: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      422: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      500: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+    };
+  };
   /** Server-sent events: the live hub's topics (overview, events, policy, approvals) with resume; without topics, policies published, bundles compiled, approvals opened and decided */
   "GET /live": {
     operationId: "getLive";
@@ -10121,6 +11378,10 @@ export interface Routes {
             apiKey?: string;
             user?: string;
           };
+          /** the subject's country when written, from its latest event */
+          country?: string;
+          /** the subject's ASN when written, from its latest event */
+          asn?: number;
         };
       };
       "ban.changed": {
@@ -10659,6 +11920,7 @@ export interface Routes {
           scope: string;
           source: "binding" | "owners";
         }[];
+        address: string | null;
       };
       400: {
         type: string;
@@ -10823,6 +12085,13 @@ export interface Routes {
           revision: number;
           updatedBy: string;
           updatedAt: number;
+          entered?: {
+            section?: "canaries" | "requestRules";
+            index: number;
+            path?: string;
+            user?: string;
+            apiKey?: string;
+          }[];
         } | null;
         head: {
           id: string;
@@ -11232,6 +12501,13 @@ export interface Routes {
         revision: number;
         updatedBy: string;
         updatedAt: number;
+        entered?: {
+          section?: "canaries" | "requestRules";
+          index: number;
+          path?: string;
+          user?: string;
+          apiKey?: string;
+        }[];
       };
       400: {
         type: string;
@@ -11480,6 +12756,233 @@ export interface Routes {
       };
     };
   };
+  /** Discards a scope's draft at the revision read (the head stays; a stale revision is a 409) */
+  "DELETE /policies/:scope/draft": {
+    operationId: "deletePoliciesByScopeDraft";
+    params: {
+      /** global, group:<id> or service:<id> */
+      scope: string;
+    };
+    query: {
+      /** the revision read */
+      revision: number;
+    };
+    headers: Record<never, never>;
+    body: undefined;
+    responses: {
+      204: undefined;
+      400: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      401: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      403: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      404: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      409: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      500: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+    };
+  };
   /** A scope's draft against its published policy over stored events: what would be refused, challenged or allowed differently, by rule and route (bounded; nothing stored) */
   "POST /policies/:scope/impact": {
     operationId: "postPoliciesByScopeImpact";
@@ -11518,8 +13021,8 @@ export interface Routes {
           rates: number[];
         };
         transitions: {
-          from: Schema16;
-          to: Schema16;
+          from: Schema17;
+          to: Schema17;
           count: number;
         }[];
         rules: {
@@ -11792,7 +13295,8 @@ export interface Routes {
             | "roleBinding.create"
             | "roleBinding.delete"
             | "serviceIdentity.put"
-            | "serviceIdentity.delete";
+            | "serviceIdentity.delete"
+            | "bans.lift";
           scope: Schema12;
           status:
             | "pending"
@@ -11821,7 +13325,8 @@ export interface Routes {
           | "roleBinding.create"
           | "roleBinding.delete"
           | "serviceIdentity.put"
-          | "serviceIdentity.delete";
+          | "serviceIdentity.delete"
+          | "bans.lift";
         /** global, group:<id> or service:<id> */
         scope: string;
         status:
@@ -12161,7 +13666,8 @@ export interface Routes {
             | "roleBinding.create"
             | "roleBinding.delete"
             | "serviceIdentity.put"
-            | "serviceIdentity.delete";
+            | "serviceIdentity.delete"
+            | "bans.lift";
           scope: Schema12;
           status:
             | "pending"
@@ -12190,7 +13696,8 @@ export interface Routes {
           | "roleBinding.create"
           | "roleBinding.delete"
           | "serviceIdentity.put"
-          | "serviceIdentity.delete";
+          | "serviceIdentity.delete"
+          | "bans.lift";
         /** global, group:<id> or service:<id> */
         scope: string;
         status:
@@ -13098,7 +14605,8 @@ export interface Routes {
           | "roleBinding.create"
           | "roleBinding.delete"
           | "serviceIdentity.put"
-          | "serviceIdentity.delete";
+          | "serviceIdentity.delete"
+          | "bans.lift";
         /** global, group:<id> or service:<id> */
         scope: string;
         status:
@@ -13313,7 +14821,8 @@ export interface Routes {
           | "roleBinding.create"
           | "roleBinding.delete"
           | "serviceIdentity.put"
-          | "serviceIdentity.delete";
+          | "serviceIdentity.delete"
+          | "bans.lift";
         /** global, group:<id> or service:<id> */
         scope: string;
         status:
@@ -13563,14 +15072,14 @@ export interface Routes {
       trustProxy?: unknown;
       clientIpHeader?: string;
       identity?: {
-        user?: Schema14;
-        session?: Schema14;
-        tenant?: Schema14;
-        apiKey?: Schema14;
+        user?: Schema15;
+        session?: Schema15;
+        tenant?: Schema15;
+        apiKey?: Schema15;
         apiKeyPlan?: string;
         scopes?: string[];
-        username?: Schema14;
-        destination?: Schema14;
+        username?: Schema15;
+        destination?: Schema15;
       };
       routeKey?: string;
       profile?: string;
@@ -13593,7 +15102,7 @@ export interface Routes {
         };
         at: number;
         decision: {
-          action: Schema15;
+          action: Schema16;
           status?: number;
           code?: string;
           delayMs?: number;
@@ -13601,8 +15110,8 @@ export interface Routes {
           hits: {
             layer: string;
             rule: string;
-            action: Schema15;
-            wouldHaveBeen?: Schema15;
+            action: Schema16;
+            wouldHaveBeen?: Schema16;
             reason?: string;
           }[];
           tags: string[];
@@ -14090,7 +15599,8 @@ export interface Routes {
           | "roleBinding.create"
           | "roleBinding.delete"
           | "serviceIdentity.put"
-          | "serviceIdentity.delete";
+          | "serviceIdentity.delete"
+          | "bans.lift";
         /** global, group:<id> or service:<id> */
         scope: string;
         status:
@@ -14553,7 +16063,8 @@ export interface Routes {
           | "roleBinding.create"
           | "roleBinding.delete"
           | "serviceIdentity.put"
-          | "serviceIdentity.delete";
+          | "serviceIdentity.delete"
+          | "bans.lift";
         /** global, group:<id> or service:<id> */
         scope: string;
         status:
@@ -14838,7 +16349,8 @@ export interface Routes {
           | "roleBinding.create"
           | "roleBinding.delete"
           | "serviceIdentity.put"
-          | "serviceIdentity.delete";
+          | "serviceIdentity.delete"
+          | "bans.lift";
         /** global, group:<id> or service:<id> */
         scope: string;
         status:
@@ -16803,9 +18315,25 @@ export const manifest = {
     operationId: "postBans",
     statuses: [201, 400, 401, 403, 404, 500],
   },
+  "GET /bans/:id": {
+    operationId: "getBansById",
+    statuses: [200, 400, 401, 403, 404, 500],
+  },
+  "POST /bans/:id/extend": {
+    operationId: "postBansByIdExtend",
+    statuses: [200, 400, 401, 403, 404, 409, 500],
+  },
   "POST /bans/:id/lift": {
     operationId: "postBansByIdLift",
     statuses: [200, 400, 401, 403, 404, 409, 500],
+  },
+  "POST /bans/:id/widen": {
+    operationId: "postBansByIdWiden",
+    statuses: [201, 400, 401, 403, 404, 409, 500],
+  },
+  "POST /bans/lift": {
+    operationId: "postBansLift",
+    statuses: [200, 202, 400, 401, 403, 404, 500],
   },
   "POST /break-glass/session": {
     operationId: "postBreakGlassSession",
@@ -16835,6 +18363,10 @@ export const manifest = {
     operationId: "deleteGroupsById",
     statuses: [204, 400, 401, 403, 404, 409, 500],
   },
+  "GET /groups/:id/effective": {
+    operationId: "getGroupsByIdEffective",
+    statuses: [200, 400, 401, 403, 404, 422, 500],
+  },
   "GET /live": {
     operationId: "getLive",
     statuses: [200, 400, 401, 403, 429, 500],
@@ -16860,6 +18392,10 @@ export const manifest = {
   "PUT /policies/:scope/draft": {
     operationId: "putPoliciesByScopeDraft",
     statuses: [200, 400, 401, 403, 404, 409, 422, 500],
+  },
+  "DELETE /policies/:scope/draft": {
+    operationId: "deletePoliciesByScopeDraft",
+    statuses: [204, 400, 401, 403, 404, 409, 500],
   },
   "POST /policies/:scope/impact": {
     operationId: "postPoliciesByScopeImpact",

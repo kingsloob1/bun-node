@@ -126,6 +126,13 @@ const CODE_RE = /^[a-z][a-z0-9_.-]{0,63}$/;
 const HEADER_RE = /^[a-z0-9!#$%&'*+.^_`|~-]{1,64}$/;
 /** A SHA-256 verifier. */
 const VERIFIER_RE = /^sha256:[0-9a-f]{64}$/;
+/**
+ * An account's key, as a list entry's `userHash` or `apiKeyHash` holds it:
+ * an HMAC, 32 lower-case hex characters (the engine's `Keyring`).
+ */
+export const ACCOUNT_KEY_RE = /^[0-9a-f]{32}$/;
+/** An account id, as a list entry's `user` or `apiKey` holds it. */
+export const ACCOUNT_ID_RE = ID_RE;
 /** An ISO 8601 timestamp with its time zone written. */
 const TIMESTAMP_RE =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/;
@@ -335,7 +342,9 @@ const ENTRY_KEYS = [
   "id",
   "ip",
   "user",
+  "userHash",
   "apiKey",
+  "apiKeyHash",
   "country",
   "asn",
   "action",
@@ -350,12 +359,18 @@ const ENTRY_KEYS = [
   "code",
 ];
 
-/** The default id of an entry: its subject. */
+/**
+ * The default id of an entry: its subject. An account's key reads as its
+ * id would once keyed (`user:<key>`, `apiKey:<key>`), so a raw entry and a
+ * keyed one for the same account share an id after keying.
+ */
 export function defaultEntryId(entry: ListEntry, cidr?: ParsedCidr): string {
   if (entry.ip !== undefined) return `ip:${cidr?.text ?? entry.ip}`;
   if (entry.user !== undefined) return `user:${entry.user}`;
+  if (entry.userHash !== undefined) return `user:${entry.userHash}`;
   if (entry.country !== undefined) return `country:${entry.country}`;
   if (entry.asn !== undefined) return `asn:${entry.asn}`;
+  if (entry.apiKeyHash !== undefined) return `apiKey:${entry.apiKeyHash}`;
   return `apiKey:${entry.apiKey ?? ""}`;
 }
 
@@ -368,14 +383,35 @@ function checkEntry(
   index: number,
 ): void {
   if (!checkObject(issues, path, value, ENTRY_KEYS)) return;
-  const subjects = (["ip", "user", "apiKey", "country", "asn"] as const).filter(
-    (key) => value[key] !== undefined,
-  );
+  const subjects = (
+    [
+      "ip",
+      "user",
+      "userHash",
+      "apiKey",
+      "apiKeyHash",
+      "country",
+      "asn",
+    ] as const
+  ).filter((key) => value[key] !== undefined);
   if (subjects.length !== 1) {
     issues.add(
       path,
-      `must have exactly one of ip, user, apiKey, country, asn; got ${subjects.length === 0 ? "none" : subjects.join(", ")}`,
+      `must have exactly one of ip, user, userHash, apiKey, apiKeyHash, country, asn; got ${subjects.length === 0 ? "none" : subjects.join(", ")}`,
     );
+  }
+  // A malformed key is not echoed: it may be an account id in the wrong field.
+  for (const key of ["userHash", "apiKeyHash"] as const) {
+    const given = value[key];
+    if (
+      given !== undefined &&
+      !(typeof given === "string" && ACCOUNT_KEY_RE.test(given))
+    ) {
+      issues.add(
+        [...path, key],
+        `must be ${key === "userHash" ? "a user's" : "an API key's"} key: 32 lower-case hex characters (its HMAC under the fleet's secret)`,
+      );
+    }
   }
   if (
     value.country !== undefined &&
@@ -521,9 +557,12 @@ function checkEntry(
       issues.add(
         [...path, "id"],
         typeof value.id !== "string" &&
-          (value.apiKey !== undefined || value.user !== undefined)
+          (value.apiKey !== undefined ||
+            value.user !== undefined ||
+            value.apiKeyHash !== undefined ||
+            value.userHash !== undefined)
           ? // The default id is the key or user id: not echoed (layers.md L12).
-            `duplicates the ${value.apiKey === undefined ? "user" : "apiKey"} of lists[${first}]`
+            `duplicates the ${value.user !== undefined || value.userHash !== undefined ? "user" : "apiKey"} of lists[${first}]`
           : `duplicates the id of lists[${first}]: ${JSON.stringify(id)}`,
       );
     } else {
@@ -1306,7 +1345,16 @@ function checkDeception(issues: Issues, value: unknown): void {
   const ids = new Map<string, number>();
   value.canaries.forEach((canary: unknown, i: number) => {
     const at = ["deception", "canaries", i];
-    if (!checkObject(issues, at, canary, ["id", "user", "apiKey"])) return;
+    if (
+      !checkObject(issues, at, canary, [
+        "id",
+        "user",
+        "apiKey",
+        "userHash",
+        "apiKeyHash",
+      ])
+    )
+      return;
     checkRuleId(issues, at, canary.id, ids, i, "deception.canaries");
     optionalString(issues, [...at, "user"], canary.user, ID_RE, "a user id");
     optionalString(
@@ -1316,8 +1364,26 @@ function checkDeception(issues: Issues, value: unknown): void {
       ID_RE,
       "an API key id",
     );
-    if ((canary.user === undefined) === (canary.apiKey === undefined)) {
-      issues.add(at, "must have exactly one of user, apiKey");
+    for (const field of ["userHash", "apiKeyHash"] as const) {
+      const key = canary[field];
+      if (
+        key !== undefined &&
+        !(typeof key === "string" && ACCOUNT_KEY_RE.test(key))
+      ) {
+        issues.add(
+          [...at, field],
+          "must be 32 lower-case hex characters (an account's HMAC under the fleet's secret)",
+        );
+      }
+    }
+    const named = (
+      ["user", "apiKey", "userHash", "apiKeyHash"] as const
+    ).filter((field) => canary[field] !== undefined);
+    if (named.length !== 1) {
+      issues.add(
+        at,
+        "must have exactly one of user, apiKey, userHash, apiKeyHash",
+      );
     }
   });
 }

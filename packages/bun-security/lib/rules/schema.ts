@@ -57,6 +57,14 @@ const STRING_TARGETS = new Set([
   "country",
   "class",
 ]);
+/**
+ * The keyed account targets: a user's or an API key's key (its HMAC under
+ * the fleet's secret), matched whole (`equals` or `in` over 32 lower-case
+ * hex characters), as the control plane stores an account condition.
+ */
+const KEYED_TARGETS = new Set(["userHash", "apiKeyHash"]);
+/** An account's key. */
+const ACCOUNT_KEY = /^[\da-f]{32}$/;
 /** Targets named beside their matcher (`{ header: "user-agent", contains: … }`). */
 const NAMED_TARGETS = new Set(["header", "queryParam", "cookie"]);
 /** Numeric targets. */
@@ -299,6 +307,7 @@ function checkMatch(
   const targets = keys.filter(
     (key) =>
       STRING_TARGETS.has(key) ||
+      KEYED_TARGETS.has(key) ||
       NAMED_TARGETS.has(key) ||
       NUMBER_TARGETS.has(key) ||
       key === "client" ||
@@ -307,7 +316,7 @@ function checkMatch(
   if (targets.length !== 1) {
     issues.add(
       path,
-      `must name exactly one target (method, path, rawPath, query, queryParam, header, anyHeader, cookie, client, contentLength, headerCount, country, asn, class, routeKey, user, session, tenant, apiKey) or be all/any/not; got ${keys.join(", ") || "nothing"}`,
+      `must name exactly one target (method, path, rawPath, query, queryParam, header, anyHeader, cookie, client, contentLength, headerCount, country, asn, class, routeKey, user, userHash, session, tenant, apiKey, apiKeyHash) or be all/any/not; got ${keys.join(", ") || "nothing"}`,
     );
     return;
   }
@@ -360,6 +369,28 @@ function checkMatch(
   }
   if (target === "asn") {
     checkAsnMatcher(issues, at, matcher);
+    return;
+  }
+  if (KEYED_TARGETS.has(target)) {
+    const keys =
+      isRecord(matcher) && Object.keys(matcher).length === 1
+        ? "equals" in matcher
+          ? [matcher.equals]
+          : "in" in matcher && Array.isArray(matcher.in)
+            ? matcher.in
+            : undefined
+        : undefined;
+    if (
+      keys === undefined ||
+      keys.length === 0 ||
+      keys.length > MAX_IN ||
+      !keys.every((key) => typeof key === "string" && ACCOUNT_KEY.test(key))
+    ) {
+      issues.add(
+        at,
+        `must be { equals: a key } or { in: keys }, each 32 lower-case hex characters (an account's HMAC under the fleet's secret)`,
+      );
+    }
     return;
   }
   if (target === "client") {

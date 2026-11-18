@@ -8,20 +8,28 @@
  */
 import type { ClientMiddleware } from "@kingsleyweb/bun-client";
 import type { ReactNode } from "react";
-import type { LiveState, LiveStatus } from "./context";
 import { sse } from "@kingsleyweb/bun-client/sse";
 import { useQueryClient } from "@tanstack/react-query";
-import { use, useEffect, useMemo, useState } from "react";
+import { use, useEffect, useMemo, useRef, useState } from "react";
 import { useSecurityClient } from "../context";
 import { useCanFn } from "../meta/hooks";
+import type {
+  LiveFeed,
+  LiveListener,
+  LiveMessageName,
+  LiveState,
+  LiveStatus,
+} from "./context";
 import {
+  LIVE_COUNTED_LISTS,
   LIVE_INVALIDATION_DELAY_MS,
+  LiveFeedContext,
   LiveOptionsContext,
   LiveStatusContext,
 } from "./context";
 
-/** The events that change what a screen shows. */
-const CHANGES = [
+/** The events that change what a screen shows (invalidating its queries). */
+const CHANGES = new Set<LiveMessageName>([
   "ban",
   "ban.changed",
   "policy.published",
@@ -30,10 +38,15 @@ const CHANGES = [
   "approval.decided",
   // The server's `gap` (the resume point is gone): everything is refetched.
   "$gap",
-] as const;
+]);
 
-/** The query keys a live event never makes stale. */
-const UNTOUCHED = new Set(["meta", "docs"]);
+/** Every message screens may listen for, once each. */
+const MESSAGES: readonly LiveMessageName[] = [
+  ...new Set<LiveMessageName>([...CHANGES, "ban", "event"]),
+];
+
+/** The query keys a live event never makes stale: meta, documents, and the lists that count new rows instead. */
+const UNTOUCHED = new Set(["meta", "docs", ...LIVE_COUNTED_LISTS]);
 
 /** Props of {@link LiveProvider}. */
 export interface LiveProviderProps {
@@ -49,6 +62,27 @@ export function LiveProvider({ scope, children }: LiveProviderProps) {
   const queryClient = useQueryClient();
   const options = use(LiveOptionsContext);
   const can = useCanFn();
+  // Screens' listeners, and the extra topics they want while mounted.
+  const listeners = useRef(new Map<LiveMessageName, Set<LiveListener>>());
+  const [wanted, setWanted] = useState(0);
+  const feed = useMemo<LiveFeed>(
+    () => ({
+      listen: (name, listener) => {
+        let set = listeners.current.get(name);
+        if (set === undefined) {
+          set = new Set();
+          listeners.current.set(name, set);
+        }
+        set.add(listener);
+        return () => set.delete(listener);
+      },
+      want: () => {
+        setWanted((n) => n + 1);
+        return () => setWanted((n) => n - 1);
+      },
+    }),
+    [],
+  );
   const topics = useMemo(
     () =>
       scope === null
@@ -56,8 +90,9 @@ export function LiveProvider({ scope, children }: LiveProviderProps) {
         : [
             ...(can("bans:read") ? [`bans:${scope}`] : []),
             ...(can("policy:read") ? [`policy:${scope}`] : []),
+            ...(wanted > 0 && can("analytics:read") ? [`events:${scope}`] : []),
           ],
-    [scope, can],
+    [scope, can, wanted],
   );
   const disabled = options?.disabled === true || topics.length === 0;
   const key = topics.join(",");
@@ -111,7 +146,18 @@ export function LiveProvider({ scope, children }: LiveProviderProps) {
       validate: false,
       middleware: [watch],
     });
-    const offs = CHANGES.map((name) => stream.on(name, invalidate));
+    const offs = MESSAGES.map((name) =>
+      stream.on(name, (data: unknown) => {
+        if (CHANGES.has(name)) invalidate();
+        for (const listener of listeners.current.get(name) ?? []) {
+          try {
+            listener(data);
+          } catch {
+            // A screen's listener never breaks the stream.
+          }
+        }
+      }),
+    );
     stream.closed.catch(() => set("refused"));
     return () => {
       for (const off of offs) off();
@@ -129,5 +175,9 @@ export function LiveProvider({ scope, children }: LiveProviderProps) {
           : { state: "connecting", detail: null },
     [disabled, status, key],
   );
-  return <LiveStatusContext value={shown}>{children}</LiveStatusContext>;
+  return (
+    <LiveFeedContext value={feed}>
+      <LiveStatusContext value={shown}>{children}</LiveStatusContext>
+    </LiveFeedContext>
+  );
 }

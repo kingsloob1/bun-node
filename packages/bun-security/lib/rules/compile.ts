@@ -43,6 +43,8 @@ const ROUTE_TARGETS = new Set([
   "session",
   "tenant",
   "apiKey",
+  "userHash",
+  "apiKeyHash",
 ]);
 
 /** Nothing known of an address. */
@@ -62,6 +64,8 @@ export class RuleInput {
     readonly facts: RequestFacts,
     /** IP intelligence for the `country`, `asn` and `class` targets; none: they never match. */
     readonly lookup?: IntelLookup,
+    /** The request's account subjects as keys (the engine's keyed `user` and `apiKey`), for `userHash` and `apiKeyHash`; none: they never match. */
+    readonly keys?: { readonly user?: string; readonly apiKey?: string },
   ) {}
 
   /** What IP intelligence knows of the client (an empty record without one). */
@@ -380,6 +384,16 @@ function matchTest(
         true,
         maxRegexInput,
       );
+    case "userHash":
+    case "apiKeyHash": {
+      const kind = target === "userHash" ? "user" : "apiKey";
+      return stringTest(
+        string,
+        (input) => one(input.keys?.[kind]),
+        false,
+        maxRegexInput,
+      );
+    }
     case "user":
     case "session":
     case "tenant":
@@ -517,12 +531,13 @@ export function matchRequestRules(
   facts: RequestFacts,
   stage: EvaluationStage | undefined,
   intel?: IntelLookup,
+  keys?: { readonly user?: string; readonly apiKey?: string },
 ): CompiledRequestRule[] {
   const matched: CompiledRequestRule[] = [];
   let input: RuleInput | undefined;
   for (const rule of compiled.rules) {
     if (stage !== undefined && rule.stage !== stage) continue;
-    input ??= new RuleInput(facts, intel);
+    input ??= new RuleInput(facts, intel, keys);
     if (rule.test(input)) matched.push(rule);
   }
   return matched;

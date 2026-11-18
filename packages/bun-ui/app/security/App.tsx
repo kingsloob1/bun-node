@@ -3,7 +3,7 @@
  * and nav (only the sections the operator may use there), and the routes —
  * a section the operator may not use shows "No access".
  */
-import type { ReactNode } from "react";
+import type { ComponentType, ReactNode } from "react";
 import { useCanFn } from "./meta/hooks";
 import { LiveProvider } from "./live/LiveProvider";
 import { Layout } from "./layout/Layout";
@@ -13,7 +13,16 @@ import { useLocation } from "./routing";
 import { ScopePermissions } from "./scope/ScopePermissions";
 import { SCOPE_PARAM } from "./scope/scope";
 import { useScope } from "./scope/useScope";
-import { ApiReferenceScreen } from "./screens/lazy";
+import {
+  ApiReferenceScreen,
+  AutoBansScreen,
+  BanDetailScreen,
+  BanNewScreen,
+  BansScreen,
+  EventsScreen,
+  ListEntryNewScreen,
+  ListsScreen,
+} from "./screens/lazy";
 import { NoAccess } from "./screens/NoAccess";
 import { NotFound } from "./screens/NotFound";
 import { Overview } from "./screens/Overview";
@@ -40,6 +49,15 @@ function Sections({ scope }: { scope: string | null }) {
       />
     );
   };
+  /** A section's routes, each screen given the scope (none without one). */
+  const scoped = (
+    id: string,
+    routes: readonly (readonly [string, ComponentType<{ scope: string }>])[],
+  ) =>
+    routes.map(([path, Screen]) => ({
+      path,
+      element: guard(id, scope === null ? null : <Screen scope={scope} />),
+    }));
   return (
     <Layout
       nav={nav}
@@ -54,6 +72,18 @@ function Sections({ scope }: { scope: string | null }) {
               scope === null ? null : <Overview scope={scope} />,
             ),
           },
+          ...scoped("lists", [
+            ["/lists/new", ListEntryNewScreen],
+            ["/lists", ListsScreen],
+          ]),
+          ...scoped("bans", [
+            ["/bans/new", BanNewScreen],
+            ["/bans/auto", AutoBansScreen],
+            ["/bans/:id", BanDetailScreen],
+            ["/bans", BansScreen],
+          ]),
+          // One route, so opening an event's drawer keeps the list mounted.
+          ...scoped("events", [["/events/*", EventsScreen]]),
           { path: "/api/*", element: guard("api", <ApiReferenceScreen />) },
           { path: "/api", element: guard("api", <ApiReferenceScreen />) },
         ]}
