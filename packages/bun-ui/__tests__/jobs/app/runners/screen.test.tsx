@@ -22,6 +22,7 @@ import {
   settle,
   statsFixture,
 } from "./fixtures";
+import { choices } from "../../../harness/choices";
 
 // Ahead of setupDom()'s hooks, which need real timers to settle.
 afterEach(() => {
@@ -339,7 +340,7 @@ describe("the runner history", () => {
       );
     expect(history().at(-1)!.query.get("limit")).toBe("30");
     const select = page().getByLabelText("Runs shown") as HTMLSelectElement;
-    expect(Array.from(select.options, (option) => option.value)).toEqual([
+    expect(choices(select).map((option) => option.value)).toEqual([
       "10",
       "25",
       "30",

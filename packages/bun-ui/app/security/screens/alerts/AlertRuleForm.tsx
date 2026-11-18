@@ -184,7 +184,7 @@ function RuleEditor({
       setBusy(false);
     }
   };
-  const field = (label: string, key: TextField, hint?: string) => (
+  const field = (label: string, key: TextField, example: string) => (
     <label>
       {label}{" "}
       <input
@@ -192,15 +192,15 @@ function RuleEditor({
         value={fields[key]}
         disabled={!canWrite}
         data-testid={`condition-${key}`}
-        {...(hint === undefined ? {} : { placeholder: hint })}
+        placeholder={example}
         onChange={(e) => set(key, e.target.value)}
       />
     </label>
   );
   const metricFields = (
     <>
-      {field("Metric", "metric", "requests")}
-      {field("Dimensions", "dims", "action=block, rule=ladder")}
+      {field("Metric", "metric", "e.g. requests")}
+      {field("Dimensions", "dims", "e.g. action=block, rule=ladder")}
     </>
   );
   return (
@@ -218,6 +218,7 @@ function RuleEditor({
           <label>
             Id{" "}
             <input
+              placeholder="e.g. ban-storm"
               className="input"
               value={id}
               required
@@ -229,6 +230,7 @@ function RuleEditor({
         <label>
           Title{" "}
           <input
+            placeholder="e.g. Ban storm on checkout"
             className="input"
             value={title}
             disabled={!canWrite}
@@ -239,6 +241,7 @@ function RuleEditor({
         <label>
           Scope{" "}
           <input
+            placeholder="e.g. global, group:payments or service:checkout"
             className="input"
             value={ruleScope}
             disabled={!canWrite}
@@ -249,6 +252,7 @@ function RuleEditor({
         <label>
           Severity{" "}
           <select
+            data-always-set
             className="input"
             value={severity}
             disabled={!canWrite}
@@ -265,6 +269,7 @@ function RuleEditor({
         <label>
           Watches{" "}
           <select
+            data-always-set
             className="input"
             value={fields.type}
             disabled={!canWrite}
@@ -289,12 +294,16 @@ function RuleEditor({
         {fields.type === "threshold" || fields.type === "rate" ? (
           <>
             {metricFields}
-            {field("Window (minutes)", "windowMinutes")}
-            {field(fields.type === "rate" ? "Per minute" : "Total", "value")}
+            {field("Window (minutes)", "windowMinutes", "e.g. 5")}
+            {field(
+              fields.type === "rate" ? "Per minute" : "Total",
+              "value",
+              fields.type === "rate" ? "e.g. 120" : "e.g. 500",
+            )}
             {fields.type === "threshold" ? (
               <>
-                {field("Each value of (optional)", "groupBy", "rule")}
-                {field("Starting with (optional)", "prefix", "canary:")}
+                {field("Each value of (optional)", "groupBy", "e.g. rule")}
+                {field("Starting with (optional)", "prefix", "e.g. canary:")}
               </>
             ) : null}
           </>
@@ -302,25 +311,25 @@ function RuleEditor({
         {fields.type === "baseline" ? (
           <>
             {metricFields}
-            {field("Out of metric", "totalMetric", "requests")}
-            {field("Out of dimensions", "totalDims")}
-            {field("Window (minutes)", "windowMinutes")}
-            {field("Days of history", "baselineDays")}
-            {field("Times its usual share", "factor")}
-            {field("At least counted", "minimum")}
+            {field("Out of metric", "totalMetric", "e.g. requests")}
+            {field("Out of dimensions", "totalDims", "e.g. action=allow")}
+            {field("Window (minutes)", "windowMinutes", "e.g. 5")}
+            {field("Days of history", "baselineDays", "e.g. 7")}
+            {field("Times its usual share", "factor", "e.g. 3")}
+            {field("At least counted", "minimum", "e.g. 100")}
           </>
         ) : null}
         {fields.type === "sustained" ? (
           <>
             {metricFields}
-            {field("Hours in a row (1–168)", "hours")}
-            {field("Each value of (optional)", "groupBy", "crawler")}
+            {field("Hours in a row (1–168)", "hours", "e.g. 6")}
+            {field("Each value of (optional)", "groupBy", "e.g. crawler")}
           </>
         ) : null}
         {fields.type === "banStorm" ? (
           <>
-            {field("Window (minutes)", "windowMinutes")}
-            {field("Bans", "value")}
+            {field("Window (minutes)", "windowMinutes", "e.g. 5")}
+            {field("Bans", "value", "e.g. 50")}
             <label>
               Source{" "}
               <select
@@ -340,15 +349,19 @@ function RuleEditor({
           </>
         ) : null}
         {fields.type === "agentSilent"
-          ? field("Silent for (minutes)", "afterMinutes")
+          ? field("Silent for (minutes)", "afterMinutes", "e.g. 10")
           : null}
         {fields.type === "agentWarning" ? (
           <>
-            {field("Warning kinds (* for any)", "kinds")}
+            {field(
+              "Warning kinds (* for any)",
+              "kinds",
+              "e.g. store.down, trust.misconfigured",
+            )}
             {field(
               "Heartbeat at most (minutes, optional)",
               "maxAgeMinutes",
-              "5",
+              "e.g. 5",
             )}
           </>
         ) : null}

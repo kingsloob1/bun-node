@@ -253,6 +253,7 @@ describe("JsonEditor", () => {
     const [text, setText] = useState(initial);
     return (
       <JsonEditor
+        placeholder='{ "a": 1 }'
         aria-label="Data"
         value={text}
         maxBytes={maxBytes}

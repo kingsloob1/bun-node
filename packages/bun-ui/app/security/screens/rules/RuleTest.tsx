@@ -186,7 +186,7 @@ export function RuleTest({ scope }: RuleTestProps) {
   const field = (
     label: string,
     key: Exclude<keyof TestForm, "useDraft" | "trust">,
-    hint?: string,
+    example: string,
   ) => (
     <label>
       {label}{" "}
@@ -194,7 +194,7 @@ export function RuleTest({ scope }: RuleTestProps) {
         className="input"
         value={form[key]}
         data-testid={`test-${key}`}
-        {...(hint === undefined ? {} : { placeholder: hint })}
+        placeholder={example}
         onChange={(e) => set(key, e.target.value)}
       />
     </label>
@@ -246,6 +246,7 @@ export function RuleTest({ scope }: RuleTestProps) {
         <label>
           Paste a raw HTTP request or a curl command{" "}
           <textarea
+            placeholder="curl -X POST 'https://shop.example/login' -H 'User-Agent: sqlmap'"
             className="input"
             rows={4}
             value={paste}
@@ -272,6 +273,7 @@ export function RuleTest({ scope }: RuleTestProps) {
         <label>
           Service{" "}
           <input
+            placeholder="e.g. checkout"
             className="input"
             list="test-services"
             value={form.service}
@@ -296,11 +298,14 @@ export function RuleTest({ scope }: RuleTestProps) {
           />{" "}
           With {scopeLabel(scope)}'s draft in place of its published policy
         </label>
-        {field("Method", "method")}
-        {field("Path and query", "path", "/login?next=/")}
+        {field("Method", "method", "e.g. GET")}
+        {field("Path and query", "path", "e.g. /login?next=/")}
         <label>
           Headers (Name: value, one a line){" "}
           <textarea
+            placeholder={
+              "User-Agent: Mozilla/5.0\nX-Forwarded-For: 203.0.113.7"
+            }
             className="input"
             rows={4}
             value={form.headers}
@@ -308,10 +313,11 @@ export function RuleTest({ scope }: RuleTestProps) {
             onChange={(e) => set("headers", e.target.value)}
           />
         </label>
-        {field("Socket peer", "peer")}
+        {field("Socket peer", "peer", "e.g. 10.0.0.2")}
         <label>
           The service trusts proxies{" "}
           <select
+            data-always-set
             className="input"
             value={form.trust}
             data-testid="test-trust"
@@ -324,26 +330,33 @@ export function RuleTest({ scope }: RuleTestProps) {
           </select>
         </label>
         {form.trust === "hops" || form.trust === "ranges"
-          ? field(form.trust === "hops" ? "Hops" : "Ranges", "trustValue")
+          ? field(
+              form.trust === "hops" ? "Hops" : "Ranges",
+              "trustValue",
+              form.trust === "hops"
+                ? "e.g. 1"
+                : "e.g. 10.0.0.0/8, 172.16.0.0/12",
+            )
           : null}
         {field(
           "Client-IP header (optional)",
           "clientIpHeader",
-          "cf-connecting-ip",
+          "e.g. cf-connecting-ip",
         )}
-        {field("User id", "user")}
-        {field("API key id", "apiKey")}
-        {field("Tenant", "tenant")}
-        {field("Session", "session")}
-        {field("Route", "routeKey", "POST /login")}
-        {field("Profile", "profile", "login")}
-        {field("Assume country", "country", "DE")}
-        {field("Assume ASN", "asn")}
-        {field("Assume classes", "classes", "tor, hosting")}
-        {field("Assume offence score", "score")}
+        {field("User id", "user", "e.g. u_8812")}
+        {field("API key id", "apiKey", "e.g. key_live_42")}
+        {field("Tenant", "tenant", "e.g. acme")}
+        {field("Session", "session", "e.g. sess_1f2e")}
+        {field("Route", "routeKey", "e.g. POST /login")}
+        {field("Profile", "profile", "e.g. login")}
+        {field("Assume country", "country", "e.g. DE")}
+        {field("Assume ASN", "asn", "e.g. 64500")}
+        {field("Assume classes", "classes", "e.g. tor, hosting")}
+        {field("Assume offence score", "score", "e.g. 8")}
         <label>
           Assume limits have counted (limit=count, one a line){" "}
           <textarea
+            placeholder="per-ip=299"
             className="input"
             rows={2}
             value={form.limits}

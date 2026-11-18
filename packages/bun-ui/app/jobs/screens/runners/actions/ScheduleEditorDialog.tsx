@@ -227,6 +227,7 @@ export function ScheduleEditorDialog({ runner, onClose }: RunnerDialogProps) {
               error={fieldError("tz")}
             >
               <TextInput
+                placeholder="e.g. Europe/London"
                 value={form.tz}
                 onChange={(tz) => patch({ tz })}
                 maxLength={MAX_TZ_LENGTH}
@@ -257,6 +258,7 @@ export function ScheduleEditorDialog({ runner, onClose }: RunnerDialogProps) {
                 error={fieldError("every")}
               >
                 <NumberInput
+                  placeholder="e.g. 15"
                   value={form.everyAmount}
                   onChange={(everyAmount) => patch({ everyAmount })}
                   min={0}
@@ -265,6 +267,7 @@ export function ScheduleEditorDialog({ runner, onClose }: RunnerDialogProps) {
               </Field>
               <Field label="Unit">
                 <Select
+                  alwaysSet
                   options={UNITS}
                   value={form.everyUnit}
                   onChange={(everyUnit) => patch({ everyUnit })}

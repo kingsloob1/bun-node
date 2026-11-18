@@ -72,6 +72,7 @@ export function BreakGlassForm({ onSignedIn }: BreakGlassFormProps) {
         required
       >
         <TextInput
+          placeholder="The break-glass password"
           type="password"
           value={password}
           onChange={setPassword}
@@ -83,6 +84,7 @@ export function BreakGlassForm({ onSignedIn }: BreakGlassFormProps) {
         required
       >
         <TextInput
+          placeholder="e.g. 492039"
           value={code}
           onChange={setCode}
           inputMode="numeric"

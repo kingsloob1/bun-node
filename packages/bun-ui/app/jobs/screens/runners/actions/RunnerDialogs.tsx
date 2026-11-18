@@ -119,6 +119,7 @@ export function KillDialog({ runner, onClose }: RunnerDialogProps) {
     >
       <Field label="Run">
         <Select
+          placeholder="Choose a run"
           options={[
             {
               value: "",
@@ -152,6 +153,7 @@ export function KillDialog({ runner, onClose }: RunnerDialogProps) {
         }
       >
         <TextInput
+          placeholder="e.g. Stuck on a remote call since 09:00"
           value={reason}
           onChange={setReason}
           disabled={kill.isPending}

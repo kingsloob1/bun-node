@@ -14,6 +14,11 @@
  * - **Contrast** (WCAG 2.2 AA): each visible text's colour against the
  *   background it sits on, 4.5:1, or 3:1 for large text (24 px, or 18.66 px
  *   bold); disabled controls are exempt, as WCAG says.
+ * - **Placeholders** (BU-placeholders): every visible text field shows an
+ *   example placeholder, and every select that can be empty an empty first
+ *   option ("Choose a …", or an "Any" choice); one that always holds a value
+ *   is marked `data-always-set` and shows none, but must hold a value;
+ *   checkboxes, dates and files take none.
  * - **Focus**: no positive `tabindex` (it breaks the reading order), and a
  *   focused element shows a visible indicator (an outline or a box shadow).
  * - **Layout**: the page never scrolls sideways (`scrollWidth <=
@@ -83,6 +88,23 @@ export const CHECK_STRUCTURE = `(() => {
     // A placeholder is a hint, never the label: it goes as soon as one types.
     if (el.getAttribute("placeholder")) out.push("name: a placeholder stands in for a label: " + describe(el) + " (placeholder “" + el.getAttribute("placeholder") + "”)");
     else out.push("name: a " + el.tagName.toLowerCase() + (el.type ? "[type=" + el.type + "]" : "") + " has no label: " + describe(el));
+  }
+  // Every text field shows an example, and every select says what to choose
+  // (BU-placeholders); checkboxes, radios, dates, times and files take none.
+  const noPlaceholder = new Set(["checkbox", "radio", "file", "date", "datetime-local", "time", "month", "week", "hidden", "range", "color", "submit", "button", "reset", "image"]);
+  for (const el of document.querySelectorAll("input,textarea")) {
+    if (!visible(el) || (el.tagName === "INPUT" && noPlaceholder.has(el.type))) continue;
+    if (!(el.getAttribute("placeholder") ?? "").trim()) out.push("placeholder: none on " + describe(el));
+  }
+  for (const el of document.querySelectorAll("select")) {
+    if (!visible(el) || el.multiple) continue;
+    // An always-set select (a sort, a page size) shows no "Choose a …" entry,
+    // but must then hold a value: marked always set and empty is a lie.
+    if (el.hasAttribute("data-always-set")) {
+      if (el.value === "") out.push("select: marked always set, yet empty: " + describe(el));
+      continue;
+    }
+    if (![...el.options].some((option) => option.value === "")) out.push("select: no empty option: " + describe(el));
   }
   for (const el of document.querySelectorAll("button,a[href],[role=button],[role=tab],summary")) {
     if (!visible(el)) continue;
@@ -220,6 +242,20 @@ export const PLANT = `(() => {
   };
   add("input", "unlabelled");
   add("input", "placeholder-only").placeholder = "e.g. checkout-api";
+  const pick = add("select", "no-empty-option");
+  pick.setAttribute("aria-label", "A planted select");
+  pick.append(new Option("A", "a"));
+  // Marked always set, yet empty: a select's checks must still catch it.
+  const lying = add("select", "always-set-empty");
+  lying.setAttribute("aria-label", "A planted always-set select");
+  lying.setAttribute("data-always-set", "");
+  lying.append(new Option("Pick", ""), new Option("B", "b"));
+  lying.value = "";
+  // The control: marked always set, and holding a value, passes.
+  const honest = add("select", "always-set-honest");
+  honest.setAttribute("aria-label", "A planted honest select");
+  honest.setAttribute("data-always-set", "");
+  honest.append(new Option("C", "c"));
   add("button", "nameless");
   add("p", "faint", "faint text", { color: "#bbbbbb", backgroundColor: "#ffffff" });
   const order = add("a", "tabindex", "order");

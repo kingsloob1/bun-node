@@ -151,6 +151,7 @@ export function BanNew({ scope }: BanNewProps) {
       <Field label="Subject">
         {(control) => (
           <select
+            data-always-set
             {...control}
             className="input"
             value={field}
@@ -179,6 +180,7 @@ export function BanNew({ scope }: BanNewProps) {
         }
       >
         <TextInput
+          placeholder="e.g. 203.0.113.7 or 198.51.100.0/24"
           value={value}
           onChange={setValue}
           data-testid="ban-value"
@@ -197,6 +199,7 @@ export function BanNew({ scope }: BanNewProps) {
       <Field label="Action">
         {(control) => (
           <select
+            data-always-set
             {...control}
             className="input"
             value={action}
@@ -211,6 +214,7 @@ export function BanNew({ scope }: BanNewProps) {
       <Field label="How long">
         {(control) => (
           <select
+            data-always-set
             {...control}
             className="input"
             value={duration}
@@ -235,6 +239,7 @@ export function BanNew({ scope }: BanNewProps) {
         required
       >
         <TextInput
+          placeholder="e.g. Credential stuffing from this range"
           value={reason}
           onChange={setReason}
           data-testid="ban-reason"

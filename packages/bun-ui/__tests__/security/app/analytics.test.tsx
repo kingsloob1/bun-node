@@ -16,6 +16,7 @@ import { expectAbsent } from "../../harness/assert";
 import { fireEvent, LOADED, page, setupDom, waitFor, within } from "./dom";
 import { analyticsRoutes, defaultRoutes, problem, T0 } from "./mockApi";
 import { renderApp } from "./renderApp";
+import { choices } from "../../harness/choices";
 
 setupDom();
 
@@ -217,7 +218,7 @@ describe("top offenders", () => {
     const kinds = within(panel).getByRole("combobox", {
       name: "Subject kind",
     }) as HTMLSelectElement;
-    expect([...kinds.options].map((option) => option.value)).toEqual([
+    expect(choices(kinds).map((option) => option.value)).toEqual([
       "ip",
       "user",
       "username",

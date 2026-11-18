@@ -188,6 +188,7 @@ export function WorkerConfigDialog({
                   }
                 >
                   <NumberInput
+                    placeholder="e.g. 4"
                     value={valueOf(setting)}
                     min={bounds.min}
                     max={bounds.max}

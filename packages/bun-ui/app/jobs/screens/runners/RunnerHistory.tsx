@@ -197,6 +197,7 @@ export function RunnerHistory({
           <div className="history-limit">
             <label htmlFor={selectId}>Runs shown</label>
             <Select
+              alwaysSet
               id={selectId}
               options={options.map((value) => ({ value: String(value) }))}
               value={String(page.limit)}

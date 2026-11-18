@@ -78,6 +78,7 @@ export function TriggerDialog({ runner, onClose }: RunnerDialogProps) {
           hint="Optional JSON handed to this run; leave empty for the runner's own args."
         >
           <JsonEditor
+            placeholder='{ "date": "2026-11-18", "dryRun": true }'
             value={args.text}
             onChange={setArgs}
             maxBytes={maxBytes}

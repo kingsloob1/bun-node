@@ -163,6 +163,7 @@ function OpenPublishDialog({
         hint="Optional: why, for the version history."
       >
         <TextInput
+          placeholder="e.g. Block the scanner range seen on 18 Nov"
           value={message}
           onChange={setMessage}
           maxLength={1000}

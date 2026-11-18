@@ -319,6 +319,20 @@ describe.skipIf(chromePath === undefined)(
         ),
       ).toBe(true);
       expect(
+        structure.some((line) => line.startsWith("placeholder: none on input")),
+      ).toBe(true);
+      expect(
+        structure.some((line) => line.startsWith("select: no empty option")),
+      ).toBe(true);
+      expect(
+        structure.some((line) =>
+          line.startsWith("select: marked always set, yet empty"),
+        ),
+      ).toBe(true);
+      expect(structure.some((line) => line.includes("always-set-honest"))).toBe(
+        false,
+      );
+      expect(
         structure.some((line) =>
           line.startsWith("name: a control has no name: button"),
         ),

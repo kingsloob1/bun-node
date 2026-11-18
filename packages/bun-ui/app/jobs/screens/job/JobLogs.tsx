@@ -73,6 +73,7 @@ export function JobLogs({ queue, id, state }: JobLogsProps) {
           <span className="job-logs-order">
             <label htmlFor={orderId}>Order</label>
             <Select
+              alwaysSet
               id={orderId}
               options={ORDER_OPTIONS}
               value={view.order}

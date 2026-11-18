@@ -102,6 +102,7 @@ function OpenFailJobDialog({ job, onClose }: FailJobDialogProps) {
         }
       >
         <TextInput
+          placeholder="e.g. Cancelled by support: duplicate order"
           value={reason}
           onChange={setReason}
           disabled={fail.isPending}

@@ -399,7 +399,9 @@ or when the API answers `401`. Too many failed attempts lock the account
 
 Every screen is checked in Chrome (`__tests__/security/e2e/a11y.e2e.test.ts`)
 for one `main`, a `nav`, a banner and one `h1`; a name on every control,
-image and link (a placeholder is a hint, and never stands in for a label); text contrast of WCAG AA (4.5:1, 3:1 for large text) in the
+image and link (a placeholder is a hint, and never stands in for a label);
+an example placeholder in every text field and a "Choose a …" option in
+every select that can be empty (one that always holds a value shows none); text contrast of WCAG AA (4.5:1, 3:1 for large text) in the
 light and the dark theme; a visible focus indicator on every control the
 Tab key reaches, in document order; and no sideways scroll at 375 px and
 1440 px (a wide table scrolls inside its own labelled region). A dialog

@@ -133,6 +133,7 @@ export function AuditScreen({ scope }: AuditScreenProps) {
         <label>
           Actor{" "}
           <input
+            placeholder="e.g. alice"
             className="input"
             defaultValue={filters.actor}
             data-testid="filter-actor"
@@ -183,6 +184,7 @@ export function AuditScreen({ scope }: AuditScreenProps) {
         <label>
           Order{" "}
           <select
+            data-always-set
             className="input"
             value={filters.direction}
             data-testid="filter-direction"

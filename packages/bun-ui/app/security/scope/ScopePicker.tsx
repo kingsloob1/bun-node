@@ -128,7 +128,13 @@ export function ScopePicker() {
         onChange={(event) => setScope(event.target.value)}
         data-testid="scope-select"
       >
-        {scope === null ? <option value="">Choose a scope</option> : null}
+        {/* Always there (BU-placeholders); chosen only while no scope is. */}
+        <option
+          value=""
+          disabled={scope !== null}
+        >
+          Choose a scope
+        </option>
         {shown.map((option) => (
           <option
             key={option}

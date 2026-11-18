@@ -167,6 +167,7 @@ function OpenConfirmDialog({
           >
             <TextInput
               ref={inputRef}
+              placeholder={confirmText}
               value={typed}
               onChange={setTyped}
               autoComplete="off"

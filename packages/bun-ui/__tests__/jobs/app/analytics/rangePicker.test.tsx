@@ -2,6 +2,7 @@ import type { TimeRange } from "../../../../app/jobs/analytics/range";
 import { describe, expect, it } from "bun:test";
 import { RangePicker } from "../../../../app/jobs/analytics/RangePicker";
 import { fireEvent, page, render, setupDom, within } from "../dom";
+import { choices } from "../../../harness/choices";
 
 setupDom();
 
@@ -40,9 +41,9 @@ describe("the range picker", () => {
 
   it("offers every preset and the custom entry", () => {
     const { group } = mount({ kind: "preset", seconds: 3600 });
-    const labels = [
-      ...within(group).getByRole("combobox").querySelectorAll("option"),
-    ].map((option) => option.textContent);
+    const labels = choices(within(group).getByRole("combobox")).map(
+      (option) => option.textContent,
+    );
     expect(labels[0]).toBe("Last 60 seconds");
     expect(labels).toContain("Last hour");
     expect(labels.at(-1)).toBe("Custom range…");

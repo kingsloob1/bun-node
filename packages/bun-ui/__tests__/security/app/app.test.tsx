@@ -8,6 +8,7 @@ import { expectAbsent } from "../../harness/assert";
 import { fireEvent, LOADED, page, setupDom, waitFor, within } from "./dom";
 import { defaultRoutes } from "./mockApi";
 import { renderApp } from "./renderApp";
+import { choices } from "../../harness/choices";
 
 setupDom();
 
@@ -22,7 +23,7 @@ async function navLabels(): Promise<string[]> {
 /** The scope select's option values. */
 function scopeOptions(): string[] {
   const select = page().getByTestId("scope-select") as HTMLSelectElement;
-  return [...select.options].map((option) => option.value);
+  return choices(select).map((option) => option.value);
 }
 
 describe("the landing screen", () => {

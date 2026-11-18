@@ -194,6 +194,7 @@ export function ConfigEditorDialog({
           error={save.fieldErrors.executionMode}
         >
           <Select
+            alwaysSet
             options={modeOptions}
             value={form.executionMode}
             onChange={(executionMode) =>
@@ -238,6 +239,7 @@ export function ConfigEditorDialog({
           error={save.fieldErrors["concurrency.runMode"]}
         >
           <Select
+            alwaysSet
             options={RUN_MODES}
             value={form.runMode}
             onChange={(runMode) =>

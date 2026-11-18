@@ -181,6 +181,7 @@ function GroupDialog({ editing, groups, onClose }: GroupDialogProps) {
             hint="Letters, digits, _, . and -; made up from the name when empty."
           >
             <TextInput
+              placeholder="e.g. payments"
               data-testid="group-id"
               value={id}
               onChange={setId}
@@ -192,6 +193,7 @@ function GroupDialog({ editing, groups, onClose }: GroupDialogProps) {
           required
         >
           <TextInput
+            placeholder="e.g. Payments"
             data-testid="group-name"
             value={name}
             onChange={setName}
@@ -202,6 +204,7 @@ function GroupDialog({ editing, groups, onClose }: GroupDialogProps) {
           hint="The group it nests under: its policy inherits that group's."
         >
           <Select
+            placeholder="Choose a parent group"
             data-testid="group-parent"
             options={[
               { value: "", label: "(none: under global)" },
@@ -219,6 +222,7 @@ function GroupDialog({ editing, groups, onClose }: GroupDialogProps) {
           {...(parsed === null ? { error: "must be a JSON object" } : {})}
         >
           <JsonEditor
+            placeholder='{ "owner": "payments-team" }'
             value={labels}
             rows={4}
             onChange={(state) => setLabels(state.text)}

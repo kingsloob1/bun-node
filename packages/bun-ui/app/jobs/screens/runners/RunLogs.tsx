@@ -141,6 +141,7 @@ export function RunLogs({ runner, runId, enabled = true }: RunLogsProps) {
     <span className="run-log-filter">
       <label htmlFor={filterId}>Stream</label>
       <Select
+        placeholder="Choose a stream"
         id={filterId}
         options={streamOptions()}
         value={stream ?? ""}

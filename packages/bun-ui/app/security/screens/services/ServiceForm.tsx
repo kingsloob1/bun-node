@@ -240,6 +240,7 @@ function ServiceFormView({
             hint="Letters, digits, _, . and -; made up from the name when empty."
           >
             <TextInput
+              placeholder="e.g. checkout-api"
               data-testid="service-id"
               disabled={!canWrite}
               value={draft.id}
@@ -252,6 +253,7 @@ function ServiceFormView({
           required
         >
           <TextInput
+            placeholder="e.g. Checkout API"
             data-testid="service-name"
             disabled={!canWrite}
             value={draft.name}
@@ -282,6 +284,7 @@ function ServiceFormView({
         </fieldset>
         <Field label="Environment">
           <TextInput
+            placeholder="e.g. production"
             data-testid="service-environment"
             disabled={!canWrite}
             value={draft.environment}
@@ -294,6 +297,7 @@ function ServiceFormView({
         >
           {(control) => (
             <textarea
+              placeholder={"checkout.example.com\napi.checkout.example.com"}
               {...control}
               className="input"
               rows={3}
@@ -309,6 +313,7 @@ function ServiceFormView({
           hint="a: one process; b: several processes, one store; c: several hosts with agents (topologies.md)."
         >
           <Select
+            alwaysSet
             data-testid="service-topology"
             disabled={!canWrite}
             options={[
@@ -326,6 +331,7 @@ function ServiceFormView({
           {...(labels === null ? { error: "must be a JSON object" } : {})}
         >
           <JsonEditor
+            placeholder='{ "team": "payments", "tier": "1" }'
             value={draft.labels}
             rows={4}
             readOnly={!canWrite}

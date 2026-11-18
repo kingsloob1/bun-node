@@ -120,6 +120,7 @@ function LimitsRowFields({
         error={error("rate.max") ?? error("rate")}
       >
         <NumberInput
+          placeholder="e.g. 100"
           value={row.rateMax}
           onChange={(rateMax) => onChange({ ...row, rateMax })}
           min={1}
@@ -131,6 +132,7 @@ function LimitsRowFields({
         error={error("rate.duration")}
       >
         <TextInput
+          placeholder="e.g. 1 minute"
           value={row.rateDuration}
           onChange={(rateDuration) => onChange({ ...row, rateDuration })}
           maxLength={100}
@@ -142,6 +144,7 @@ function LimitsRowFields({
         error={error("concurrency")}
       >
         <NumberInput
+          placeholder="e.g. 10"
           value={row.concurrency}
           onChange={(concurrency) => onChange({ ...row, concurrency })}
           min={1}
@@ -219,6 +222,7 @@ function LimitsEditor({
                 hint="The job name these limits apply to, exactly as jobs are added with it (e.g. “send-email”). They apply on top of the queue's own. A name at its limit is skipped, not waited behind, so other names keep running."
               >
                 <TextInput
+                  placeholder="e.g. send-email"
                   value={row.name}
                   onChange={(name) =>
                     setDraft({

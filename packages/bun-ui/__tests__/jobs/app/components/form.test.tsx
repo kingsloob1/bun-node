@@ -45,6 +45,7 @@ describe("Field", () => {
         required
       >
         <TextInput
+          placeholder="e.g. emails"
           value=""
           onChange={() => {}}
         />
@@ -71,6 +72,7 @@ describe("Field", () => {
         id="delay"
       >
         <NumberInput
+          placeholder="e.g. 3"
           value={undefined}
           onChange={() => {}}
           aria-describedby="extra"
@@ -114,6 +116,7 @@ describe("NumberInput", () => {
       return (
         <Field label="Priority">
           <NumberInput
+            placeholder="e.g. 5"
             value={value}
             min={0}
             max={10}
@@ -310,6 +313,7 @@ describe("Select and Checkbox", () => {
     render(
       <Field label="Order">
         <Select
+          alwaysSet
           value="asc"
           options={[
             { value: "asc", label: "Oldest first" },
@@ -322,6 +326,65 @@ describe("Select and Checkbox", () => {
     const select = page().getByLabelText("Order");
     fireEvent.change(select, { target: { value: "desc" } });
     expect(lastValue(onChange)).toBe("desc");
+  });
+
+  it("Select shows its placeholder as a disabled empty first option, unless an option is empty already", () => {
+    render(
+      <>
+        <Field label="Order">
+          <Select
+            placeholder="Choose an order"
+            value="asc"
+            options={[{ value: "asc" }, { value: "desc" }]}
+            onChange={() => {}}
+          />
+        </Field>
+        <Field label="Kind">
+          <Select<"" | "ip">
+            placeholder="Choose a kind"
+            value=""
+            options={[
+              { value: "", label: "Any kind" },
+              { value: "ip", label: "Address" },
+            ]}
+            onChange={() => {}}
+          />
+        </Field>
+      </>,
+    );
+    const order = page().getByLabelText("Order") as HTMLSelectElement;
+    const first = order.options[0]!;
+    expect([first.value, first.textContent, first.disabled]).toEqual([
+      "",
+      "Choose an order",
+      true,
+    ]);
+    expect(order.options).toHaveLength(3);
+    // The control: an "Any" choice is the empty option, so none is added.
+    const kind = page().getByLabelText("Kind") as HTMLSelectElement;
+    expect([...kind.options].map((option) => option.textContent)).toEqual([
+      "Any kind",
+      "Address",
+    ]);
+  });
+
+  it("an always-set Select (a sort, a page size) shows no Choose entry, and is marked so", () => {
+    render(
+      <Field label="Sort">
+        <Select
+          alwaysSet
+          value="asc"
+          options={[{ value: "asc" }, { value: "desc" }]}
+          onChange={() => {}}
+        />
+      </Field>,
+    );
+    const sort = page().getByLabelText("Sort") as HTMLSelectElement;
+    expect([...sort.options].map((option) => option.value)).toEqual([
+      "asc",
+      "desc",
+    ]);
+    expect(sort.hasAttribute("data-always-set")).toBe(true);
   });
 
   it("Checkbox is labelled, described and emits booleans", () => {

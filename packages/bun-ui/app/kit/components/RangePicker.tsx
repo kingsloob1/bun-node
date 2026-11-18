@@ -67,6 +67,7 @@ export function RangePicker<P extends number>({
     >
       <Field label="Range">
         <Select
+          alwaysSet
           value={
             showCustom
               ? CUSTOM

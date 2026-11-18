@@ -148,6 +148,7 @@ export function Pager({
       <span className="pager-size">
         <label htmlFor={sizeId}>Rows per page</label>
         <select
+          data-always-set
           id={sizeId}
           className="input select pager-select"
           value={limit}
@@ -187,6 +188,7 @@ export function Pager({
           <label htmlFor={pageId}>Page</label>
           {pageCount <= pageSelectMax ? (
             <select
+              data-always-set
               id={pageId}
               className="input select pager-select"
               value={page}
@@ -205,6 +207,7 @@ export function Pager({
             </select>
           ) : (
             <input
+              placeholder="e.g. 3"
               id={pageId}
               className="input pager-select pager-page-input"
               type="number"

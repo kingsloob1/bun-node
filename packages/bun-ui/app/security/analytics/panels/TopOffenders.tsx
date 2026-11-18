@@ -117,6 +117,7 @@ export function TopOffenders({
       actions={
         kinds.length > 1 ? (
           <Select
+            alwaysSet
             aria-label="Subject kind"
             value={kind}
             onChange={(value) => setKind(value)}

@@ -34,8 +34,14 @@ export type Control =
       readonly integer: boolean;
       readonly min?: number;
       readonly max?: number;
+      /** An example from the schema (`examples`, else `default`), for the placeholder. */
+      readonly example?: number;
     }
-  | { readonly kind: "string" }
+  | {
+      readonly kind: "string";
+      /** An example from the schema (`examples`, else `default`), for the placeholder. */
+      readonly example?: string;
+    }
   | { readonly kind: "duration" }
   | { readonly kind: "lines" }
   | { readonly kind: "choices"; readonly values: readonly string[] }
@@ -56,6 +62,24 @@ function isDuration(node: SchemaNode): boolean {
     options.some((option) => option.type === "string") &&
     options.some((option) => propertiesOf(option)?.minutes !== undefined)
   );
+}
+
+/** A node's first example (`examples`, else `default`) that is a string. */
+function stringExample(node: SchemaNode): string | undefined {
+  const candidates = [
+    ...(Array.isArray(node.examples) ? node.examples : []),
+    node.default,
+  ];
+  return candidates.find((value): value is string => typeof value === "string");
+}
+
+/** A node's first example (`examples`, else `default`) that is a number. */
+function numberExample(node: SchemaNode): number | undefined {
+  const candidates = [
+    ...(Array.isArray(node.examples) ? node.examples : []),
+    node.default,
+  ];
+  return candidates.find((value): value is number => typeof value === "number");
 }
 
 /** The control a node gets; see the module's description. */
@@ -84,9 +108,14 @@ export function controlOf(node: SchemaNode): Control {
         integer: node.type === "integer",
         ...(typeof node.minimum === "number" ? { min: node.minimum } : {}),
         ...(typeof node.maximum === "number" ? { max: node.maximum } : {}),
+        ...(numberExample(node) === undefined
+          ? {}
+          : { example: numberExample(node)! }),
       };
-    case "string":
-      return { kind: "string" };
+    case "string": {
+      const example = stringExample(node);
+      return { kind: "string", ...(example === undefined ? {} : { example }) };
+    }
     case "array": {
       const items = isObject(node.items) ? (node.items as SchemaNode) : {};
       if (Array.isArray(items.enum))

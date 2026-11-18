@@ -249,6 +249,7 @@ function ChannelEditor({
             <label>
               Id{" "}
               <input
+                placeholder="e.g. ops-pager"
                 className="input"
                 value={id}
                 required
@@ -259,6 +260,7 @@ function ChannelEditor({
             <label>
               Type{" "}
               <select
+                data-always-set
                 className="input"
                 value={type}
                 data-testid="channel-type"
@@ -283,6 +285,7 @@ function ChannelEditor({
         <label>
           Name{" "}
           <input
+            placeholder="e.g. Ops pager"
             className="input"
             value={name}
             disabled={!canWrite}
@@ -294,6 +297,7 @@ function ChannelEditor({
           <label>
             Addresses (commas){" "}
             <input
+              placeholder="e.g. ops@example.com, security@example.com"
               className="input"
               value={to}
               disabled={!canWrite}
@@ -307,6 +311,7 @@ function ChannelEditor({
               ? "URL"
               : `URL (now ${channel.url ?? "?"}; type a new one to change it)`}{" "}
             <input
+              placeholder="e.g. https://hooks.example.com/alerts"
               className="input"
               type="url"
               value={url}
@@ -320,6 +325,7 @@ function ChannelEditor({
         <label>
           Also receives the control plane's alerts (kinds, commas; * for all){" "}
           <input
+            placeholder="e.g. breakGlass.login, agent.offline (or *)"
             className="input"
             value={kinds}
             disabled={!canWrite}

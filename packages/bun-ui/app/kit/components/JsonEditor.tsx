@@ -21,8 +21,8 @@ export interface JsonEditorProps extends JsonEditorStateOptions {
   readOnly?: boolean;
   /** Disabled. */
   disabled?: boolean;
-  /** Placeholder text. */
-  placeholder?: string;
+  /** The expected JSON's shape as an example (`{ "name": "nightly" }`): required, a hint beside the label, never the label. */
+  placeholder: string;
   /** Extra class names on the wrapper. */
   className?: string;
 }

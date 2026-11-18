@@ -24,6 +24,7 @@ import {
   runnerFixture,
   toastSays,
 } from "./fixtures";
+import { choices } from "../../../../harness/choices";
 
 setupDom();
 
@@ -225,7 +226,7 @@ describe("the settings editor: what it shows", () => {
   it("offers every execution mode the contract names, in its order", async () => {
     const { dialog } = await openSettings();
     const options = Array.from(
-      control(dialog, "Execution mode").querySelectorAll("option"),
+      choices(control(dialog, "Execution mode")),
       (option) => option.getAttribute("value"),
     );
     // Built from EXECUTION_MODES, not a list restated here: a mode the API
@@ -238,7 +239,7 @@ describe("the settings editor: what it shows", () => {
       runner: configurable({ allowed: ["worker-thread", "in-process"] }),
     });
     const options = Array.from(
-      control(dialog, "Execution mode").querySelectorAll("option"),
+      choices(control(dialog, "Execution mode")),
       (option) => option.getAttribute("value"),
     );
     expect(options).toEqual(["worker-thread", "in-process"]);
@@ -253,7 +254,7 @@ describe("the settings editor: what it shows", () => {
       runner: configurable({ allowed: ["child-process"] }),
     });
     const options = Array.from(
-      control(dialog, "Execution mode").querySelectorAll("option"),
+      choices(control(dialog, "Execution mode")),
       (option) => option.getAttribute("value"),
     );
     expect(options).toEqual(["worker-thread", "child-process"]);
@@ -262,7 +263,7 @@ describe("the settings editor: what it shows", () => {
   it("labels each mode in the words of a worker's target, never a runner's old spelling", async () => {
     const { dialog } = await openSettings();
     const labels = Array.from(
-      control(dialog, "Execution mode").querySelectorAll("option"),
+      choices(control(dialog, "Execution mode")),
       (option) => option.textContent,
     );
     expect(labels).toEqual([
