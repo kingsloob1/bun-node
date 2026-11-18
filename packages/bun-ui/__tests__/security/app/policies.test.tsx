@@ -463,9 +463,50 @@ describe("the rules' slot", () => {
       },
     });
     await openEditor("scope=global&tab=rules", fake.routes);
-    page().getByTestId("item-row-no-admin");
+    expect(page().getByTestId("request-rule").textContent).toContain(
+      "no-admin",
+    );
     expect(
       page().getByTestId("test-request-link").getAttribute("href"),
     ).toContain("/rules/test?scope=global");
+  });
+
+  it("edits a rule in PR-U5's editor, saved with the rest of the draft", async () => {
+    const fake = editorApi({
+      rest: {
+        requestRules: {
+          rules: [
+            {
+              id: "no-admin",
+              when: { path: { prefix: "/admin" } },
+              action: "block",
+            },
+          ],
+        },
+      },
+    });
+    const { api } = await openEditor("scope=global&tab=rules", fake.routes);
+    fireEvent.click(page().getByTestId("request-rule-edit-no-admin"));
+    fireEvent.change(page().getByTestId("rule-mode"), {
+      target: { value: "dryRun" },
+    });
+    fireEvent.click(page().getByTestId("request-rule-apply"));
+    expect(page().getByTestId("policy-unsaved").textContent).toBe(
+      "Unsaved changes",
+    );
+    fireEvent.click(page().getByTestId("policy-save"));
+    await waitFor(() => expect(draftBodies(api.calls)).toHaveLength(1));
+    expect(
+      (draftBodies(api.calls)[0] as { requestRules: unknown }).requestRules,
+    ).toEqual({
+      rules: [
+        {
+          id: "no-admin",
+          when: { path: { prefix: "/admin" } },
+          action: "block",
+          mode: "dryRun",
+        },
+      ],
+    });
   });
 });

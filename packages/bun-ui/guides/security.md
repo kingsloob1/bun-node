@@ -116,8 +116,10 @@ server-sent events, so `connect-src` allows no `ws(s)` origin.
   registry crawler, the allowance's settings, and each verified crawler's
   requests, 404s, 429s from its own limit and the probe and honeypot hits
   its allowance lifted over the last 24 hours, with the spoofed claimants.
-  The **Request rules** tab holds the rule editor (PR-U5's, embedded here)
-  and a link to **Test a request**.
+  The **Request rules** tab holds the rule editor (PR-U5's, embedded here):
+  each of the scope's rules edited in place with the matcher builder and
+  saved with the rest of the draft, the inherited ones read-only with their
+  locks, the managed probe set's settings, and a link to **Test a request**.
 - **Versions** (`/policies/versions`): a scope's published versions, newest
   first. Tick any two to compare them, or compare one with the published
   version; **Roll back to this** publishes that version's content again as
@@ -162,6 +164,67 @@ server-sent events, so `connect-src` allows no `ws(s)` origin.
 - **Events** (`/events`, `/events/:id`): every stored event, filtered,
   paginated, with an **N new — show** chip, and an event's detail with its
   redacted request.
+- **Rules** (`/rules`, `/rules/new`, `/rules/edit/:id`): the scope's request
+  rules (its draft's when there is one, else its published version's), each
+  with its mode, what a hit does, its hits and dry-run would-blocks in the
+  last 24 hours and how the draft changes it; the rules it inherits, with
+  the scope each came from and whether it is locked; and the managed probe
+  set as it applies here, which ships with bun-security's release (the
+  version `GET /meta` names). **New rule** and **Edit** open the rule
+  editor: its id, what a hit does (block, challenge, ban, drop, log), mode,
+  weight, refusal status and code, a ban's length, verified crawlers,
+  whether the scopes below may override it, and its condition in the
+  matcher builder (**all** or **any** of a list, **not** one, tests of one
+  target each; a regex is checked as you type with the control plane's own
+  check, and a refused one is not saved). A save writes the scope's draft
+  at the revision read; a draft changed meanwhile is read again. **Remove**,
+  **Publish** and **Discard** act on the draft as on the Lists screen.
+- **Test a request** (`/rules/test`): a request described in a form, or
+  pasted as a raw HTTP request or a `curl` command, with the socket peer,
+  the service's trust-proxy setting, the caller's identity, and what to
+  assume of the address (country, ASN, classes) and the counters ("as if
+  this address had counted 299 on `per-ip`"), run through a service's
+  effective policy, or with the scope's draft in its place. It shows the
+  decision, every rule that matched, how the client was resolved and
+  through which hops, the keys it counts against, the crawler verdict,
+  every step, and what the test could not evaluate. Nothing is counted,
+  banned or kept.
+- **Audit** (`/audit`, `/audit/:n`): the audit log, newest first, filtered
+  by actor, action, time and (off `global`) the scope on screen; the latest
+  signed checkpoint, and **Verify the chain** (every hash recomputed, the
+  first problem first, the external sinks, intents with no done entry); an
+  entry's changes, its state before and after, and the entry as hashed.
+  **Export (JSON Lines)** downloads the filter's time range behind a
+  step-up; the export is itself an audit entry.
+- **Approvals** (`/approvals`, `/approvals/:id`): every approval with what
+  it would do, where, who asked, when it expires and where it stands. A
+  policy change shows its own diff (the policy it would publish against the
+  version it expects, not the scope's draft, which may have moved on) and,
+  on demand, its impact estimate; another change shows its summary.
+  **Approve** (or **Close the review** for an emergency publish) and
+  **Reject**, with a reason, are offered to an operator who may make the
+  change on its scope and did not ask for it; approving carries the change
+  out, behind its step-up.
+- **Agents** (`/agents`, `/agents/new`, `/agents/:id`): every agent's state
+  (OK, late, offline, signature failing, revoked, never seen), last
+  heartbeat, the bundle version and signing key it last verified, the bans
+  it holds and what it reported wrong (warnings, ban reports dropped); an
+  agent's warnings, IP feeds and dropped ban reports. **New agent** makes a
+  key for a service (a step-up) and shows its secret once; **Rotate** (a
+  step-up) shows the new secret once and until when the old one is
+  accepted (its first use of the new one, or 24 hours); **Revoke** ends the
+  key at once.
+- **Alerts** (`/alerts` and its tabs): the alerts open now (read-only: one
+  closes when its rule's condition stops holding); the rules (what each
+  watches, its channels; made and changed in a form by kind: a metric's
+  total or rate, a baseline spike, a metric counting in every one of the
+  last hours, a ban storm, an agent gone silent or
+  reporting a warning); the channels (webhook, Slack-compatible webhook,
+  email; the URL is write-only, a webhook's signing secret is shown once
+  when made or rotated behind a step-up; **Send a test**); the delivery log
+  and the dead letters (**Replay**). The channels, the log and the dead
+  letters are the control plane's own: their tabs need `alerts:read` on
+  `global`.
 - **API reference** (`/api`): the management API's OpenAPI document, read
   only (no try-it: these calls change what protects the services).
 
@@ -251,6 +314,25 @@ operator may not use is absent, not disabled.
 | An event: Allow / deny in lists (an address) | `policy:draft` on the scope |
 | Automatic bans (`/bans/auto`) | `analytics:read` on the scope (the Bans section needs `bans:read`) |
 | Automatic bans: Make a fleet ban | `bans:write` on the scope |
+| Rules (nav and route), the list, inherited rules, the managed set | `policy:read` on the scope |
+| Rules: hits and would-blocks | `analytics:read` on the scope |
+| Rules: New rule, Edit, Remove, Discard draft, the rule editor's Save | `policy:draft` on the scope |
+| Rules: Publish | `policy:publish` on the scope (a step-up, or an approval under two-person approvals) |
+| Rules: Test a request link, the test | `rules:test` on the scope (and the service's) |
+| Audit (nav and route), the list, an entry, the checkpoint, Verify the chain | `audit:read` on the scope (the API reads it on `global`) |
+| Audit: Export | `audit:export` on the scope (the API checks `global`; a step-up) |
+| Approvals (nav and route), the list, an approval | `approvals:read` on the scope |
+| An approval: its diff | `approvals:read` and `policy:read` on its scope |
+| An approval: Estimate impact | `rules:test` on its scope |
+| An approval: Approve, Reject, Close the review | the change's permission on its scope (`policy:publish`, `roles:write`, `identities:write` or `bans:write`), and not its author |
+| Agents (nav and route), the list, an agent | `agents:read` on the scope (the API reads it on `global`) |
+| Agents: New agent | `agents:write` on the scope (the API checks the service's; a step-up) |
+| An agent: Rotate, Revoke | `agents:write` on its service |
+| Alerts (nav and route), open alerts, the rules | `alerts:read` on the scope (each rule shown on its own scope's) |
+| Alerts: New rule | `alerts:write` on the scope |
+| An alert rule: Save, Delete | `alerts:write` on its scope |
+| Alerts: Channels, Delivery log, Dead letters tabs | `alerts:read` on global |
+| Alerts: New channel, a channel's Save, Send a test, Rotate, Delete; a dead letter's Replay | `alerts:write` on global (a webhook's secret: a step-up) |
 
 ### Lists
 

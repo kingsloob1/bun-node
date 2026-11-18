@@ -1340,7 +1340,14 @@ const admin = await secureAdmin({ port: 9443, api }); // 127.0.0.1 unless told o
   action raised, an allow entry added or widened, the ladder changed) need
   the scope's name typed in `confirm`, or with `approvals: "two-person"` a
   second operator's approval (`202` with the approval; never its author;
-  24 hours). `emergency: true` publishes at once and opens a review.
+  24 hours). `emergency: true` publishes at once and opens a review. An
+  approval is decided by an operator with the permission its change needs on
+  its scope (`policy:publish`, `roles:write`, `identities:write`, or
+  `bans:write` for a bulk lift). A policy change's approval shows what it
+  would publish: `GET /approvals/:id/diff` (against the version it expects,
+  never the scope's draft, which may have moved on; `approvals:read` and
+  `policy:read`) and `POST /approvals/:id/impact` (its impact estimate;
+  `rules:test` and `policy:read`).
 - **Step-up**: publishing, rollback, identities and role bindings need the
   host's fresh second factor (`stepUp.verify`; a `401` with
   `stepUp.challenge`'s URL otherwise). Without a hook, `approvals:

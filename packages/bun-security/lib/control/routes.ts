@@ -28,6 +28,7 @@ import { LIVE_LIMITS } from "./contract/live";
 import type { LiveHub } from "./live/hub";
 import { parseResume } from "./live/transports";
 import * as S from "./schemas";
+import { securityPackageVersion } from "./version";
 import { groupScope, serviceScope } from "./scopes";
 
 /** A route of any shape, for the list. */
@@ -109,13 +110,14 @@ export function routes(
       method: "get",
       path: "/meta",
       summary:
-        "What the API is: its version, CSRF header, step-up and approvals modes, signing key",
+        "What the API is: its protocol and package versions, CSRF header, step-up and approvals modes, signing key",
       tag: "meta",
       responses: { 200: S.Meta },
       handle: async ({ plane }) => ({
         status: 200,
         body: {
           protocolVersion: SECURITY_API_PROTOCOL_VERSION,
+          version: securityPackageVersion(),
           basePath: options.basePath,
           csrfHeader: options.csrf === false ? null : options.csrf.header,
           stepUp: options.guard,
@@ -788,6 +790,35 @@ export function routes(
         const approval = await plane.getApproval((params as { id: string }).id);
         await require("approvals:read", approval.scope);
         return { status: 200, body: approval };
+      },
+    },
+    {
+      method: "get",
+      path: "/approvals/:id/diff",
+      summary:
+        "What an approval's policy change would change: the policy it would publish against the head it expects, shown as a scope's diff is; a 404 for an approval that changes no policy",
+      tag: "approvals",
+      params: S.IdParams,
+      responses: { 200: S.Diff },
+      problems: [404],
+      handle: async ({ plane, require, params }) => {
+        const { id } = params as { id: string };
+        const approval = await plane.getApproval(id);
+        await require("approvals:read", approval.scope);
+        const change = await plane.approvalChange(id);
+        await require("policy:read", change.scope);
+        const changes = diffPolicies(
+          plane.showPolicy(change.from),
+          plane.showPolicy(change.policy),
+        );
+        return {
+          status: 200,
+          body: {
+            from: change.expectedHead ?? "none",
+            to: `approval:${id}`,
+            changes,
+          },
+        };
       },
     },
     {

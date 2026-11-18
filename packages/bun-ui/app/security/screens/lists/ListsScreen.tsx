@@ -27,6 +27,7 @@ import { Table } from "../../../kit/components/Table";
 import { useToast } from "../../../kit/components/toast";
 import { clientWindow } from "../../../kit/components/useClientPage";
 import { isApiError } from "../../api/errors";
+import { download } from "../../components/download";
 import { ErrorView } from "../../components/ErrorView";
 import { useCan } from "../../meta/hooks";
 import { Link } from "../../router";
@@ -120,16 +121,6 @@ const ORIGIN_OPTIONS = [
 /** A count of things, in words. */
 function count(n: number, one: string, many = `${one}s`): string {
   return `${n.toLocaleString("en")} ${n === 1 ? one : many}`;
-}
-
-/** Saves `text` as a file. */
-function download(name: string, text: string): void {
-  const url = URL.createObjectURL(new Blob([text], { type: "text/csv" }));
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = name;
-  anchor.click();
-  URL.revokeObjectURL(url);
 }
 
 /** The screen for one scope. */
@@ -265,7 +256,7 @@ function ListsView({ scope }: ListsScreenProps) {
       .filter((row) => row.own && row.state !== "removing")
       .map((row) => row.entry);
     const { text, skipped } = toCsv(entries);
-    download(`lists-${scope.replace(":", "-")}.csv`, text);
+    download(`lists-${scope.replace(":", "-")}.csv`, text, "text/csv");
     if (skipped > 0) {
       toast.info(
         `${count(skipped, "entry", "entries")} not exported: an account id not yet keyed`,

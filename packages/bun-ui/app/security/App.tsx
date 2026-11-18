@@ -14,7 +14,15 @@ import { ScopePermissions } from "./scope/ScopePermissions";
 import { SCOPE_PARAM } from "./scope/scope";
 import { useScope } from "./scope/useScope";
 import {
+  AgentDetailScreen,
+  AgentNewScreen,
+  AgentsScreen,
+  AlertsScreen,
   ApiReferenceScreen,
+  ApprovalDetailScreen,
+  ApprovalsScreen,
+  AuditEntryScreen,
+  AuditScreen,
   AutoBansScreen,
   BanDetailScreen,
   BanNewScreen,
@@ -27,6 +35,9 @@ import {
   ServiceFormScreen,
   ServicesScreen,
   VersionsScreen,
+  RuleEditScreen,
+  RulesScreen,
+  RuleTestScreen,
 } from "./screens/lazy";
 import { NoAccess } from "./screens/NoAccess";
 import { NotFound } from "./screens/NotFound";
@@ -87,6 +98,12 @@ function Sections({ scope }: { scope: string | null }) {
             ["/policies/versions", VersionsScreen],
             ["/policies", PolicyEditorScreen],
           ]),
+          ...scoped("rules", [
+            ["/rules/test", RuleTestScreen],
+            ["/rules/new", RuleEditScreen],
+            ["/rules/edit/:id", RuleEditScreen],
+            ["/rules", RulesScreen],
+          ]),
           ...scoped("lists", [
             ["/lists/new", ListEntryNewScreen],
             ["/lists", ListsScreen],
@@ -99,6 +116,24 @@ function Sections({ scope }: { scope: string | null }) {
           ]),
           // One route, so opening an event's drawer keeps the list mounted.
           ...scoped("events", [["/events/*", EventsScreen]]),
+          ...scoped("audit", [
+            ["/audit/:n", AuditEntryScreen],
+            ["/audit", AuditScreen],
+          ]),
+          ...scoped("approvals", [
+            ["/approvals/:id", ApprovalDetailScreen],
+            ["/approvals", ApprovalsScreen],
+          ]),
+          ...scoped("agents", [
+            ["/agents/new", AgentNewScreen],
+            ["/agents/:id", AgentDetailScreen],
+            ["/agents", AgentsScreen],
+          ]),
+          // One route: the tabs and their forms read the rest of the path.
+          ...scoped("alerts", [
+            ["/alerts/*", AlertsScreen],
+            ["/alerts", AlertsScreen],
+          ]),
           { path: "/api/*", element: guard("api", <ApiReferenceScreen />) },
           { path: "/api", element: guard("api", <ApiReferenceScreen />) },
         ]}

@@ -48,6 +48,8 @@ export interface ImpactRun {
   readonly signal?: AbortSignal;
   /** The fleet secret, for account list entries. */
   readonly secret?: string | Uint8Array;
+  /** The policy to estimate at {@link scope} in place of its draft (an approval's). */
+  readonly candidate?: Readonly<Record<string, unknown>>;
   /** Test seams: the bounds. Default {@link RULE_TEST_LIMITS}'s. */
   readonly bounds?: {
     /** The most events read. */
@@ -176,8 +178,8 @@ export async function estimateImpact(
       `the "${plane.store.name}" store keeps no events`,
     );
   }
-  // The draft must exist (a 404 otherwise).
-  await plane.policyAt(run.scope, "draft");
+  // The draft must exist (a 404 otherwise), unless a candidate replaces it.
+  if (run.candidate === undefined) await plane.policyAt(run.scope, "draft");
   // Each event's country and ASN, as the engines' intel.
   let current: IntelRecord = { classes: [] };
   const intel: IntelLookup = {
@@ -206,7 +208,12 @@ export async function estimateImpact(
       }
       try {
         const published = await effectiveFor(plane, service, undefined);
-        const drafted = await effectiveFor(plane, service, run.scope);
+        const drafted = await effectiveFor(
+          plane,
+          service,
+          run.scope,
+          run.candidate,
+        );
         const before = throwawayEngine(
           published.policy,
           run.secret,

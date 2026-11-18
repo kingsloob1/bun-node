@@ -254,9 +254,9 @@ export interface PolicyChangeDto {
 
 /** `GET /policies/:scope/diff`. */
 export interface PolicyDiffDto {
-  /** What the diff is from: a version id, `head` or `draft`. */
+  /** What the diff is from: a version id, `head` or `draft`; for an approval's, the head it expects, or `none`. */
   readonly from: string;
-  /** What it is to. */
+  /** What it is to (`approval:<id>` for an approval's). */
   readonly to: string;
   /** The differences. */
   readonly changes: readonly PolicyChangeDto[];
@@ -432,6 +432,8 @@ export interface OperatorDto {
 export interface SecurityApiMetaDto {
   /** {@link SECURITY_API_PROTOCOL_VERSION}. */
   readonly protocolVersion: number;
+  /** bun-security's release (its package's version); the managed rule set ships with it. */
+  readonly version: string;
   /** Where the API is mounted. */
   readonly basePath: string;
   /** The CSRF header mutations carry, or `null` with the check off. */

@@ -439,6 +439,7 @@ export const Me: Schema<OperatorDto> = s.object({
 /** `/meta`. */
 export const Meta: Schema<SecurityApiMetaDto> = s.object({
   protocolVersion: s.int({ min: 1 }),
+  version: s.string({ min: 1, max: 64 }),
   basePath: s.string(),
   csrfHeader: s.nullable(s.string()),
   stepUp: s.enum(["hook", "approvals", "none"]),

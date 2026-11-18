@@ -394,7 +394,10 @@
         "LIVE_TOPIC_KINDS",
         "LIVE_LIMITS",
         "ANALYTICS_READ_LIMITS",
-        "LIVE_CLOSE_CODES"
+        "LIVE_CLOSE_CODES",
+        "regexRefusal",
+        "MAX_REGEX_LENGTH",
+        "MAX_REGEX_REPEAT"
       ],
       "types": [
         "ServiceDto",
