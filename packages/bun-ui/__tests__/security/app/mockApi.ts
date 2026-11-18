@@ -119,6 +119,74 @@ export type PermissionTable = Record<
   Partial<Record<keyof ReturnType<typeof allPermissions>, boolean>>
 >;
 
+/**
+ * The fixtures' instant: the start of the hour two hours ago, so it falls in
+ * every preset range and in the closed hours a range reads at the hour tier.
+ */
+export const T0 =
+  Math.floor(Date.now() / 3_600_000) * 3_600_000 - 2 * 3_600_000;
+
+/** Whether `at` is inside a call's `[from, to)` (no bounds: always). */
+function within(call: MockCall, at: number): boolean {
+  const from = Number(call.query.get("from") ?? -Infinity);
+  const to = Number(call.query.get("to") ?? Infinity);
+  return at >= from && at < to;
+}
+
+/**
+ * The analytics page's reads (PR-U2), each a real answer's shape: a series
+ * of `requests` by action (12 allowed, 3 blocked) and empty other metrics,
+ * empty top-Ns, a distinct count, no scores, an empty ban timeline with 2
+ * bans in force, and no events.
+ */
+export function analyticsRoutes(
+  options: {
+    /** A series' points by metric (default: requests only). */
+    series?: Record<
+      string,
+      {
+        at: number;
+        dims: Record<string, string>;
+        value: number;
+        service?: string;
+      }[]
+    >;
+    /** A top-N's rows by metric. */
+    top?: Record<string, { dims: Record<string, string>; value: number }[]>;
+  } = {},
+): Record<string, MockHandler | MockReply> {
+  const series = options.series ?? {
+    requests: [
+      { at: T0, dims: { action: "allow" }, value: 12 },
+      { at: T0, dims: { action: "block" }, value: 3 },
+    ],
+  };
+  return {
+    "GET /analytics/series": (call) => ({
+      body: {
+        tier: call.query.get("tier") ?? "minute",
+        points: (series[call.query.get("metric") ?? ""] ?? []).filter((point) =>
+          within(call, point.at),
+        ),
+      },
+    }),
+    // A top-N's rows are T0's: answered by the call whose range holds it.
+    "GET /analytics/top": (call) => ({
+      body: {
+        rows: within(call, T0)
+          ? (options.top?.[call.query.get("metric") ?? ""] ?? [])
+          : [],
+      },
+    }),
+    "GET /analytics/distinct": { body: { count: 3, other: false } },
+    "GET /analytics/scores": { body: { rows: [], truncated: false } },
+    "GET /analytics/bans": {
+      body: { bucketMs: 3_600_000, points: [], active: 2, truncated: false },
+    },
+    "GET /analytics/events": { body: { items: [] } },
+  };
+}
+
 /** The routes every screen reads: an owner of everything unless overridden. */
 export function defaultRoutes(
   options: {
@@ -160,15 +228,45 @@ export function defaultRoutes(
       body: { items: [{ id: "checkout" }, { id: "ledger" }] },
     },
     "GET /policies/:scope": { body: { scope: "global", head: { number: 3 } } },
-    "GET /bans": { body: { items: [{ id: "b1" }, { id: "b2" }] } },
+    "GET /bans": {
+      body: {
+        items: ["198.51.100.1", "203.0.113.7"].map((ip, index) => ({
+          id: `b${index + 1}`,
+          scope: "global",
+          subject: { type: "ip", value: ip },
+          action: "ban",
+          reason: "fixture",
+          source: "manual",
+          createdAt: T0,
+          expiresAt: null,
+          count: 1,
+          liftedAt: null,
+          active: true,
+          revision: 1,
+        })),
+      },
+    },
     "GET /agents": {
       body: {
         items: [
-          { id: "a1", status: "ok" },
-          { id: "a2", status: "stale" },
+          {
+            id: "a1",
+            service: "checkout",
+            status: "ok",
+            lastSeen: T0,
+            reported: null,
+          },
+          {
+            id: "a2",
+            service: "ledger",
+            status: "late",
+            lastSeen: T0,
+            reported: null,
+          },
         ],
       },
     },
+    ...analyticsRoutes(),
     "GET /openapi.json": {
       body: {
         openapi: "3.1.0",

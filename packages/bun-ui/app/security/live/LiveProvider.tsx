@@ -5,6 +5,11 @@
  * (`bans:<scope>`, `policy:<scope>`). Each event invalidates the screens'
  * queries, coalesced over 250 ms; a `gap` refetches them. Its state feeds
  * the header's badge and the screens' safety polling.
+ *
+ * Screens listen for messages by name (`useLiveMessages`) and ask for the
+ * scope's `events` (U3's events list, U2's activity feed) and `overview`
+ * (U2's traffic chart) topics while they are mounted (`useLiveTopic`);
+ * those messages never invalidate a query.
  */
 import type { ClientMiddleware } from "@kingsleyweb/bun-client";
 import type { ReactNode } from "react";
@@ -19,10 +24,12 @@ import type {
   LiveMessageName,
   LiveState,
   LiveStatus,
+  LiveTopicKind,
 } from "./context";
 import {
   LIVE_COUNTED_LISTS,
   LIVE_INVALIDATION_DELAY_MS,
+  LIVE_TOPIC_KINDS,
   LiveFeedContext,
   LiveOptionsContext,
   LiveStatusContext,
@@ -42,7 +49,7 @@ const CHANGES = new Set<LiveMessageName>([
 
 /** Every message screens may listen for, once each. */
 const MESSAGES: readonly LiveMessageName[] = [
-  ...new Set<LiveMessageName>([...CHANGES, "ban", "event"]),
+  ...new Set<LiveMessageName>([...CHANGES, "ban", "event", "more", "overview"]),
 ];
 
 /** The query keys a live event never makes stale: meta, documents, and the lists that count new rows instead. */
@@ -64,7 +71,10 @@ export function LiveProvider({ scope, children }: LiveProviderProps) {
   const can = useCanFn();
   // Screens' listeners, and the extra topics they want while mounted.
   const listeners = useRef(new Map<LiveMessageName, Set<LiveListener>>());
-  const [wanted, setWanted] = useState(0);
+  // How many mounted screens want each extra topic (PR-U2 adds `overview`).
+  const [wanted, setWanted] = useState<ReadonlyMap<LiveTopicKind, number>>(
+    () => new Map(),
+  );
   const feed = useMemo<LiveFeed>(
     () => ({
       listen: (name, listener) => {
@@ -76,9 +86,18 @@ export function LiveProvider({ scope, children }: LiveProviderProps) {
         set.add(listener);
         return () => set.delete(listener);
       },
-      want: () => {
-        setWanted((n) => n + 1);
-        return () => setWanted((n) => n - 1);
+      want: (kind) => {
+        setWanted((current) =>
+          new Map(current).set(kind, (current.get(kind) ?? 0) + 1),
+        );
+        return () =>
+          setWanted((current) => {
+            const next = new Map(current);
+            const left = (next.get(kind) ?? 1) - 1;
+            if (left <= 0) next.delete(kind);
+            else next.set(kind, left);
+            return next;
+          });
       },
     }),
     [],
@@ -90,7 +109,11 @@ export function LiveProvider({ scope, children }: LiveProviderProps) {
         : [
             ...(can("bans:read") ? [`bans:${scope}`] : []),
             ...(can("policy:read") ? [`policy:${scope}`] : []),
-            ...(wanted > 0 && can("analytics:read") ? [`events:${scope}`] : []),
+            ...(can("analytics:read")
+              ? LIVE_TOPIC_KINDS.filter((kind) => wanted.has(kind)).map(
+                  (kind) => `${kind}:${scope}`,
+                )
+              : []),
           ],
     [scope, can, wanted],
   );

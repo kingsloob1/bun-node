@@ -1,5 +1,5 @@
 /** Screens' hooks on the live feed: listening, wanting a topic, and counting new rows. */
-import type { LiveListener, LiveMessageName } from "./context";
+import type { LiveListener, LiveMessageName, LiveTopicKind } from "./context";
 import { use, useEffect, useRef, useState } from "react";
 import { LiveFeedContext } from "./context";
 
@@ -26,10 +26,13 @@ export function useLiveMessages(
   }, [feed, key]);
 }
 
-/** Subscribes the stream to the scope's activity feed (`events:<scope>`) while mounted. */
-export function useLiveTopic(kind: "events"): void {
+/** Subscribes the stream to the scope's `kind` topic (`events:<scope>`, `overview:<scope>`) while mounted and `enabled`. */
+export function useLiveTopic(kind: LiveTopicKind, enabled = true): void {
   const feed = use(LiveFeedContext);
-  useEffect(() => feed.want(kind), [feed, kind]);
+  useEffect(
+    () => (enabled ? feed.want(kind) : undefined),
+    [feed, kind, enabled],
+  );
 }
 
 /**

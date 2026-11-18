@@ -51,7 +51,18 @@ export type LiveMessageName =
   | "approval.created"
   | "approval.decided"
   | "event"
+  | "more"
+  | "overview"
   | "$gap";
+
+/** The extra topics a screen may want while mounted: `events` (the activity feed, the events list), `overview` (per-second counts, PR-U2). */
+export type LiveTopicKind = "events" | "overview";
+
+/** Every extra topic kind, in the order they are subscribed. */
+export const LIVE_TOPIC_KINDS: readonly LiveTopicKind[] = [
+  "overview",
+  "events",
+];
 
 /** A screen's listener: the message's data, as sent. */
 export type LiveListener = (data: unknown) => void;
@@ -63,8 +74,8 @@ export interface LiveFeed {
     name: LiveMessageName,
     listener: LiveListener,
   ) => () => void;
-  /** Asks for an extra topic on the scope while it is wanted (`events`: the activity feed); the release. */
-  readonly want: (kind: "events") => () => void;
+  /** Asks for an extra topic on the scope while it is wanted; the release. */
+  readonly want: (kind: LiveTopicKind) => () => void;
 }
 
 /** The feed (default: nothing arrives). */

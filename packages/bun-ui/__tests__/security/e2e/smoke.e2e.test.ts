@@ -4,9 +4,11 @@
  * a real `createSecurityApi()` on a bun-common adapter bound to port 0,
  * loaded in headless Chrome through `Bun.WebView`.
  *
- * - Signed in: the Overview renders its cards, the live stream over CP5's
- *   `/live` goes live, the nav opens the API reference, and the browser
- *   reports no CSP violation (with a negative control).
+ * - Signed in: the analytics page (PR-U2) renders its panels from the real
+ *   reads, a chart's table opens, the live stream over CP5's `/live` goes
+ *   live and a decision the hub streams appears in the activity feed, the
+ *   nav opens the API reference, and the browser reports no CSP violation
+ *   (with a negative control).
  * - Signed out, with the break-glass account: "Sign in required" offers the
  *   break-glass form; a real password and TOTP code sign in, the app loads
  *   as the break-glass account, and the session (token and expiry) is in
@@ -149,6 +151,32 @@ describe.skipIf(chromePath === undefined)(
       }
       const server = await app.listen(0);
       origin = `http://127.0.0.1:${server.port}`;
+      // The analytics page's data (PR-U2): a service, and its counters now.
+      await fetch(`${origin}${signedIn.basePath}/services`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-bun-security-csrf": "1",
+        },
+        body: JSON.stringify({ id: "web", name: "Web" }),
+      });
+      const minute = Math.floor(Date.now() / 60_000) * 60_000;
+      await signedIn.plane.store.addCounters!([
+        {
+          service: "web",
+          at: minute,
+          metric: "requests",
+          dims: { action: "allow" },
+          value: 40,
+        },
+        {
+          service: "web",
+          at: minute,
+          metric: "requests",
+          dims: { action: "block" },
+          value: 3,
+        },
+      ]);
       const warm = await fetch(`${origin}/security`);
       if (warm.status !== 200) {
         await buildAssets({ entry: DEFAULT_ENTRY });
@@ -173,31 +201,48 @@ describe.skipIf(chromePath === undefined)(
 
     afterAll(async () => {
       view?.close();
+      // The live streams end first, so the adapter's close has nothing open
+      // to drain (the analytics page holds `/live` open, PR-U2).
+      signedIn?.live.close();
+      signedOut?.live.close();
       await profile?.remove();
       await app?.close();
-      signedIn?.live.close();
       signedIn?.close();
-      signedOut?.live.close();
       signedOut?.close();
-    });
+    }, 30_000);
 
-    it("loads the Overview, goes live, opens the API reference, with no CSP violation", async () => {
-      await open("/security", '[data-testid="overview-audit"]', "Verified");
+    it("loads the analytics page, goes live, shows a live event, opens the API reference, with no CSP violation", async () => {
+      await open("/security", '[data-testid="headline-refused"]', "3");
       expect(await view!.evaluate<string>("document.title")).toBe(
         "Security e2e",
       );
-      expect(
-        await view!.evaluate<string>(
-          `document.querySelector('[data-testid="overview-policy"]').textContent`,
-        ),
-      ).toBe("Nothing published yet");
-      expect(
-        await view!.evaluate<string>(
-          `document.querySelector('[data-testid="overview-bans"]').textContent`,
-        ),
-      ).toBe("0");
+      // The traffic chart is an SVG image with a summary; its table is one click away.
+      // Each panel reads on its own: wait for this one, not the headline's.
+      await waitFor('[data-testid="traffic-chart"] [role="img"] svg');
+      await view!.evaluate<void>(
+        `[...document.querySelectorAll('[data-testid="traffic-chart"] button')].find((b) => b.textContent === "Table").click()`,
+      );
+      await waitFor('[data-testid="traffic-chart"] table', "Blocked");
       // The real `/live` stream, through bun-client's `sse()`.
       await waitFor(".app-header-end", "Live");
+      // A decision the hub streams appears in the activity feed.
+      await waitFor('[data-testid="panel-feed"]');
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      signedIn.live.publishBatch("web", {
+        events: [
+          {
+            id: "e2e-live-1",
+            at: Date.now(),
+            service: "web",
+            action: "block",
+            rule: "rule:e2e",
+            route: "GET /e2e",
+            subjects: { ip: "203.0.113.50" },
+          },
+        ],
+        counters: [],
+      });
+      await waitFor('[data-testid="feed-row"]', "203.0.113.50");
       const opened = await view!.evaluate<string | null>(`(async () => {
         const link = [...document.querySelectorAll('[data-testid="nav"] a')].find((a) => a.textContent === "API reference");
         if (!link) return null;

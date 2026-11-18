@@ -90,7 +90,7 @@ describe("a login", () => {
     });
     fireEvent.click(await page().findByTestId("break-glass-link", {}, LOADED));
     signIn("pw", "123456");
-    await page().findByTestId("overview", {}, LOADED);
+    await page().findByTestId("analytics", {}, LOADED);
 
     const login = api.calls.find(
       (call) => call.path === "/break-glass/session",
