@@ -101,6 +101,7 @@ export function metaFixture(
 ): Routes["GET /meta"]["responses"][200] {
   return {
     protocolVersion: 1,
+    version: "3.3.0",
     basePath: "/security/api",
     csrfHeader: "x-bun-security-csrf",
     stepUp: "none",

@@ -83,6 +83,85 @@ export function ruleTestRoutes(
 ): AnyRoute[] {
   /** Estimates running on this instance. */
   let running = 0;
+  /**
+   * Runs one estimate under the limits (6 a minute per operator, one at a
+   * time per operator, two per instance): of `scope`'s draft, or of
+   * `candidate` (an approval's policy) in its place.
+   */
+  const estimate = async (
+    plane: ControlPlane,
+    operator: Operator,
+    signal: AbortSignal,
+    run: {
+      scope: string;
+      input: Infer<typeof R.RuleImpactBody>;
+      candidate?: Readonly<Record<string, unknown>>;
+    },
+  ): Promise<Awaited<ReturnType<typeof estimateImpact>>> => {
+    const { scope, input, candidate } = run;
+    const to = input.to ?? plane.now();
+    const from = input.from ?? to - RULE_TEST_LIMITS.defaultWindowMs;
+    if (from >= to || to - from > RULE_TEST_LIMITS.maxWindowMs) {
+      throw new ApiProblem(
+        400,
+        "invalid_request",
+        "the window must end after it starts, and span at most 7 days",
+      );
+    }
+    await limitRate(
+      plane,
+      operator,
+      "estimate",
+      RULE_TEST_LIMITS.estimatesPerMinute,
+    );
+    if (running >= RULE_TEST_LIMITS.estimatesPerInstance) {
+      throw new ApiProblem(
+        429,
+        "rate_limited",
+        `at most ${RULE_TEST_LIMITS.estimatesPerInstance} estimates run at once on an instance`,
+      );
+    }
+    const lock = `ruleTest:running:${operatorKey(operator)}`;
+    if (
+      !(await plane.store.claimKey(
+        lock,
+        RULE_TEST_LIMITS.maxDurationMs + 5_000,
+      ))
+    ) {
+      throw new ApiProblem(
+        429,
+        "rate_limited",
+        "an estimate of yours is already running",
+      );
+    }
+    running += 1;
+    try {
+      return await estimateImpact(plane, {
+        scope,
+        from,
+        to,
+        operator,
+        signal,
+        ...(candidate === undefined ? {} : { candidate }),
+        ...(options.fleetSecret === undefined
+          ? {}
+          : { secret: options.fleetSecret }),
+      });
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        // The caller went away: nobody reads this.
+        throw new ApiProblem(
+          400,
+          "invalid_request",
+          "the estimate was cancelled",
+        );
+      }
+      throw error;
+    } finally {
+      running -= 1;
+      await plane.store.resetCounter(lock).catch(() => undefined);
+    }
+  };
   return [
     {
       method: "post",
@@ -143,70 +222,41 @@ export function ruleTestRoutes(
         const input = body as Infer<typeof R.RuleImpactBody>;
         await require("rules:test", scope);
         await require("policy:read", scope);
-        const to = input.to ?? plane.now();
-        const from = input.from ?? to - RULE_TEST_LIMITS.defaultWindowMs;
-        if (from >= to || to - from > RULE_TEST_LIMITS.maxWindowMs) {
-          throw new ApiProblem(
-            400,
-            "invalid_request",
-            "the window must end after it starts, and span at most 7 days",
-          );
-        }
-        await limitRate(
-          plane,
-          operator,
-          "estimate",
-          RULE_TEST_LIMITS.estimatesPerMinute,
-        );
-        if (running >= RULE_TEST_LIMITS.estimatesPerInstance) {
-          throw new ApiProblem(
-            429,
-            "rate_limited",
-            `at most ${RULE_TEST_LIMITS.estimatesPerInstance} estimates run at once on an instance`,
-          );
-        }
-        const lock = `ruleTest:running:${operatorKey(operator)}`;
-        if (
-          !(await plane.store.claimKey(
-            lock,
-            RULE_TEST_LIMITS.maxDurationMs + 5_000,
-          ))
-        ) {
-          throw new ApiProblem(
-            429,
-            "rate_limited",
-            "an estimate of yours is already running",
-          );
-        }
-        running += 1;
-        try {
-          return {
-            status: 200,
-            body: await estimateImpact(plane, {
-              scope,
-              from,
-              to,
-              operator,
-              signal: req.request.signal,
-              ...(options.fleetSecret === undefined
-                ? {}
-                : { secret: options.fleetSecret }),
-            }),
-          };
-        } catch (error) {
-          if (error instanceof Error && error.name === "AbortError") {
-            // The caller went away: nobody reads this.
-            throw new ApiProblem(
-              400,
-              "invalid_request",
-              "the estimate was cancelled",
-            );
-          }
-          throw error;
-        } finally {
-          running -= 1;
-          await plane.store.resetCounter(lock).catch(() => undefined);
-        }
+        return {
+          status: 200,
+          body: await estimate(plane, operator, req.request.signal, {
+            scope,
+            input,
+          }),
+        };
+      },
+    },
+    {
+      method: "post",
+      path: "/approvals/:id/impact",
+      summary:
+        "An approval's policy change against the published policy over stored events, as a draft's estimate (bounded; nothing stored); a 404 for an approval that changes no policy",
+      tag: "approvals",
+      params: S.IdParams,
+      body: R.RuleImpactBody,
+      responses: { 200: R.RuleImpact },
+      problems: [400, 404, 429],
+      handle: async ({ plane, require, params, body, operator, req }) => {
+        const { id } = params as { id: string };
+        const input = body as Infer<typeof R.RuleImpactBody>;
+        const approval = await plane.getApproval(id);
+        await require("approvals:read", approval.scope);
+        const change = await plane.approvalChange(id);
+        await require("rules:test", change.scope);
+        await require("policy:read", change.scope);
+        return {
+          status: 200,
+          body: await estimate(plane, operator, req.request.signal, {
+            scope: change.scope,
+            input,
+            candidate: change.policy,
+          }),
+        };
       },
     },
   ];

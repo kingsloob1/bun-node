@@ -2146,6 +2146,38 @@ How it is built:
 - **The counters** count each verified crawler's requests; each `404` answered to it (through `complete()`, which calls `onSignal("crawler.not-found")`, so `analyticsSignalHook` counts it with no new hook); each refusal by its own limit (`limit:crawler`, enforced, not in dry run); and each hit its allowance lifted, marked on the hit (`RuleHit.lifted`).
 - **Found and fixed:** the crawler validator listed no known keys in its unknown-key messages for `spoofed` and a custom crawler, and took any key under `paths`; it now names them and refuses an unknown `paths` key.
 
+### 17.42 Added with PR-U5, rules, audit, approvals, agents and alerts (approved by the user, 2026-11-18)
+
+The control plane (the user's decisions of 2026-11-18):
+
+| Names | Where |
+|---|---|
+| `GET /approvals/:id/diff`: the policy an approval would publish against the head it expects (`from`: that version's id, or `none`; `to`: `approval:<id>`), shown as `GET /policies/:scope/diff` shows a policy; `approvals:read` and `policy:read` on its scope; a `404` for an approval that changes no policy | `./control` |
+| `POST /approvals/:id/impact`: that policy's impact estimate (the body and answer of `POST /policies/:scope/impact`, under the same limits); `approvals:read`, `rules:test` and `policy:read` on its scope; a `404` for an approval that changes no policy | `./control` |
+| `ControlPlane.approvalChange(id)` (an approval's scope, expected head, policy and that head's policy, read); `ImpactRun.candidate` (the policy estimated in place of the draft); `effectiveFor(…, candidate)` | `./control` (internal) |
+| `regexRefusal`, `MAX_REGEX_LENGTH`, `MAX_REGEX_REPEAT` re-exported from the browser-safe contract (the rule editor's live check; `lib/rules/regex.ts` imports nothing and has no effect at load) | `./control/contract` |
+| `SecurityApiMetaDto.version` (`GET /meta`'s `version`): bun-security's release, its package's version; the managed probe set ships with it | `./control/contract` |
+
+The UI (`app/security/`):
+
+| Names | Where |
+|---|---|
+| Sections and routes: **Rules** `/rules`, `/rules/new`, `/rules/edit/:id`, `/rules/test`; **Audit** `/audit`, `/audit/:n`; **Approvals** `/approvals`, `/approvals/:id`; **Agents** `/agents`, `/agents/new`, `/agents/:id`; **Alerts** `/alerts`, `/alerts/rules[/:id\|/new]`, `/alerts/channels[/:id\|/new]`, `/alerts/deliveries`, `/alerts/dead-letters`; each hidden without its read permission (`policy:read`, `audit:read`, `approvals:read`, `agents:read`, `alerts:read`) | the nav |
+| `RuleEditor` (controlled: `value: RuleForm`, `onChange`, `canLock`, `disabled`), with two adapters: `RuleEditorForm` (`rule`, `canLock`, `disabled`, `onSave`, `onCancel`: one rule saved into the draft, the rules screen) and `RequestRulesEditor` (`rules`, `onChange`, `canLock`, `disabled`, `inherited`, `issuesAt`: the whole list, nothing saved, for U4's `RuleEditorSlot` through `usePolicyEditor().set`); `MatcherBuilder` (`value`, `onChange`, `disabled`); their models `conditionModel.ts` (`ConditionNode`, `MatchNode`, `TARGETS`, `parseCondition`, `conditionJson`, `regexVerdict`, `newMatch`) and `rulesPolicy.ts` (`inheritedRules`, `EffectiveRules`, `useRulesPolicy`, `useRuleHits`); `ruleModel.ts` (`RuleForm`, `RuleJson`, `ruleForm`, `ruleJson`, `newRule`, `putRule`, `removeRule`, `rulesOf`, `withRules`) | `screens/rules/` |
+| `requestParse.ts` (`parseRawRequest`, `parseCurl`, `headersOf`) | `screens/rules/` |
+| Shared pieces: `SecretOnce`, `ImpactSummary` (moved out of the lists' publish dialog, which now uses it), `ChangesTable`, `download` (moved out of the lists screen), `urlParams.ts` (`useUrlParams`, `when`, `toLocalInput`, `fromLocalInput`, `numberParam`), `meta/useScopeCan` | `components/`, `meta/` |
+| `conditionForm.ts` (an alert rule's condition as a form: `ConditionFields`, `conditionOf`, `fieldsOf`, `describeCondition`) | `screens/alerts/` |
+
+Decisions taken here (no new security behaviour beyond the control plane's above):
+
+1. Open alerts are read-only (no acknowledge route).
+2. An agent's rotation is the control plane's single call: the new secret shown once, with the time until which the old one is accepted.
+3. Each new section is hidden without its read permission on the scope on screen; a screen whose API reads `global` (audit, agents, the alert channels) says so in the guide's table.
+4. Request rules are edited through U3's draft pieces (`useSaveDraft`, `PublishDialog`, `useDiscardDraft`); U4's editor embeds `RequestRulesEditor` in its `RuleEditorSlot` (`policies/RuleEditorSlot.tsx`, through `usePolicyEditor().set`, with `inheritedRules` over its effective policy) and links to `/rules/test` (the coordinator's split, 2026-11-18). The nav puts Rules after U4's Policies.
+5. A rule's hits and would-blocks are the analytics `rules` metric over the last 24 hours, by the hit's name `rule:<id>`.
+
+Also found and fixed: a bulk lift's approval was decided on `identities:write` (`permissionFor` fell through to it); it is decided on `bans:write`, the permission the lift needs. Fixes #859. `GET /agents` has no service filter, so the agents list shows every service's agents with a service column.
+
 ## 18. Findings outside this plan
 
 Found while surveying; each is reported, none fixed here.

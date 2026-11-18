@@ -50,9 +50,14 @@ describe("the nav", () => {
       "Analytics",
       "Services",
       "Policies",
+      "Rules",
       "Lists",
       "Bans",
       "Events",
+      "Audit",
+      "Approvals",
+      "Agents",
+      "Alerts",
       "API reference",
     ]);
     const nav = page().getByTestId("nav");
@@ -63,9 +68,14 @@ describe("the nav", () => {
       "/security?scope=group%3Apayments",
       "/security/services?scope=group%3Apayments",
       "/security/policies?scope=group%3Apayments",
+      "/security/rules?scope=group%3Apayments",
       "/security/lists?scope=group%3Apayments",
       "/security/bans?scope=group%3Apayments",
       "/security/events?scope=group%3Apayments",
+      "/security/audit?scope=group%3Apayments",
+      "/security/approvals?scope=group%3Apayments",
+      "/security/agents?scope=group%3Apayments",
+      "/security/alerts?scope=group%3Apayments",
       "/security/api?scope=group%3Apayments",
     ]);
   });

@@ -1,7 +1,8 @@
 /**
  * The management API's contract (`@kingsleyweb/bun-security/control/contract`):
  * its wire types, permission and role names, problem codes and constants.
- * Browser-safe, with no runtime import: the UI and typed clients import
+ * Browser-safe, with no runtime import beyond its own modules and the rule
+ * regex check (which imports nothing): the UI and typed clients import
  * this, never `./control`.
  */
 export {
@@ -112,6 +113,13 @@ export type {
   OpenAlertDto,
 } from "./alerts";
 export { RULE_TEST_LIMITS } from "./ruleTest";
+// A rule's regex verdict, for an editor checking as the operator types
+// (PR-U5): the same check the control plane runs; it imports nothing.
+export {
+  MAX_REGEX_LENGTH,
+  MAX_REGEX_REPEAT,
+  regexRefusal,
+} from "../../rules/regex";
 export type {
   ImpactRuleDto,
   ImpactTransitionDto,

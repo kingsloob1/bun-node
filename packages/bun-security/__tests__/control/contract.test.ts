@@ -1,8 +1,8 @@
 /**
  * The management API's contract is browser-safe (`./control/contract`):
  * its import graph, walked from the entry, has no runtime import outside
- * itself (no `node:*`, no `bun`, no package), only type imports. The
- * walker's negative control plants one.
+ * itself and the rule regex check (no `node:*`, no `bun`, no package),
+ * only type imports. The walker's negative controls plant one.
  */
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -51,14 +51,29 @@ function runtimeImports(
 }
 
 describe("./control/contract", () => {
-  it("imports nothing at run time outside itself", () => {
+  it("imports nothing at run time outside itself and the rule regex check (PR-U5)", () => {
     const { found, files } = runtimeImports(
       join(ROOT, "lib/control/contract/index.ts"),
     );
     expect(found).toEqual([]);
     expect(
-      files.every((file) => file.startsWith("lib/control/contract/")),
+      files.every(
+        (file) =>
+          file.startsWith("lib/control/contract/") ||
+          file === "lib/rules/regex.ts",
+      ),
     ).toBe(true);
+    expect(files).toContain("lib/rules/regex.ts");
+  });
+
+  it("negative control: a server import planted in the regex check is found", () => {
+    const entry = join(ROOT, "lib/control/contract/index.ts");
+    const { found } = runtimeImports(entry, (file) =>
+      file.endsWith("lib/rules/regex.ts")
+        ? `import "node:fs";\n${readFileSync(file, "utf8")}`
+        : readFileSync(file, "utf8"),
+    );
+    expect(found).toEqual([["lib/rules/regex.ts", "node:fs"]]);
   });
 
   it("negative control: a planted node:crypto import is found", () => {

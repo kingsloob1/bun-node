@@ -1646,13 +1646,46 @@ export class ControlPlane {
     return this.#approval(doc);
   }
 
+  /**
+   * The policy change an approval carries (a publish's or a rollback's):
+   * its scope, the head it expects and the policy it would publish, read
+   * (not shown). A `404` for an approval that carries no policy change.
+   */
+  async approvalChange(id: string): Promise<{
+    scope: PolicyScopeId;
+    expectedHead: string | null;
+    policy: JsonObject;
+    from: JsonObject;
+  }> {
+    const doc = await this.store.get("approval", id);
+    if (doc === undefined) throw notFound(`approval "${id}"`);
+    const { payload } = doc.doc as ApprovalBody;
+    if (payload.kind !== "publish")
+      throw notFound(`a policy change in approval "${id}"`);
+    const from =
+      payload.expectedHead === null
+        ? {}
+        : this.#readPolicy(
+            ((await this.store.getVersion(payload.scope, payload.expectedHead))
+              ?.policy ?? {}) as JsonObject,
+          );
+    return {
+      scope: payload.scope,
+      expectedHead: payload.expectedHead,
+      policy: this.#readPolicy(payload.policy),
+      from,
+    };
+  }
+
   /** The permission deciding `approval`. */
   permissionFor(approval: ApprovalDto): SecurityApiPermission {
     return approval.action.startsWith("policy.")
       ? "policy:publish"
       : approval.action.startsWith("roleBinding.")
         ? "roles:write"
-        : "identities:write";
+        : approval.action.startsWith("bans.")
+          ? "bans:write"
+          : "identities:write";
   }
 
   /**

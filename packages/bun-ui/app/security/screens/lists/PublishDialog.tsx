@@ -14,6 +14,7 @@
  * report).
  */
 import type { Routes } from "../../api/routes.gen";
+import { ImpactSummary } from "../../components/ImpactSummary";
 import { useMutation } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { useState } from "react";
@@ -37,9 +38,6 @@ export type ApprovalDto =
 export type PublishOutcome =
   | { readonly kind: "published"; readonly number: number }
   | { readonly kind: "approval"; readonly approval: ApprovalDto };
-
-/** The impact estimate's answer. */
-type ImpactDto = Routes["POST /policies/:scope/impact"]["responses"][200];
 
 /** Props of {@link PublishDialog}. */
 export interface PublishDialogProps {
@@ -68,36 +66,6 @@ export interface PublishDialogProps {
 /** See the module's description. */
 export function PublishDialog(props: PublishDialogProps) {
   return props.open ? <OpenPublishDialog {...props} /> : null;
-}
-
-/** The impact estimate in a few lines. */
-function ImpactSummary({ impact }: { impact: ImpactDto }) {
-  const changed = impact.transitions.filter((item) => item.from !== item.to);
-  return (
-    <div
-      className="lists-impact"
-      data-testid="lists-impact"
-    >
-      <p>
-        Replayed {impact.events.read.toLocaleString("en")} stored events
-        {impact.services.replayed.length > 0
-          ? ` on ${impact.services.replayed.length} service(s)`
-          : ""}
-        .
-      </p>
-      {changed.length === 0 ? (
-        <p>No decision would change.</p>
-      ) : (
-        <ul>
-          {changed.map((item) => (
-            <li key={`${item.from}-${item.to}`}>
-              {item.count.toLocaleString("en")}: {item.from} → {item.to}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
 }
 
 /** The mounted dialog: its state lasts one opening. */
@@ -210,7 +178,11 @@ function OpenPublishDialog({
             {impact.isPending ? "Estimating…" : "Estimate impact"}
           </Button>
           {impact.data === undefined ? null : (
-            <ImpactSummary impact={impact.data} />
+            <ImpactSummary
+              className="lists-impact"
+              testId="lists-impact"
+              impact={impact.data}
+            />
           )}
           {impact.error === null ? null : (
             <ProblemBanner

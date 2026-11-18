@@ -200,18 +200,22 @@ export function throwawayEngine(
   }
 }
 
-/** A service's effective policy, with a scope's draft standing in for its published policy when asked. */
+/** A service's effective policy, with a scope's draft (or `candidate`, an approval's policy) standing in for its published policy when asked. */
 export async function effectiveFor(
   plane: ControlPlane,
   service: string,
   draft: PolicyScopeId | undefined,
+  candidate?: Readonly<Record<string, unknown>>,
 ): Promise<{ policy: Record<string, unknown>; versions: string[] }> {
   const effective =
     draft === undefined
       ? await plane.effective(service)
       : await plane.effective(service, {
           scope: draft,
-          policy: await plane.policyAt(draft, "draft"),
+          policy:
+            candidate === undefined
+              ? await plane.policyAt(draft, "draft")
+              : (candidate as Record<string, unknown>),
         });
   if (
     draft !== undefined &&

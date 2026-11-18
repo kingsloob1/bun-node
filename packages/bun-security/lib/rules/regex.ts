@@ -122,7 +122,8 @@ const LINE_TERMINATORS: readonly CodeRange[] = [
 ];
 
 /** The characters that must be escaped to be literal outside a class. */
-const SYNTAX = new Set([..."^$\\.*+?()[]{}|/"]);
+/** The syntax characters an identity escape may name (a string, so the module has no effect at load). */
+const SYNTAX = "^$\\.*+?()[]{}|/";
 
 /** A recursive-descent parser over the pattern's code points. */
 class Parser {
@@ -329,7 +330,7 @@ class Parser {
       case "c":
         throw new RegexRefusal("control escapes (\\c) are not allowed");
       default:
-        if (SYNTAX.has(char) || char === "-") {
+        if ((char.length === 1 && SYNTAX.includes(char)) || char === "-") {
           const code = char.codePointAt(0) ?? 0;
           return single(code);
         }

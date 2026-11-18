@@ -313,23 +313,26 @@ if (POSTGRES_URL === undefined) {
     });
 
     it("a publish on one instance reaches every agent, the other instance's by the store's pushed feed", async () => {
-      const before = await versionOf(agents[1]!);
-      expect(
-        (
-          await publish(urlA, {
-            lists: [
-              { ip: BLOCKED, action: "block" },
-              { ip: "198.51.100.0/24", action: "block" },
-            ],
-          })
-        ).status,
-      ).toBe(200);
+      const published = await publish(urlA, {
+        lists: [
+          { ip: BLOCKED, action: "block" },
+          { ip: "198.51.100.0/24", action: "block" },
+        ],
+      });
+      expect(published.status).toBe(200);
+      // The bundle this publish made, not merely a newer one: a case run
+      // before it (a repair pass, a publish cut off) can still be moving a
+      // version on, and an agent past the old version is not yet on this one.
+      const target = (
+        published.body.bundles as { service: string; version: number }[]
+      ).find((bundle) => bundle.service === "checkout")!.version;
+      const before = target - 1;
       // ag2 and ag3 talk to B, poll hourly: only B's nudge, woken by A's write through Postgres, brings it.
       const took = await until(
         "the nudged agents on the new bundle",
         async () =>
           (await Promise.all(agents.slice(0, 3).map(versionOf))).every(
-            (version) => version > before,
+            (version) => version >= target,
           ),
       );
       expect(took).toBeLessThan(10_000);

@@ -1,21 +1,19 @@
 /**
- * The request rules' tab (layers.md L7) until PR-U5's `RuleEditor` lands
- * (the coordinator's split of 2026-11-18): U5 builds the rule editor, the
- * matcher builder and the `/rules/test` screen under
- * `app/security/screens/rules/`, and this slot is where the policy editor
- * embeds them. Swap the body for `<RuleEditor …/>` and keep the props.
- *
- * Meanwhile it is the editor's generic keyed table over
- * `requestRules.rules` (each rule's condition as JSON), the managed probe
- * set's settings, and a link to test a request.
+ * The request rules' tab (layers.md L7): PR-U5's `RequestRulesEditor` over
+ * the policy editor's `requestRules.rules` (the coordinator's split of
+ * 2026-11-18). It reads and writes them through `usePolicyEditor()`, so the
+ * rules save with the rest of the draft, and shows the rules inherited from
+ * the scopes above (with their locks) and each rule's save issues. Beside
+ * them, the managed probe set's settings and a link to test a request.
  */
 import type { SchemaNode } from "./schema";
 import { Link } from "../../router";
 import { SCOPE_PARAM } from "../../scope/scope";
+import { RequestRulesEditor } from "../rules/RequestRulesEditor";
+import { rulesOf } from "../rules/ruleModel";
+import { inheritedRules } from "../rules/rulesPolicy";
 import { usePolicyEditor } from "./editorContext";
 import { SchemaFields } from "./fields";
-import { KeyedItems } from "./KeyedItems";
-import { propertiesOf } from "./schema";
 
 /** Props of {@link RuleEditorSlot}. */
 export interface RuleEditorSlotProps {
@@ -25,22 +23,9 @@ export interface RuleEditorSlotProps {
   canTest: boolean;
 }
 
-/** A rule in a line: its action and mode. */
-function ruleSummary(rule: Record<string, unknown>): string {
-  const action = typeof rule.action === "string" ? rule.action : "block";
-  return `${action} when ${JSON.stringify(rule.when ?? {})}`;
-}
-
 /** See the module's description. */
 export function RuleEditorSlot({ node, canTest }: RuleEditorSlotProps) {
   const editor = usePolicyEditor();
-  const rules = propertiesOf(node)?.rules;
-  const item =
-    rules !== undefined &&
-    typeof rules.items === "object" &&
-    rules.items !== null
-      ? (rules.items as SchemaNode)
-      : {};
   return (
     <div
       className="policy-tab"
@@ -57,11 +42,18 @@ export function RuleEditorSlot({ node, canTest }: RuleEditorSlotProps) {
           against this scope&apos;s draft or its published policy.
         </p>
       ) : null}
-      <KeyedItems
-        section="requestRules.rules"
-        item={item}
-        noun="rule"
-        summary={ruleSummary}
+      <RequestRulesEditor
+        rules={rulesOf(editor.working)}
+        onChange={(rules) =>
+          editor.set(
+            ["requestRules", "rules"],
+            rules.length === 0 ? undefined : rules,
+          )
+        }
+        canLock={!editor.scope.startsWith("service:")}
+        disabled={!editor.canEdit}
+        inherited={inheritedRules(editor.effective, editor.scope)}
+        issuesAt={(index) => editor.issuesAt(["requestRules", "rules", index])}
       />
       <SchemaFields
         node={node}

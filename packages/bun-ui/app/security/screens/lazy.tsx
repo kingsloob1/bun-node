@@ -84,3 +84,69 @@ export const VersionsScreen = onDemand<ScopeProps>(
   async () => (await import("./policies/VersionsScreen")).VersionsScreen,
   "Loading the versions",
 );
+
+/** `/audit`, on demand. */
+export const AuditScreen = onDemand<ScopeProps>(
+  async () => (await import("./audit/AuditScreen")).AuditScreen,
+  "Loading the audit log",
+);
+
+/** `/audit/:n`, on demand. */
+export const AuditEntryScreen = onDemand<ScopeProps>(
+  async () => (await import("./audit/AuditEntry")).AuditEntry,
+  "Loading the audit entry",
+);
+
+/** `/agents`, on demand. */
+export const AgentsScreen = onDemand<ScopeProps>(
+  async () => (await import("./agents/AgentsScreen")).AgentsScreen,
+  "Loading the agents",
+);
+
+/** `/agents/new`, on demand. */
+export const AgentNewScreen = onDemand<ScopeProps>(
+  async () => (await import("./agents/AgentNew")).AgentNew,
+  "Loading the agent form",
+);
+
+/** `/agents/:id`, on demand. */
+export const AgentDetailScreen = onDemand<ScopeProps>(
+  async () => (await import("./agents/AgentDetail")).AgentDetail,
+  "Loading the agent",
+);
+
+/** `/alerts` and its tabs, on demand. */
+export const AlertsScreen = onDemand<ScopeProps>(
+  async () => (await import("./alerts/AlertsScreen")).AlertsScreen,
+  "Loading the alerts",
+);
+
+/** `/approvals`, on demand. */
+export const ApprovalsScreen = onDemand<ScopeProps>(
+  async () => (await import("./approvals/ApprovalsScreen")).ApprovalsScreen,
+  "Loading the approvals",
+);
+
+/** `/approvals/:id`, on demand. */
+export const ApprovalDetailScreen = onDemand<ScopeProps>(
+  async () => (await import("./approvals/ApprovalDetail")).ApprovalDetail,
+  "Loading the approval",
+);
+
+/** `/rules`, on demand. */
+export const RulesScreen = onDemand<ScopeProps>(
+  async () => (await import("./rules/RulesScreen")).RulesScreen,
+  "Loading the request rules",
+);
+
+/** `/rules/new` and `/rules/edit/:id`, on demand. */
+export const RuleEditScreen = onDemand<ScopeProps>(
+  async () => (await import("./rules/RuleEdit")).RuleEdit,
+  "Loading the rule editor",
+);
+
+/** `/rules/test`, on demand. */
+export const RuleTestScreen = onDemand<ScopeProps>(
+  async () => (await import("./rules/RuleTest")).RuleTest,
+  "Loading test a request",
+);

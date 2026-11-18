@@ -179,6 +179,58 @@ describe("the management API's browser-safe contract (./control/contract, PR-CP2
     expect(code.length).toBeLessThanOrEqual(CONTRACT_BOUND);
   });
 
+  /** A browser editor checking a rule's regex as the operator types (PR-U5). */
+  const REGEX_APP = `import { regexRefusal } from "${MANIFEST.name}/control/contract";\nexport const check = regexRefusal;\n`;
+  /** Text only the regex check carries. */
+  const REGEX_MARKER = "the engine refused the u flag";
+  /**
+   * The most the regex app may weigh, minified: the whole checker (its
+   * parser and overlap analysis). Measured 2026-11-18 (Bun
+   * 1.4.5-canary.1+862278db7): 8,128 bytes.
+   */
+  const REGEX_BOUND = 10_240;
+
+  it("bundles the regex check alone for a browser, and the constants app without it", async () => {
+    const dir = copyPackage(MANIFEST.sideEffects);
+    const regex = await bundle(dir, REGEX_APP, "browser");
+    expect(regex).toContain(REGEX_MARKER);
+    expect(regex).not.toContain("policy:publish");
+    expect(regex).not.toContain("approval_closed");
+    expect(regex.length).toBeLessThanOrEqual(REGEX_BOUND);
+    const constants = await bundle(dir, CONTRACT_APP, "browser");
+    expect(constants).not.toContain(REGEX_MARKER);
+    expect(constants).not.toContain("{}|/");
+  });
+
+  it("the regex module has no effect at load; negative control: one planted there stays without the sideEffects field", async () => {
+    // With no sideEffects field at all, nothing of the regex check reaches
+    // the constants app: the module does nothing when loaded.
+    const bare = copyPackage(undefined);
+    expect(await bundle(bare, CONTRACT_APP, "browser")).not.toContain("{}|/");
+    // A planted effect is kept without the field, and dropped with it.
+    for (const [sideEffects, kept] of [
+      [undefined, true],
+      [MANIFEST.sideEffects, false],
+    ] as const) {
+      const dir = copyPackage(sideEffects);
+      const regex = join(
+        dir,
+        "node_modules",
+        ...MANIFEST.name.split("/"),
+        "lib/rules/regex.ts",
+      );
+      writeFileSync(
+        regex,
+        `${readFileSync(regex, "utf8")}\n(globalThis as Record<string, unknown>).plantedRegexEffect = 1;\n`,
+      );
+      const code = await bundle(dir, CONTRACT_APP, "browser");
+      expect([
+        sideEffects === undefined,
+        code.includes("plantedRegexEffect"),
+      ]).toEqual([sideEffects === undefined, kept]);
+    }
+  });
+
   it("negative control: without the pure marks, the unused frozen constants stay", async () => {
     const dir = copyPackage(MANIFEST.sideEffects);
     const constants = join(
