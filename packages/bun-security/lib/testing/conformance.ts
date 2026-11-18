@@ -927,6 +927,168 @@ export async function runSecurityStoreConformance(
           expect((await store.getBan(written[0]!.id))?.count).toBe(raceSize);
         });
       });
+
+      test("keeps a ban's country and ASN, the newest known, across merges and restarts", async () => {
+        await withStore(factory, async (store) => {
+          const first = await store.upsertBan(
+            banInput("192.0.2.40", { country: "FR", asn: 64_500 }),
+          );
+          expect(first).toMatchObject({ country: "FR", asn: 64_500 });
+          // A write that knows nothing keeps them; one that knows newer replaces them.
+          expect(await store.upsertBan(banInput("192.0.2.40"))).toMatchObject({
+            country: "FR",
+            asn: 64_500,
+          });
+          expect(
+            await store.upsertBan(banInput("192.0.2.40", { country: "DE" })),
+          ).toMatchObject({ country: "DE", asn: 64_500 });
+          expect(await store.getBan(first.id)).toMatchObject({
+            country: "DE",
+            asn: 64_500,
+          });
+          expect(
+            await rejects(() =>
+              store.upsertBan(banInput("192.0.2.41", { country: "fr" })),
+            ),
+          ).toBe(true);
+          expect(
+            await rejects(() =>
+              store.upsertBan(banInput("192.0.2.41", { asn: -1 })),
+            ),
+          ).toBe(true);
+        });
+      });
+
+      test("filters by kind, source, rule and subject values, and sorts by created or expiry, a page at a time", async () => {
+        await withStore(factory, async (store) => {
+          const hour = 3_600_000;
+          const base = Date.now();
+          const key = "0123456789abcdef0123456789abcdef";
+          const written = [
+            await store.upsertBan(
+              banInput("198.51.100.7", { expiresAt: base + 3 * hour }),
+            ),
+            await store.upsertBan(
+              banInput("198.51.100.0/24", {
+                subject: { type: "cidr", value: "198.51.100.0/24" },
+                source: "manual",
+                rule: undefined,
+                expiresAt: null,
+              }),
+            ),
+            await store.upsertBan(
+              banInput("u", {
+                subject: { type: "user", value: key },
+                rule: "counted:other",
+                expiresAt: base + hour,
+              }),
+            ),
+            await store.upsertBan(
+              banInput("203.0.113.70", { expiresAt: base + 2 * hour }),
+            ),
+          ];
+          const ids = (page: { items: readonly { id: string }[] }) =>
+            page.items.map((b) => b.id);
+          expect(ids(await store.listBans({ limit: 10, kind: "ip" }))).toEqual(
+            [written[0]!.id, written[3]!.id].sort(),
+          );
+          expect(
+            ids(await store.listBans({ limit: 10, source: "manual" })),
+          ).toEqual([written[1]!.id]);
+          expect(
+            ids(await store.listBans({ limit: 10, rule: "counted:other" })),
+          ).toEqual([written[2]!.id]);
+          // A search names the values: an address and a range that holds it.
+          expect(
+            ids(
+              await store.listBans({
+                limit: 10,
+                values: ["198.51.100.7", "198.51.100.0/24", "198.51.100.0/23"],
+              }),
+            ),
+          ).toEqual([written[0]!.id, written[1]!.id].sort());
+          expect(
+            ids(await store.listBans({ limit: 10, values: [key] })),
+          ).toEqual([written[2]!.id]);
+          // By expiry: the soonest first, a permanent one last; walked 2 at a time.
+          const byExpiry: string[] = [];
+          let cursor: string | undefined;
+          do {
+            const page = await store.listBans({
+              limit: 2,
+              sort: "expires",
+              ...(cursor === undefined ? {} : { cursor }),
+            });
+            byExpiry.push(...ids(page));
+            cursor = page.next;
+          } while (cursor !== undefined);
+          expect(byExpiry).toEqual([
+            written[2]!.id,
+            written[3]!.id,
+            written[0]!.id,
+            written[1]!.id,
+          ]);
+          const descending = await store.listBans({
+            limit: 10,
+            sort: "expires",
+            direction: "desc",
+          });
+          expect(ids(descending)).toEqual([...byExpiry].reverse());
+          // By created: in write order (ties broken by id), stable across pages.
+          const byCreated: string[] = [];
+          cursor = undefined;
+          do {
+            const page = await store.listBans({
+              limit: 3,
+              sort: "created",
+              ...(cursor === undefined ? {} : { cursor }),
+            });
+            byCreated.push(...ids(page));
+            cursor = page.next;
+          } while (cursor !== undefined);
+          expect(new Set(byCreated)).toEqual(new Set(written.map((b) => b.id)));
+          expect(byCreated).toHaveLength(4);
+          const created = await Promise.all(
+            byCreated.map(async (id) => (await store.getBan(id))!.createdAt),
+          );
+          expect(created).toEqual([...created].sort((a, b) => a - b));
+          // A cursor is bound to its filter and its order.
+          const first = await store.listBans({ limit: 1, sort: "created" });
+          expect(
+            await rejects(() =>
+              store.listBans({
+                limit: 1,
+                sort: "expires",
+                cursor: first.next!,
+              }),
+            ),
+          ).toBe(true);
+          expect(
+            await rejects(() =>
+              store.listBans({
+                limit: 1,
+                sort: "created",
+                kind: "ip",
+                cursor: first.next!,
+              }),
+            ),
+          ).toBe(true);
+          // Malformed filters are refused.
+          for (const bad of [
+            { kind: "address" },
+            { source: "feed" },
+            { rule: "" },
+            { values: [] },
+            { sort: "hits" },
+          ]) {
+            expect(
+              await rejects(() =>
+                store.listBans({ limit: 1, ...bad } as never),
+              ),
+            ).toBe(true);
+          }
+        });
+      });
     });
 
     describe("counters and claims (control-plane state shared by instances)", () => {
@@ -1041,6 +1203,55 @@ export async function runSecurityStoreConformance(
             scope: "service:s2",
             entry: { k: 2 },
           });
+        });
+      });
+
+      test("lists a target's entries by its target, the cursor bound to it", async () => {
+        await withStore(factory, async (store) => {
+          let head: string | null = null;
+          const targets = ["ban:b1", "ban:b2", "ban:b1", "", "ban:b1"];
+          for (let k = 1; k <= targets.length; k++) {
+            const [kind, id] = targets[k - 1]!.split(":");
+            const input = auditInput(head ?? AUDIT_GENESIS_HASH, k);
+            const entry =
+              id === undefined
+                ? { k }
+                : { k, target: { kind: kind!, id, revision: k } };
+            expect(
+              await store.appendAudit({ ...input, entry }, head),
+            ).toMatchObject({ ok: true });
+            head = input.hash;
+          }
+          const first = await store.listAudit({ limit: 2, target: "ban:b1" });
+          expect(first.items.map((entry) => entry.n)).toEqual([1, 3]);
+          const rest = await store.listAudit({
+            limit: 2,
+            target: "ban:b1",
+            cursor: first.next!,
+          });
+          expect(rest.items.map((entry) => entry.n)).toEqual([5]);
+          expect(
+            (
+              await store.listAudit({
+                limit: 10,
+                target: "ban:b1",
+                direction: "desc",
+              })
+            ).items.map((entry) => entry.n),
+          ).toEqual([5, 3, 1]);
+          expect(
+            (await store.listAudit({ limit: 10, target: "ban:b2" })).items.map(
+              (entry) => entry.n,
+            ),
+          ).toEqual([2]);
+          expect(
+            await rejects(() =>
+              store.listAudit({ limit: 2, cursor: first.next! }),
+            ),
+          ).toBe(true);
+          expect(
+            await rejects(() => store.listAudit({ limit: 2, target: "" })),
+          ).toBe(true);
         });
       });
 

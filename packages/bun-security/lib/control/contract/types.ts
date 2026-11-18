@@ -10,6 +10,7 @@ import type {
   SecurityLiveEventName,
   SecurityRole,
 } from "./constants";
+import type { SecurityEventViewDto } from "./live";
 
 /**
  * A policy's scope: `global`, `group:<id>` or `service:<id>`
@@ -174,6 +175,33 @@ export interface PolicyDraftDto {
   readonly updatedBy: string;
   /** When. */
   readonly updatedAt: number;
+  /**
+   * The account ids typed in the saved draft's `lists`, each now stored as
+   * its key (`userHash`, `apiKeyHash`): in `PUT /policies/:scope/draft`'s
+   * answer only, when it keyed any, and never stored, audited or sent again.
+   */
+  readonly entered?: readonly EnteredListEntryDto[];
+}
+
+/**
+ * One list entry whose account id the control plane keyed when a draft was
+ * saved: where it is and what was typed (exactly one of `user`, `apiKey`).
+ */
+export interface EnteredListEntryDto {
+  /**
+   * Where the id was typed: `lists` (absent, the default), a canary
+   * (`deception.canaries`) or a request rule's condition
+   * (`requestRules.rules`).
+   */
+  readonly section?: "canaries" | "requestRules";
+  /** The index in that section: `lists`, `deception.canaries` or `requestRules.rules`. */
+  readonly index: number;
+  /** For a rule's condition: the condition's path in the policy (`requestRules.rules[2].when.any[0]`). */
+  readonly path?: string;
+  /** The user id typed; the entry holds its key as `userHash`. */
+  readonly user?: string;
+  /** The API key id typed; the entry holds its key as `apiKeyHash`. */
+  readonly apiKey?: string;
 }
 
 /** `GET /policies/:scope`: a scope's draft and head. */
@@ -271,6 +299,18 @@ export interface PublishResultDto {
 }
 
 /** `GET /services/:id/effective`: the merged policy and each field's origin. */
+/** `GET /groups/:id/effective`: a group's effective policy (global's and its ancestors' heads merged down to its own). */
+export interface GroupEffectivePolicyDto {
+  /** The group. */
+  readonly group: string;
+  /** The versions merged, global's first (a scope without one is left out). */
+  readonly policyVersions: readonly string[];
+  /** The merged policy. */
+  readonly policy: Readonly<Record<string, unknown>>;
+  /** Each field's path → the scope it comes from. */
+  readonly origins: Readonly<Record<string, PolicyScopeId>>;
+}
+
 export interface EffectivePolicyDto {
   /** The service. */
   readonly service: string;
@@ -293,7 +333,8 @@ export interface ApprovalDto {
     | "roleBinding.create"
     | "roleBinding.delete"
     | "serviceIdentity.put"
-    | "serviceIdentity.delete";
+    | "serviceIdentity.delete"
+    | "bans.lift";
   /** The scope it acts on. */
   readonly scope: PolicyScopeId;
   /** `pending`; `review` after an emergency publish; then `approved`, `rejected`, `expired` or `stale`. */
@@ -367,6 +408,12 @@ export interface OperatorDto {
     readonly scope: PolicyScopeId;
     readonly source: "binding" | "owners";
   }[];
+  /**
+   * The request's client address as this API sees it (under its trust-proxy
+   * rules), canonical; `null` when it has none. The manual-ban form warns
+   * before banning a range that holds it.
+   */
+  readonly address: string | null;
 }
 
 /** `GET /meta`. */
@@ -676,18 +723,90 @@ export interface BanDto {
   readonly revision: number;
   /** What the operator typed, in the answer to `POST /bans` only (an API key's or a user's subject is its HMAC, never the id). */
   readonly entered?: { readonly apiKey?: string; readonly user?: string };
+  /** The subject's country when the ban was written (ISO 3166-1 alpha-2), from its latest event; absent when none was known. */
+  readonly country?: string;
+  /** The subject's autonomous system number when the ban was written, from its latest event; absent when none was known. */
+  readonly asn?: number;
+}
+
+/** `GET /bans/:id`: a ban with what explains it. */
+export interface BanDetailDto {
+  /** The ban. */
+  readonly ban: BanDto;
+  /** Its audit entries (created, extended, widened, lifted), newest first, at most 50. */
+  readonly history: readonly AuditEntryDto[];
+  /** Whether it has more audit entries than `history` holds. */
+  readonly historyTruncated: boolean;
+  /**
+   * The subject's latest events before the ban started, newest first, at
+   * most 20: what led to it. Absent without `analytics:read` on the ban's
+   * scope (and `events:read` for an account subject).
+   */
+  readonly events?: readonly SecurityEventViewDto[];
+  /** The subject's events since the ban started, counted to at most 1,000; absent with `events`. */
+  readonly hitsSince?: number;
+  /** Whether `hitsSince` stopped at its bound (there were more). */
+  readonly hitsSinceCapped?: boolean;
+  /** The subject's bans in other scopes, at most 20. */
+  readonly otherBans: readonly BanDto[];
+  /** The escalation ladder's step that wrote it: absent until agents report their engines' bans. */
+  readonly ladderStep?: number;
+}
+
+/** `POST /bans/:id/extend`'s body. */
+export interface BanExtendInput {
+  /** How long from now (`"7d"`), or `null` until lifted. It only lengthens a ban; a shorter one is a `409`. */
+  readonly duration: string | null;
+}
+
+/** The filter of a bulk lift (`POST /bans/lift`): the active bans it lifts. */
+export interface BanLiftFilter {
+  /** The scope, and what is under it. Default `global`. */
+  readonly scope?: PolicyScopeId;
+  /** Only this kind of subject. */
+  readonly kind?: "ip" | "cidr" | "user" | "apiKey";
+  /** Only this source. */
+  readonly source?: "auto" | "manual";
+  /** Only bans this rule wrote. */
+  readonly rule?: string;
+  /** Only bans on this subject: an address (and the ranges holding it), a range or an account key. */
+  readonly search?: string;
+  /** Only bans started at or after this, epoch ms. */
+  readonly createdFrom?: number;
+  /** Only bans started before this, epoch ms. */
+  readonly createdTo?: number;
+}
+
+/** `POST /bans/lift`'s body. */
+export interface BanLiftInput extends BanLiftFilter {
+  /** `true`: count what it would lift, change nothing. Default `false`. */
+  readonly dryRun?: boolean;
+}
+
+/** `POST /bans/lift`'s answer. */
+export interface BanLiftResultDto {
+  /** Whether it was a dry run. */
+  readonly dryRun: boolean;
+  /** The active bans the filter matched. */
+  readonly matched: number;
+  /** How many it lifted (0 on a dry run). */
+  readonly lifted: number;
 }
 
 /** `POST /bans`'s body. */
 export interface BanCreateInput {
   /** Where it applies. Default `global`. */
   readonly scope?: PolicyScopeId;
-  /** An address or CIDR range. Exactly one of `ip`, `user`, `apiKey`. */
+  /** An address or CIDR range. Exactly one of `ip`, `user`, `apiKey`, `userHash`, `apiKeyHash`. */
   readonly ip?: string;
   /** A user id, as the services' `identify()` returns it (stored and sent as its HMAC). */
   readonly user?: string;
   /** An API key id (stored and sent as its HMAC). */
   readonly apiKey?: string;
+  /** A user's key (32 hex characters, its HMAC under the fleet's secret, as the API reports it), used as it is. */
+  readonly userHash?: string;
+  /** An API key's key (32 hex characters, as the API reports it), used as it is. */
+  readonly apiKeyHash?: string;
   /** `ban` (the default) or `challenge`. */
   readonly action?: "ban" | "challenge";
   /** Why (shown to operators only). */

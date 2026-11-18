@@ -19,10 +19,11 @@ import type {
   LiveSubscribedDto,
   SecurityEventViewDto,
 } from "./contract/live";
+import type { BanDetailDto } from "./contract/types";
 import type { Schema } from "./schema";
 import { ANALYTICS_READ_LIMITS, LIVE_LIMITS } from "./contract/live";
 import { s } from "./schema";
-import { Ban } from "./schemas";
+import { AuditEntry, Ban } from "./schemas";
 
 /** A scope id. */
 const Scope = s.string({
@@ -227,6 +228,24 @@ export const EventView: Schema<SecurityEventViewDto> = s.object({
     }),
   ),
   sample: s.optional(s.json("the redacted request (events:read)")),
+});
+
+/** `GET /bans/:id`'s answer: a ban with its history, the events that led to it and its hits since. */
+export const BanDetail: Schema<BanDetailDto> = s.object({
+  ban: Ban,
+  history: s.array(AuditEntry, 50),
+  historyTruncated: s.boolean(),
+  events: s.optional(s.array(EventView, 20)),
+  hitsSince: s.optional(s.int({ min: 0 })),
+  hitsSinceCapped: s.optional(s.boolean()),
+  otherBans: s.array(Ban, 20),
+  ladderStep: s.optional(
+    s.int({
+      min: 0,
+      description:
+        "the escalation ladder's step: absent until agents report their engines' bans",
+    }),
+  ),
 });
 
 /** A page of events. */

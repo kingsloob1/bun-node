@@ -11,6 +11,9 @@ import type {
   AgentSecretDto,
   BanCreateInput,
   BanDto,
+  BanExtendInput,
+  BanLiftInput,
+  BanLiftResultDto,
   ApprovalDecisionInput,
   AuditCheckpointDto,
   AuditEntryDto,
@@ -19,6 +22,7 @@ import type {
   BreakGlassSessionDto,
   ApprovalDto,
   EffectivePolicyDto,
+  GroupEffectivePolicyDto,
   GroupDto,
   GroupInput,
   OperatorDto,
@@ -238,6 +242,18 @@ export const Draft: Schema<PolicyDraftDto> = s.object({
   revision: s.int({ min: 1 }),
   updatedBy: s.string(),
   updatedAt: s.int({ min: 0 }),
+  entered: s.optional(
+    s.array(
+      s.object({
+        section: s.optional(s.enum(["canaries", "requestRules"])),
+        index: s.int({ min: 0 }),
+        path: s.optional(s.string()),
+        user: s.optional(s.string()),
+        apiKey: s.optional(s.string()),
+      }),
+      1_000_000,
+    ),
+  ),
 });
 
 /** A scope's draft and head. */
@@ -306,6 +322,7 @@ export const Approval: Schema<ApprovalDto> = s.object({
     "roleBinding.delete",
     "serviceIdentity.put",
     "serviceIdentity.delete",
+    "bans.lift",
   ]),
   scope: Scope,
   status: s.enum([
@@ -357,6 +374,14 @@ export const Effective: Schema<EffectivePolicyDto> = s.object({
   origins: s.record(Scope, 100_000),
 });
 
+/** A group's effective policy. */
+export const GroupEffective: Schema<GroupEffectivePolicyDto> = s.object({
+  group: Id,
+  policyVersions: s.array(s.string(), 100),
+  policy: PolicyObject,
+  origins: s.record(Scope, 100_000),
+});
+
 /** A signed bundle, documented as an object (`bun-security.bundle/1`). */
 export const Bundle = s.anyObject(
   "a signed bundle, bun-security.bundle/1 (control-plane.md §3.1)",
@@ -391,6 +416,12 @@ export const Me: Schema<OperatorDto> = s.object({
       source: s.enum(["binding", "owners"]),
     }),
     1_000,
+  ),
+  address: s.nullable(
+    s.string({
+      description:
+        "the request's client address as this API sees it (its trust-proxy rules)",
+    }),
   ),
 });
 
@@ -659,6 +690,9 @@ export const RevisionBody = s.object({
   revision: s.int({ min: 1, description: "the revision read" }),
 });
 
+/** An account's key: its HMAC under the fleet's secret, 32 hex characters. */
+const ACCOUNT_KEY = /^[\da-f]{32}$/;
+
 /** A ban. */
 export const Ban: Schema<BanDto> = s.object({
   id: s.string(),
@@ -682,6 +716,17 @@ export const Ban: Schema<BanDto> = s.object({
   entered: s.optional(
     s.object({ apiKey: s.optional(s.string()), user: s.optional(s.string()) }),
   ),
+  country: s.optional(
+    s.string({
+      description: "the subject's country when written, from its latest event",
+    }),
+  ),
+  asn: s.optional(
+    s.int({
+      min: 0,
+      description: "the subject's ASN when written, from its latest event",
+    }),
+  ),
 });
 
 /** A page of bans. */
@@ -695,6 +740,18 @@ export const BanCreateBody: Schema<BanCreateInput> = s.object({
   ),
   user: s.optional(s.string({ min: 1, max: 512 })),
   apiKey: s.optional(s.string({ min: 1, max: 512 })),
+  userHash: s.optional(
+    s.string({
+      pattern: ACCOUNT_KEY,
+      description: "a user's key as the API reports it, used as it is",
+    }),
+  ),
+  apiKeyHash: s.optional(
+    s.string({
+      pattern: ACCOUNT_KEY,
+      description: "an API key's key as the API reports it, used as it is",
+    }),
+  ),
   action: s.optional(s.enum(["ban", "challenge"])),
   reason: s.string({ min: 1, max: 500 }),
   duration: s.optional(
@@ -722,4 +779,57 @@ export const BansQuery = s.query({
   ),
   scope: s.optional(Scope),
   active: s.optional(s.boolean("true: in force now; false: lifted or expired")),
+  kind: s.optional(s.enum(["ip", "cidr", "user", "apiKey"])),
+  source: s.optional(s.enum(["auto", "manual"])),
+  rule: s.optional(
+    s.string({ min: 1, max: 200, description: "the rule that wrote it" }),
+  ),
+  search: s.optional(
+    s.string({
+      min: 1,
+      max: 64,
+      description:
+        "an address (and every range holding it), a CIDR range (and every range holding it) or an account key",
+    }),
+  ),
+  sort: s.optional(
+    s.enum(
+      ["id", "created", "expires"],
+      "the order (default id; expires puts a permanent ban last)",
+    ),
+  ),
+  direction: s.optional(s.enum(["asc", "desc"])),
+});
+
+/** `POST /bans/:id/extend`'s body. */
+export const BanExtendBody: Schema<BanExtendInput> = s.object({
+  duration: s.nullable(
+    s.string({
+      min: 1,
+      max: 20,
+      description:
+        'how long from now ("7d"), or null until lifted; only lengthens',
+    }),
+  ),
+});
+
+/** `POST /bans/lift`'s body: a filter of active bans. */
+export const BanLiftBody: Schema<BanLiftInput> = s.object({
+  scope: s.optional(Scope),
+  kind: s.optional(s.enum(["ip", "cidr", "user", "apiKey"])),
+  source: s.optional(s.enum(["auto", "manual"])),
+  rule: s.optional(s.string({ min: 1, max: 200 })),
+  search: s.optional(s.string({ min: 1, max: 64 })),
+  createdFrom: s.optional(
+    s.int({ min: 0, description: "started at or after (ms)" }),
+  ),
+  createdTo: s.optional(s.int({ min: 0, description: "started before (ms)" })),
+  dryRun: s.optional(s.boolean("true: count, change nothing")),
+});
+
+/** `POST /bans/lift`'s answer. */
+export const BanLiftResult: Schema<BanLiftResultDto> = s.object({
+  dryRun: s.boolean(),
+  matched: s.int({ min: 0 }),
+  lifted: s.int({ min: 0 }),
 });

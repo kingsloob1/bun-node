@@ -126,9 +126,28 @@ function describeEntry(entry: CompiledEntry): string {
   return `${entry.id} → ${entry.action}${flags.length ? ` (${flags.join(", ")})` : ""}`;
 }
 
+/** The request's account keys, for entries that name an account by its key. */
+export interface AccountKeys {
+  /** The user's key (`Decision.subject.user`). */
+  readonly user?: string;
+  /** The API key's key (`Decision.subject.apiKey`). */
+  readonly apiKey?: string;
+}
+
+/** Entries matched by an id, then by a key, or `undefined` when neither matched. */
+function joined(
+  byId: readonly CompiledEntry[] | undefined,
+  byKey: readonly CompiledEntry[] | undefined,
+): readonly CompiledEntry[] | undefined {
+  if (byId === undefined) return byKey;
+  return byKey === undefined ? byId : [...byId, ...byKey];
+}
+
 /**
  * Evaluates the lists for one request. `dryPolicy` makes every entry dry
- * (the whole policy runs in dry run).
+ * (the whole policy runs in dry run). `user` and `apiKey` are the ids the
+ * entries naming an id match; `keys`, the subject's keys, are what the
+ * entries naming a key (`userHash`, `apiKeyHash`) match.
  */
 export function evaluateLists(
   policy: PolicyInternals,
@@ -142,18 +161,26 @@ export function evaluateLists(
   intel?: IntelLookup,
   geoExempt = false,
   relabel: (entry: CompiledEntry) => CompiledEntry = (entry) => entry,
+  keys: AccountKeys = {},
 ): ListOutcome {
   const byAddress = address ? policy.ips.match(address) : NONE;
-  const byUser =
+  // A user or API-key entry's default id names its subject: the engine's
+  // `relabel` keys it before any hit, trace or explanation reports it. An
+  // entry naming the key is matched by the subject's key, its id the key's.
+  const byUser = joined(
     user === undefined
       ? undefined
-      : policy.users.get(user)?.map((entry) => relabel(entry));
-  // A user or API-key entry's default id names its subject: the engine's
-  // `relabel` keys it before any hit, trace or explanation reports it.
-  const byKey =
+      : policy.users.get(user)?.map((entry) => relabel(entry)),
+    keys.user === undefined ? undefined : policy.userHashes.get(keys.user),
+  );
+  const byKey = joined(
     apiKey === undefined
       ? undefined
-      : policy.apiKeys.get(apiKey)?.map((entry) => relabel(entry));
+      : policy.apiKeys.get(apiKey)?.map((entry) => relabel(entry)),
+    keys.apiKey === undefined
+      ? undefined
+      : policy.apiKeyHashes.get(keys.apiKey),
+  );
   // Country and ASN entries (layers.md L5): the address is looked up only
   // when the policy has some.
   let byCountry: readonly CompiledEntry[] | undefined;

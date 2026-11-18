@@ -69,6 +69,9 @@ interface BundleBudget {
  *   and SSE stream, the frame, the scope picker and the Overview; the API
  *   reference (the docs viewer's screens) is a lazy chunk, the largest at
  *   54.8 KiB (18.8 KiB gzipped). Later screens (U2–U5) go in lazy chunks.
+ *   With PR-U3 (2026-11-18): entry 306.4 KiB (98.1 KiB gzipped), the
+ *   largest chunk the reference at 45.7 KiB; the bans, lists and events
+ *   screens are lazy chunks of 7 to 22 KiB. The limits stay.
  */
 const BUNDLE_BUDGETS: Readonly<Record<string, BundleBudget>> = {
   jobs: {

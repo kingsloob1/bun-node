@@ -1004,10 +1004,16 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
    * A user or API-key list entry whose id is the default, with the id keyed
    * as requests key the subject (`user:` + `Decision.subject.user`,
    * `apiKey:` + `Decision.subject.apiKey`), so the id never reaches a hit,
-   * `explain()` or a log (layers.md L12); any other entry as it is.
+   * `explain()` or a log (layers.md L12); any other entry, and one naming
+   * its account by its key (`userHash`, `apiKeyHash`: its id is the key
+   * already), as it is.
    */
   readonly #keyedEntry = (entry: CompiledEntry): CompiledEntry => {
-    if ((entry.kind !== "apiKey" && entry.kind !== "user") || entry.named) {
+    if (
+      (entry.kind !== "apiKey" && entry.kind !== "user") ||
+      entry.named ||
+      entry.keyed === true
+    ) {
       return entry;
     }
     let keyed = this.#keyedEntries.get(entry);
@@ -2110,6 +2116,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
           this.#options.intel,
           false,
           this.#keyedEntry,
+          resolved.subject,
         );
     const flags = flagsOf(lists, resolved.service);
     // The device cookie is issued at once, so an integration finds it as
@@ -2627,6 +2634,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
           this.#options.intel,
           false,
           this.#keyedEntry,
+          resolved.subject,
         );
     const connection: Connection = {
       subject: resolved.subject,
@@ -3435,6 +3443,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
       facts,
       pass.stage,
       this.#intelFor(pass),
+      pass.subject,
     );
     if (matched.length === 0) return false;
     const { run, trace, now, writes, flags } = pass;
@@ -3550,13 +3559,21 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
     // Canaries need the caller (the route stage); honeypots only the path
     // (the early stage, before the body is read).
     const identity = pass.stage === "early" ? undefined : facts.identity;
+    // A canary stored keyed (the control plane's) matches the caller's key.
+    const keyed = identity === undefined ? undefined : pass.subject;
     const canary =
       (identity?.user === undefined
         ? undefined
         : deception.canaryUsers.get(identity.user)) ??
       (identity?.apiKey === undefined
         ? undefined
-        : deception.canaryKeys.get(identity.apiKey));
+        : deception.canaryKeys.get(identity.apiKey)) ??
+      (keyed?.user === undefined
+        ? undefined
+        : deception.canaryUserHashes.get(keyed.user)) ??
+      (keyed?.apiKey === undefined
+        ? undefined
+        : deception.canaryKeyHashes.get(keyed.apiKey));
     if (canary !== undefined) {
       const reason = `canary credential "${canary}" used`;
       pass.run.add(
@@ -3837,6 +3854,7 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
         this.#options.intel,
         exempts(crawler, "geo"),
         this.#keyedEntry,
+        resolved.subject,
       );
       if (lists.decided && ownEntry(lists.decided, stage)) {
         if (lists.decided.action === "challenge") {

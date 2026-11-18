@@ -239,6 +239,10 @@ export interface CompiledDeception {
   readonly canaryUsers: ReadonlyMap<string, string>;
   /** Canary API key ids, to the canary's id. */
   readonly canaryKeys: ReadonlyMap<string, string>;
+  /** Canaries stored keyed: a user's key → the canary's id. */
+  readonly canaryUserHashes: ReadonlyMap<string, string>;
+  /** Canaries stored keyed: an API key's key → the canary's id. */
+  readonly canaryKeyHashes: ReadonlyMap<string, string>;
 }
 
 /** The default honeypot paths (layers.md L8). */
@@ -277,6 +281,12 @@ export interface CompiledEntry {
   readonly id: string;
   /** Whether the policy's author wrote the id (it is then reported as written). */
   readonly named: boolean;
+  /**
+   * Whether a user or API-key entry names its account by its key
+   * (`userHash`, `apiKeyHash`): its `value` and default id are the key
+   * already, never keyed again. Absent (false) for every other entry.
+   */
+  readonly keyed?: boolean;
   /** What kind of subject it matches; `internal` for the built-in list. */
   readonly kind: "ip" | "user" | "apiKey" | "country" | "asn" | "internal";
   /** The subject, canonical (a range as `base/bits`). */
@@ -331,8 +341,12 @@ export interface PolicyInternals {
   readonly ips: CidrTrie<CompiledEntry>;
   /** User entries, by user id. */
   readonly users: ReadonlyMap<string, readonly CompiledEntry[]>;
+  /** User entries named by their key (`userHash`), by the key. */
+  readonly userHashes: ReadonlyMap<string, readonly CompiledEntry[]>;
   /** API key entries, by key id. */
   readonly apiKeys: ReadonlyMap<string, readonly CompiledEntry[]>;
+  /** API key entries named by their key (`apiKeyHash`), by the key. */
+  readonly apiKeyHashes: ReadonlyMap<string, readonly CompiledEntry[]>;
   /** Country entries, by ISO code (layers.md L5; need the engine's `intel`). */
   readonly countries: ReadonlyMap<string, readonly CompiledEntry[]>;
   /** ASN entries, by number (layers.md L5; need the engine's `intel`). */
@@ -586,9 +600,15 @@ function compileDeception(source: SecurityPolicy): CompiledDeception {
         : given.honeypots;
   const canaryUsers = new Map<string, string>();
   const canaryKeys = new Map<string, string>();
+  const canaryUserHashes = new Map<string, string>();
+  const canaryKeyHashes = new Map<string, string>();
   for (const canary of given?.canaries ?? []) {
     if (canary.user !== undefined) canaryUsers.set(canary.user, canary.id);
     if (canary.apiKey !== undefined) canaryKeys.set(canary.apiKey, canary.id);
+    if (canary.userHash !== undefined)
+      canaryUserHashes.set(canary.userHash, canary.id);
+    if (canary.apiKeyHash !== undefined)
+      canaryKeyHashes.set(canary.apiKeyHash, canary.id);
   }
   return Object.freeze({
     honeypots:
@@ -602,6 +622,8 @@ function compileDeception(source: SecurityPolicy): CompiledDeception {
           }),
     canaryUsers,
     canaryKeys,
+    canaryUserHashes,
+    canaryKeyHashes,
   });
 }
 
@@ -639,7 +661,9 @@ export function compilePolicy(
 
   const ips = new CidrTrie<CompiledEntry>();
   const users = new Map<string, CompiledEntry[]>();
+  const userHashes = new Map<string, CompiledEntry[]>();
   const apiKeys = new Map<string, CompiledEntry[]>();
+  const apiKeyHashes = new Map<string, CompiledEntry[]>();
   const countries = new Map<string, CompiledEntry[]>();
   const asns = new Map<number, CompiledEntry[]>();
 
@@ -681,10 +705,13 @@ export function compilePolicy(
     const compiled: CompiledEntry = Object.freeze({
       id: entry.id ?? defaultEntryId(entry, cidr ?? undefined),
       named: entry.id !== undefined,
+      ...(entry.userHash !== undefined || entry.apiKeyHash !== undefined
+        ? { keyed: true }
+        : {}),
       kind:
         entry.ip !== undefined
           ? "ip"
-          : entry.user !== undefined
+          : entry.user !== undefined || entry.userHash !== undefined
             ? "user"
             : entry.country !== undefined
               ? "country"
@@ -694,9 +721,11 @@ export function compilePolicy(
       value:
         cidr?.text ??
         entry.user ??
+        entry.userHash ??
         entry.country ??
         (entry.asn === undefined ? undefined : String(entry.asn)) ??
         entry.apiKey ??
+        entry.apiKeyHash ??
         "",
       action: entry.action,
       override: entry.override === true,
@@ -718,7 +747,11 @@ export function compilePolicy(
     });
     if (cidr) ips.insert(cidr, compiled);
     else if (entry.user !== undefined) addTo(users, entry.user, compiled);
+    else if (entry.userHash !== undefined)
+      addTo(userHashes, entry.userHash, compiled);
     else if (entry.apiKey !== undefined) addTo(apiKeys, entry.apiKey, compiled);
+    else if (entry.apiKeyHash !== undefined)
+      addTo(apiKeyHashes, entry.apiKeyHash, compiled);
     else if (entry.country !== undefined)
       addTo(countries, entry.country, compiled);
     else if (entry.asn !== undefined) addTo(asns, entry.asn, compiled);
@@ -860,7 +893,9 @@ export function compilePolicy(
       ipv6Prefix: source.keys?.ipv6Prefix ?? 64,
       ips,
       users,
+      userHashes,
       apiKeys,
+      apiKeyHashes,
       countries,
       asns,
       serviceHeader: source.serviceIdentity?.header ?? DEFAULT_SERVICE_HEADER,

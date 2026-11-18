@@ -45,10 +45,14 @@ export type PolicyScope = "global" | "group" | "service";
 
 /**
  * One allow or deny entry (layers.md L3): exactly one subject — an address
- * or CIDR range (`ip`), a user id (`user`), an API key id (`apiKey`), a
- * country (`country`) or an autonomous system (`asn`) — and the action
- * taken when it matches. `country` and `asn` need `createSecurity`'s
- * `intel` (`./intel`).
+ * or CIDR range (`ip`), a user id (`user`) or its key (`userHash`), an API
+ * key id (`apiKey`) or its key (`apiKeyHash`), a country (`country`) or an
+ * autonomous system (`asn`) — and the action taken when it matches.
+ * `country` and `asn` need `createSecurity`'s `intel` (`./intel`).
+ *
+ * An account named by its key matches exactly as one named by its id does
+ * once the engine keys it: the control plane stores only keys, so a policy
+ * it serves never holds an account id.
  */
 export interface ListEntry {
   /**
@@ -57,16 +61,31 @@ export interface ListEntry {
    * (`ip:203.0.113.0/24`, `country:FR`), except a user's and an API key's:
    * theirs is `user:` or `apiKey:` and the id's HMAC under
    * `createSecurity`'s `secret`, the same key as `Decision.subject.user` or
-   * `.apiKey`, so the id is never reported. An id written here is reported
-   * as written: never put a user or key id in it.
+   * `.apiKey`, so the id is never reported (for `userHash` and `apiKeyHash`,
+   * `user:` or `apiKey:` and the key as written). An id written here is
+   * reported as written: never put a user or key id in it.
    */
   readonly id?: string;
   /** An IPv4 or IPv6 address or CIDR range; IPv4-mapped forms are read as IPv4. */
   readonly ip?: string;
   /** A user id, as the app's `identify()` returns it. */
   readonly user?: string;
+  /**
+   * A user's key: the user id's HMAC under `createSecurity`'s `secret`, 32
+   * lower-case hex characters, as `Decision.subject.user` carries it. Used
+   * as it is, never keyed again; it matches only under the secret that made
+   * it (the fleet's, `bans.secret` in the control plane, which writes every
+   * user entry this way).
+   */
+  readonly userHash?: string;
   /** An API key **id**, as `identify()` returns it; never the key itself. */
   readonly apiKey?: string;
+  /**
+   * An API key id's key: its HMAC under `createSecurity`'s `secret`, 32
+   * lower-case hex characters, as `Decision.subject.apiKey` carries it. Used
+   * as it is, as {@link ListEntry.userHash} is.
+   */
+  readonly apiKeyHash?: string;
   /**
    * The client address's country, ISO 3166-1 alpha-2, upper case (`"KP"`),
    * as the intel's databases give it. Any action but `allow`: a whole
@@ -851,6 +870,10 @@ export interface CanaryPolicy {
   readonly user?: string;
   /** An API key id, as `identify()` returns it. */
   readonly apiKey?: string;
+  /** A user's key (32 lower-case hex, its HMAC under the fleet's secret), as the control plane stores a canary. */
+  readonly userHash?: string;
+  /** An API key's key (32 lower-case hex), as the control plane stores a canary. */
+  readonly apiKeyHash?: string;
 }
 
 /** Deception (layers.md L8): honeypot routes and canary credentials. */

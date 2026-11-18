@@ -1,0 +1,72 @@
+/* The lists screens' few styles; the frame, width and controls are the kit's. */
+.lists-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.lists-actions,
+.lists-bar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.lists-draft-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.lists-filters {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  margin: 1rem 0;
+}
+
+.lists-row-removing td {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+.lists-row-removing td:last-child {
+  text-decoration: none;
+  opacity: 1;
+}
+
+.lists-reason {
+  max-width: 20rem;
+  overflow-wrap: anywhere;
+}
+
+.lists-entered ul {
+  margin: 0.5rem 0;
+}
+
+.lists-entered code {
+  word-break: break-all;
+}
+
+.lists-form {
+  display: grid;
+  gap: 0.75rem;
+  max-width: 36rem;
+  margin-top: 1rem;
+}
+
+.lists-import-text {
+  width: 100%;
+  font-family: var(--font-mono, monospace);
+}
+
+.lists-impact-block {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}

@@ -86,6 +86,7 @@ import {
 } from "./analytics";
 import {
   auditCursor,
+  auditTargetOf,
   auditPosition,
   bundleEtag,
   checkAuditInput,
@@ -94,6 +95,7 @@ import {
   banCursor,
   banId,
   banPosition,
+  PERMANENT_SORT_KEY,
   checkBanInput,
   checkCounter,
   UNFED_KINDS,
@@ -248,6 +250,10 @@ export function storeSchema(
           { name: "action", type: idType, suffix: "NOT NULL" },
           { name: "scope", type: idType, suffix: "NOT NULL" },
           { name: "entry", type: jsonType, suffix: "NOT NULL" },
+          // The entry's target, `<kind>:<id>` (`""` for none), for a
+          // target's history; outside the hash chain, derived from the
+          // entry (null on a row written before it, until `syncSchema`).
+          { name: "target", type: idType },
         ],
       },
       {
@@ -281,6 +287,17 @@ export function storeSchema(
           { name: "revision", type: "INTEGER", suffix: "NOT NULL" },
           { name: "updated_at", type: timeType, suffix: "NOT NULL" },
           { name: "ban", type: jsonType, suffix: "NOT NULL" },
+          // What a ban list filters, sorts and searches by, copied from the
+          // body when written (null on a row written before them, until
+          // `syncSchema` fills them in).
+          { name: "kind", type: idType },
+          { name: "subject", type: idType },
+          { name: "source", type: idType },
+          { name: "rule", type: idType },
+          { name: "created_at", type: timeType },
+          { name: "expires_sort", type: timeType },
+          { name: "country", type: idType },
+          { name: "asn", type: timeType },
         ],
       },
       {
@@ -388,6 +405,27 @@ export function storeSchema(
         name: `ix_${prefix}bans_scope`,
         table: bans,
         columns: ["scope", "id"],
+      },
+      // A ban list's keyset orders, and its search by subject value.
+      {
+        name: `ix_${prefix}bans_created`,
+        table: bans,
+        columns: ["created_at", collatedId],
+      },
+      {
+        name: `ix_${prefix}bans_expires`,
+        table: bans,
+        columns: ["expires_sort", collatedId],
+      },
+      {
+        name: `ix_${prefix}bans_subject`,
+        table: bans,
+        columns: ["subject"],
+      },
+      {
+        name: `ix_${prefix}audit_target`,
+        table: audit,
+        columns: ["target", "n"],
       },
       {
         name: `ix_${prefix}audit_actor`,
@@ -558,6 +596,32 @@ interface ChangeRow {
   deleted: number | bigint | boolean;
 }
 
+/** The bans table's filter columns, in the order {@link banColumnValues} gives them. */
+const BAN_COLUMNS = [
+  "kind",
+  "subject",
+  "source",
+  "rule",
+  "created_at",
+  "expires_sort",
+  "country",
+  "asn",
+] as const;
+
+/** A ban's filter columns' values, as {@link BAN_COLUMNS} names them. */
+function banColumnValues(ban: BanRecord): (string | number | null)[] {
+  return [
+    ban.subject.type,
+    ban.subject.value,
+    ban.source,
+    ban.rule ?? null,
+    ban.createdAt,
+    ban.expiresAt ?? PERMANENT_SORT_KEY,
+    ban.country ?? null,
+    ban.asn ?? null,
+  ];
+}
+
 /** The events table's columns, in the order an insert binds them. */
 const EVENT_COLUMNS = [
   "id",
@@ -725,16 +789,79 @@ export function sqlSecurityStore(
   });
 
   /** Brings the schema in line; answers every change. */
+  /**
+   * Fills the bans table's filter columns of rows written before they
+   * existed (null `kind`), from each row's body, a batch at a time; how
+   * many it filled.
+   */
+  const backfillBans = async (sql: SQL): Promise<number> => {
+    let filled = 0;
+    for (;;) {
+      const rows = (await sql.unsafe(
+        `SELECT id, ban FROM ${tables.bans} WHERE kind IS NULL ORDER BY id LIMIT 500`,
+      )) as { id: string; ban: unknown }[];
+      if (rows.length === 0) return filled;
+      for (const row of rows) {
+        const ban = codec.open(dialect.jsonOut(row.ban, null), {
+          field: "doc",
+          kind: "ban",
+          id: row.id,
+        }) as BanRecord;
+        const values = banColumnValues(ban);
+        const p = new Params(dialect);
+        await sql.unsafe(
+          `UPDATE ${tables.bans} SET ${BAN_COLUMNS.map((column, i) => `${column} = ${p.bind(values[i] ?? null)}`).join(", ")}
+            WHERE id = ${p.bind(row.id)}`,
+          p.values,
+        );
+        filled++;
+      }
+    }
+  };
+
+  /** Fills the audit table's `target` of rows written before it (null), from each entry; how many. */
+  const backfillAuditTargets = async (sql: SQL): Promise<number> => {
+    let filled = 0;
+    for (;;) {
+      const rows = (await sql.unsafe(
+        `SELECT n, entry FROM ${tables.audit} WHERE target IS NULL ORDER BY n LIMIT 500`,
+      )) as { n: number | bigint | string; entry: unknown }[];
+      if (rows.length === 0) return filled;
+      for (const row of rows) {
+        const n = Number(row.n);
+        const entry = codec.open(dialect.jsonOut(row.entry, null), {
+          field: "doc",
+          kind: "audit",
+          id: String(n),
+        });
+        const p = new Params(dialect);
+        await sql.unsafe(
+          `UPDATE ${tables.audit} SET target = ${p.bind(auditTargetOf(entry))} WHERE n = ${p.bind(n)}`,
+          p.values,
+        );
+        filled++;
+      }
+    }
+  };
+
+  /** `syncSchema`: the schema's changes, then the bans' filter columns and the audit targets filled in (not on a dry run). */
   const sync = async (
     sql: SQL,
     options: SchemaSyncOptions | boolean | undefined,
-  ): Promise<SchemaChange[]> =>
-    await syncSqlSchema(
+  ): Promise<SchemaChange[]> => {
+    const resolved = resolveSyncOptions(options);
+    const changes = await syncSqlSchema(
       backend(sql),
       dialect,
       definition,
-      resolveSyncOptions(options),
+      resolved,
     );
+    if (!resolved.dryRun) {
+      await backfillBans(sql);
+      await backfillAuditTargets(sql);
+    }
+    return changes;
+  };
 
   /** Opens the client and creates the schema; once. */
   const open = async (): Promise<SQL> => {
@@ -764,6 +891,23 @@ export function sqlSecurityStore(
       }
       if (init.syncSchema !== undefined && init.syncSchema !== false) {
         await sync(sql, init.syncSchema);
+      } else {
+        // A bans table from before its filter columns: writing to it would
+        // fail, and a list would miss its rows. Say what fixes it.
+        for (const [table, column] of [
+          [tables.bans, "kind"],
+          [tables.audit, "target"],
+        ] as const) {
+          const columns = existing.get(table);
+          if (
+            columns !== undefined &&
+            !columns.some((found) => found.name.toLowerCase() === column)
+          ) {
+            throw new ConfigError(
+              `security store: the table ${table} predates its ${column} column; open the store once with syncSchema: true (or call syncSchema()) to add and fill it`,
+            );
+          }
+        }
       }
       return sql;
     } catch (error) {
@@ -906,10 +1050,11 @@ export function sqlSecurityStore(
     }
     const q = new Params(dialect);
     await tx.unsafe(
-      `INSERT INTO ${tables.audit} (n, prev_hash, hash, at, actor, action, scope, entry)
+      `INSERT INTO ${tables.audit} (n, prev_hash, hash, at, actor, action, scope, entry, target)
        VALUES (${q.bind(n)}, ${q.bind(entry.prevHash)}, ${q.bind(entry.hash)}, ${q.bind(entry.at)},
                ${q.bind(entry.actor)}, ${q.bind(entry.action)}, ${q.bind(entry.scope)},
-               ${q.bind(dialect.jsonIn(codec.seal(entry.entry, { field: "doc", kind: "audit", id: String(n) })))})`,
+               ${q.bind(dialect.jsonIn(codec.seal(entry.entry, { field: "doc", kind: "audit", id: String(n) })))},
+               ${q.bind(auditTargetOf(entry.entry))})`,
       q.values,
     );
     return Object.freeze({
@@ -1601,6 +1746,7 @@ export function sqlSecurityStore(
       if (f.until >= 0) where.push(`at < ${p.bind(f.until)}`);
       if (f.fromN >= 0) where.push(`n >= ${p.bind(f.fromN)}`);
       if (f.toN >= 0) where.push(`n <= ${p.bind(f.toN)}`);
+      if (f.target !== "") where.push(`target = ${p.bind(f.target)}`);
       if (after !== undefined)
         where.push(`n ${desc ? "<" : ">"} ${p.bind(after)}`);
       const rows = (await sql.unsafe(
@@ -1734,12 +1880,14 @@ export function sqlSecurityStore(
               codec.seal(merged, { field: "doc", kind: "ban", id }),
             ),
           ),
+          ...banColumnValues(merged).map((value) => p.bind(value)),
         ];
         await tx.unsafe(
-          `INSERT INTO ${tables.bans} (id, scope, expires_at, lifted_at, revision, updated_at, ban)
+          `INSERT INTO ${tables.bans} (id, scope, expires_at, lifted_at, revision, updated_at, ban, ${BAN_COLUMNS.join(", ")})
             VALUES (${values.join(", ")})
             ON CONFLICT (id) DO UPDATE SET expires_at = excluded.expires_at, lifted_at = excluded.lifted_at,
-              revision = excluded.revision, updated_at = excluded.updated_at, ban = excluded.ban`,
+              revision = excluded.revision, updated_at = excluded.updated_at, ban = excluded.ban,
+              ${BAN_COLUMNS.map((column) => `${column} = excluded.${column}`).join(", ")}`,
           p.values,
         );
         await record(tx, "ban", id, merged.revision, false);
@@ -1794,12 +1942,41 @@ export function sqlSecurityStore(
         const active = `(lifted_at IS NULL AND (expires_at IS NULL OR expires_at > ${at}))`;
         where.push(resolved.active ? active : `NOT ${active}`);
       }
-      if (after !== undefined)
-        where.push(`id ${desc ? "<" : ">"} ${p.bind(after)}`);
+      if (resolved.kind !== null) where.push(`kind = ${p.bind(resolved.kind)}`);
+      if (resolved.source !== null)
+        where.push(`source = ${p.bind(resolved.source)}`);
+      if (resolved.rule !== null) where.push(`rule = ${p.bind(resolved.rule)}`);
+      if (resolved.values !== null) {
+        where.push(
+          `subject IN (${resolved.values.map((value) => p.bind(value)).join(", ")})`,
+        );
+      }
+      const keyColumn =
+        resolved.sort === "created"
+          ? "created_at"
+          : resolved.sort === "expires"
+            ? "expires_sort"
+            : undefined;
+      const op = desc ? "<" : ">";
+      if (after !== undefined) {
+        if (keyColumn === undefined || after.key === undefined) {
+          where.push(`id ${op} ${p.bind(after.id)}`);
+        } else {
+          const key = p.bind(after.key);
+          where.push(
+            `(${keyColumn} ${op} ${key} OR (${keyColumn} = ${p.bind(after.key)} AND id ${op} ${p.bind(after.id)}))`,
+          );
+        }
+      }
+      const direction = desc ? "DESC" : "ASC";
+      const order =
+        keyColumn === undefined
+          ? `id ${direction}`
+          : `${keyColumn} ${direction}, id ${direction}`;
       const rows = (await sql.unsafe(
         `SELECT id, ban FROM ${tables.bans}
           ${where.length === 0 ? "" : `WHERE ${where.join(" AND ")}`}
-          ORDER BY id ${desc ? "DESC" : "ASC"} LIMIT ${resolved.limit + 1}`,
+          ORDER BY ${order} LIMIT ${resolved.limit + 1}`,
         p.values,
       )) as { id: string; ban: unknown }[];
       const items = rows
@@ -1809,7 +1986,7 @@ export function sqlSecurityStore(
       return Object.freeze({
         items: Object.freeze(items),
         ...(rows.length > resolved.limit && last !== undefined
-          ? { next: banCursor(resolved, last.id) }
+          ? { next: banCursor(resolved, last) }
           : {}),
       });
     },

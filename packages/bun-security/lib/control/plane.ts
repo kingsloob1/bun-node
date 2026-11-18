@@ -16,18 +16,30 @@ import type {
   AuditQuery,
 } from "../store/types";
 import { MAX_AUDIT_SCOPES } from "../store/types";
-import { banId } from "../store/shared";
-import { isWholeFamilyRange, parseAddress, parseCidr } from "../ip/address";
-import { boundKey } from "../engine/identity";
+import { banActive, banId } from "../store/shared";
+import { parseAddress, parseCidr } from "../ip/address";
+import type { BanListQuery } from "./banOps";
+import {
+  BULK_LIFT_LIMIT,
+  banSearchValues,
+  banSubjectOf,
+  subjectFacts,
+} from "./banOps";
+import { eventView } from "./live/view";
 import type { Logger } from "@kingsleyweb/bun-common";
 import { ConfigError, noopLogger, toDurationMs } from "@kingsleyweb/bun-common";
 import type { SecurityApiPermission, SecurityRole } from "./contract/constants";
 import type {
   ApprovalDto,
   BanCreateInput,
+  BanDetailDto,
   BanDto,
+  BanLiftFilter,
+  BanLiftInput,
+  BanLiftResultDto,
   CompiledBundleDto,
   EffectivePolicyDto,
+  GroupEffectivePolicyDto,
   GroupDto,
   GroupInput,
   PolicyDraftDto,
@@ -56,6 +68,16 @@ import {
 import { validatePolicy } from "../policy/schema";
 import { dangerousChanges } from "./dangerous";
 import { diffPolicies, mergePolicies } from "./merge";
+import {
+  holdsAccountIds,
+  keyListsForRead,
+  keyListsForWrite,
+  keyOthersForRead,
+  keyOthersForWrite,
+  othersHoldAccountIds,
+  showAuditBody,
+  showPolicyWith,
+} from "./accountLists";
 import { ApiProblem, conflict, notFound } from "./problems";
 import { AuditLog } from "./audit/log";
 import { AgentRegistry } from "./agents";
@@ -134,7 +156,8 @@ type ApprovalPayload =
       input: ServiceIdentityInput;
       revision: number | null;
     }
-  | { kind: "serviceIdentity.delete"; id: string; revision: number };
+  | { kind: "serviceIdentity.delete"; id: string; revision: number }
+  | { kind: "bans.lift"; filter: BanLiftFilter };
 
 /** An approval's stored body. */
 interface ApprovalBody {
@@ -767,7 +790,48 @@ export class ControlPlane {
     const head = await this.#head(scope);
     if (head === null) return { id: null, policy: {} };
     const version = await this.store.getVersion(scope, head.id);
-    return { id: head.id, policy: (version?.policy ?? {}) as JsonObject };
+    return {
+      id: head.id,
+      policy: this.#readPolicy((version?.policy ?? {}) as JsonObject),
+    };
+  }
+
+  /**
+   * A stored policy as it leaves the control plane: an account id a policy
+   * stored before list entries were keyed still holds is keyed (PR-U3).
+   */
+  #readPolicy(policy: JsonObject): JsonObject {
+    return keyOthersForRead(
+      keyListsForRead(policy, this.options.banKeys),
+      this.options.banKeys,
+    );
+  }
+
+  /**
+   * A policy as an operator sees it: every account id keyed where the
+   * control plane can key it, and shown `unkeyed` where it cannot (no
+   * keyring, or a stored condition that is not `equals` or `in`). A raw id
+   * never leaves the control plane in what it shows.
+   */
+  showPolicy(policy: JsonObject): JsonObject {
+    return showPolicyWith(policy, this.options.banKeys);
+  }
+
+  /**
+   * `policy` as the control plane writes it (PR-U3): every `lists[].user`
+   * and `apiKey` keyed with the fleet's secret (`bans.secret`) into
+   * `userHash` and `apiKeyHash`; a `400` when it cannot key one. Answers the
+   * ids typed too, for the draft-save answer alone.
+   */
+  #writePolicy(policy: JsonObject): ReturnType<typeof keyListsForWrite> {
+    const keying = {
+      keys: this.options.banKeys,
+      kinds: this.options.banKinds,
+    };
+    const listed = keyListsForWrite(policy, keying);
+    const entered = [...listed.entered];
+    const keyed = keyOthersForWrite(listed.policy, keying, entered);
+    return { policy: keyed, entered };
   }
 
   /** A scope's draft and head. */
@@ -785,7 +849,7 @@ export class ControlPlane {
   #draft(doc: StoredDoc): PolicyDraftDto {
     const body = doc.doc as DraftBody;
     return {
-      policy: body.policy,
+      policy: this.showPolicy(body.policy),
       baseHead: body.baseHead,
       updatedBy: body.updatedBy,
       revision: doc.revision,
@@ -906,6 +970,103 @@ export class ControlPlane {
     return out;
   }
 
+  /**
+   * Discards a scope's draft at the revision read (`DELETE
+   * /policies/:scope/draft`): the head stays as it is. A `404` without a
+   * draft, a `409` when it changed since. Audited.
+   */
+  async discardDraft(scope: PolicyScopeId, revision: number): Promise<void> {
+    await this.checkScope(scope);
+    const existing = await this.store.get("policyDraft", scope);
+    if (existing === undefined) throw notFound(`a draft of "${scope}"`);
+    if (existing.revision !== revision) {
+      throw conflict(`the draft of "${scope}" changed`, this.#draft(existing));
+    }
+    await this.#audited(
+      {
+        action: "policy.draft.discard",
+        scope,
+        target: { kind: "policyDraft", id: scope, deleted: true },
+        before: { revision },
+      },
+      async () => {
+        if (!(await this.store.delete("policyDraft", scope, revision))) {
+          const current = await this.store.get("policyDraft", scope);
+          throw conflict(
+            `the draft of "${scope}" changed`,
+            current === undefined ? null : this.#draft(current),
+          );
+        }
+      },
+    );
+  }
+
+  /**
+   * A group's effective policy: global's and its ancestors' heads merged
+   * down to its own, each field with its origin (what a service in the
+   * group inherits from it, before the service's own). A `422` when a
+   * locked field is overridden.
+   */
+  async groupEffective(groupId: string): Promise<GroupEffectivePolicyDto> {
+    await this.getGroup(groupId);
+    const scopes: PolicyScopeId[] = [
+      "global",
+      ...(await this.groupChain(groupId)).map((id) => groupScope(id)),
+    ];
+    const versions: string[] = [];
+    const layers: { scope: PolicyScopeId; policy: JsonObject }[] = [];
+    for (const scope of scopes) {
+      const head = await this.#headPolicy(scope);
+      layers.push({ scope, policy: head.policy });
+      if (head.id !== null) versions.push(head.id);
+    }
+    const merged = mergePolicies(layers);
+    if (merged.locked.length > 0) {
+      throw new ApiProblem(
+        422,
+        "locked",
+        merged.locked
+          .map((item) => `${item.path} is locked by ${item.lockedBy}`)
+          .join("; "),
+      );
+    }
+    return {
+      group: groupId,
+      policyVersions: versions,
+      policy: merged.policy,
+      origins: merged.origins,
+    };
+  }
+
+  /**
+   * An effective policy as an operator sees it: its policy shown
+   * ({@link showPolicy}) and its origins' paths with any raw account id
+   * that could not be keyed redacted.
+   */
+  showEffective<
+    T extends {
+      policy: JsonObject;
+      origins: Readonly<Record<string, PolicyScopeId>>;
+    },
+  >(effective: T): T {
+    const keyless = this.options.banKeys === undefined;
+    return {
+      ...effective,
+      policy: this.showPolicy(effective.policy),
+      origins: keyless
+        ? Object.fromEntries(
+            Object.entries(effective.origins).map(([path, scope]) => [
+              path.replace(
+                /\[id=(user|apiKey):(?![\da-f]{32}[|\]])[^|\]]*/g,
+                "[id=$1:[unkeyed]",
+              ),
+              scope,
+            ]),
+          )
+        : effective.origins,
+    };
+  }
+
   /** A page of a scope's versions, newest first. */
   async listVersions(
     scope: PolicyScopeId,
@@ -924,7 +1085,7 @@ export class ControlPlane {
         scope,
         id: version.id,
         number: version.number,
-        policy: version.policy as JsonObject,
+        policy: this.showPolicy(version.policy as JsonObject),
         createdAt: version.createdAt,
         createdBy: version.createdBy ?? null,
         message: version.message ?? null,
@@ -947,7 +1108,7 @@ export class ControlPlane {
       scope,
       id: version.id,
       number: version.number,
-      policy: version.policy as JsonObject,
+      policy: this.showPolicy(version.policy as JsonObject),
       createdAt: version.createdAt,
       createdBy: version.createdBy ?? null,
       message: version.message ?? null,
@@ -960,10 +1121,13 @@ export class ControlPlane {
     if (ref === "draft") {
       const draft = await this.store.get("policyDraft", scope);
       if (draft === undefined) throw notFound(`a draft of ${scope}`);
-      return (draft.doc as DraftBody).policy;
+      return this.#readPolicy((draft.doc as DraftBody).policy);
     }
     if (ref === "head") return (await this.#headPolicy(scope)).policy;
-    return (await this.getVersion(scope, ref)).policy;
+    // The stored version, read (not shown: this policy is used, not displayed).
+    await this.getVersion(scope, ref);
+    const version = await this.store.getVersion(scope, ref);
+    return this.#readPolicy((version?.policy ?? {}) as JsonObject);
   }
 
   /** The services a change at `scope` reaches. */
@@ -1008,7 +1172,7 @@ export class ControlPlane {
     const layers: { scope: PolicyScopeId; policy: JsonObject }[] = [];
     for (const scope of scopes) {
       if (override.scope === scope && override.policy !== undefined) {
-        layers.push({ scope, policy: override.policy });
+        layers.push({ scope, policy: this.#readPolicy(override.policy) });
         versions.push(`${scope}@draft`);
         continue;
       }
@@ -1135,6 +1299,8 @@ export class ControlPlane {
    *   next pass repairs it.
    * - Bounded: at most `limit` bundles a pass; the rest wait for the next.
    * - Each repair is audited as a system action, `bundle.repair`.
+   * - A bundle whose lists still name an account by its id (compiled
+   *   before the control plane keyed them, PR-U3) is recompiled too.
    * A service whose effective policy does not compile, or that has no
    * bundle yet, is skipped. Answers the bundles compiled.
    */
@@ -1157,7 +1323,17 @@ export class ControlPlane {
       }
       const have = (current.bundle as { policyVersions?: unknown })
         .policyVersions;
-      if (sameVersions(have, wanted)) continue;
+      // A bundle compiled before list entries were keyed (PR-U3) still
+      // names accounts by their ids: recompiled, so it holds only keys.
+      const unkeyed =
+        (this.options.banKeys !== undefined &&
+          holdsAccountIds(
+            (current.bundle as { effective?: unknown }).effective,
+          )) ||
+        othersHoldAccountIds(
+          (current.bundle as { effective?: unknown }).effective,
+        );
+      if (sameVersions(have, wanted) && !unkeyed) continue;
       // A head that moved just now may belong to a publish still compiling.
       const scopes: PolicyScopeId[] = [
         "global",
@@ -1574,6 +1750,8 @@ export class ControlPlane {
       case "serviceIdentity.delete":
         await this.deleteIdentity(payload.id, payload.revision);
         return undefined;
+      case "bans.lift":
+        return await this.liftBans(payload.filter, author);
     }
   }
 
@@ -1781,6 +1959,8 @@ export class ControlPlane {
         ban.liftedAt === null &&
         (ban.expiresAt === null || ban.expiresAt > this.options.now()),
       revision: ban.revision,
+      ...(ban.country === undefined ? {} : { country: ban.country }),
+      ...(ban.asn === undefined ? {} : { asn: ban.asn }),
     };
   }
 
@@ -1788,50 +1968,20 @@ export class ControlPlane {
   async createBan(input: BanCreateInput, operator: Operator): Promise<BanDto> {
     const scope = input.scope ?? "global";
     await this.checkScope(scope);
-    const given = (["ip", "user", "apiKey"] as const).filter(
-      (key) => input[key] !== undefined,
-    );
+    const given = (
+      ["ip", "user", "apiKey", "userHash", "apiKeyHash"] as const
+    ).filter((key) => input[key] !== undefined);
     const only = given[0];
     if (given.length !== 1 || only === undefined) {
       throw new ApiProblem(
         400,
         "invalid_request",
-        "a ban names exactly one of ip, user, apiKey",
+        "a ban names exactly one of ip, user, apiKey, userHash, apiKeyHash",
       );
     }
     const value = input[only]!;
-    let subject: StoredBanSubject;
-    if (only === "ip") {
-      if (parseAddress(value) !== null) subject = { type: "ip", value };
-      else if (parseCidr(value) !== null && !isWholeFamilyRange(value)) {
-        subject = { type: "cidr", value: parseCidr(value)!.text };
-      } else {
-        throw new ApiProblem(
-          400,
-          "invalid_request",
-          `"${value}" is not an address or a CIDR range narrower than a whole family`,
-        );
-      }
-    } else {
-      // Keyed as the engines key it: the id itself is never stored or sent.
-      const keys = this.options.banKeys;
-      if (keys === undefined || !this.options.banKinds[only]) {
-        throw new ApiProblem(
-          400,
-          "invalid_request",
-          only === "apiKey"
-            ? "this control plane takes no API-key bans (bans.apiKeys: false)"
-            : "this control plane takes no user bans (bans.users: false)",
-        );
-      }
-      subject = {
-        type: only,
-        value:
-          only === "apiKey"
-            ? keys.apiKey(boundKey(value))
-            : keys.user(boundKey(value)),
-      };
-    }
+    const subject = banSubjectOf(only, value, this.options);
+    const facts = await subjectFacts(this.store, subject, this.#logger);
     let expiresAt: number | null = null;
     if (input.duration !== null) {
       try {
@@ -1854,6 +2004,7 @@ export class ControlPlane {
       source: "manual",
       expiresAt,
       createdBy: operator.id,
+      ...facts,
     };
     const id = banId(scope, subject);
     const before = await this.store.getBan(id);
@@ -1878,7 +2029,9 @@ export class ControlPlane {
     // What the operator typed is shown in this answer only, never stored.
     return {
       ...this.banDto(ban),
-      ...(only === "ip" ? {} : { entered: { [only]: value } }),
+      ...(only === "user" || only === "apiKey"
+        ? { entered: { [only]: value } }
+        : {}),
     };
   }
 
@@ -1905,17 +2058,16 @@ export class ControlPlane {
     return this.banDto(lifted);
   }
 
-  /** A page of bans, by scope (and what is under it) and state. */
-  async listBans(query: {
-    limit: number;
-    cursor?: string;
-    scope?: PolicyScopeId;
-    active?: boolean;
-  }): Promise<{ items: BanDto[]; next?: string }> {
+  /** A page of bans, by scope (and what is under it), state, kind, source, rule and subject, in an order. */
+  async listBans(
+    query: BanListQuery,
+  ): Promise<{ items: BanDto[]; next?: string }> {
     const scopes =
       query.scope === undefined
         ? undefined
         : await this.auditScopesUnder(query.scope);
+    const values =
+      query.search === undefined ? undefined : banSearchValues(query.search);
     let page;
     try {
       page = await this.store.listBans({
@@ -1923,6 +2075,14 @@ export class ControlPlane {
         ...(query.cursor === undefined ? {} : { cursor: query.cursor }),
         ...(scopes === undefined ? {} : { scopes }),
         ...(query.active === undefined ? {} : { active: query.active }),
+        ...(query.kind === undefined ? {} : { kind: query.kind }),
+        ...(query.source === undefined ? {} : { source: query.source }),
+        ...(query.rule === undefined ? {} : { rule: query.rule }),
+        ...(values === undefined ? {} : { values }),
+        ...(query.sort === undefined ? {} : { sort: query.sort }),
+        ...(query.direction === undefined
+          ? {}
+          : { direction: query.direction }),
       });
     } catch (error) {
       if (error instanceof ConfigError)
@@ -1933,6 +2093,339 @@ export class ControlPlane {
       items: page.items.map((ban) => this.banDto(ban)),
       ...(page.next === undefined ? {} : { next: page.next }),
     };
+  }
+
+  /**
+   * A ban with what explains it: its audit history, the subject's latest
+   * events before it started and its hits since (each under the reader's
+   * analytics permissions), and the subject's bans in the other scopes the
+   * reader may see.
+   */
+  async banDetail(id: string, operator: Operator): Promise<BanDetailDto> {
+    const record = await this.store.getBan(id);
+    if (record === undefined) throw notFound(`ban "${id}"`);
+    const audit = await this.store.listAudit({
+      limit: 50,
+      direction: "desc",
+      target: `ban:${id}`,
+    });
+    const others = await this.store.listBans({
+      limit: 50,
+      values: [record.subject.value],
+    });
+    const otherBans: BanDto[] = [];
+    for (const ban of others.items) {
+      if (ban.id === id || otherBans.length >= 20) continue;
+      if (await this.can(operator, "bans:read", ban.scope))
+        otherBans.push(this.banDto(ban));
+    }
+    const detail: BanDetailDto = {
+      ban: this.banDto(record),
+      history: await this.audit.describe(audit.items),
+      historyTruncated: audit.next !== undefined,
+      otherBans,
+    };
+    const listEvents = this.store.listEvents;
+    const subject = record.subject;
+    const account = subject.type === "user" || subject.type === "apiKey";
+    if (
+      listEvents === undefined ||
+      subject.type === "cidr" ||
+      !(await this.can(operator, "analytics:read", record.scope)) ||
+      (account && !(await this.can(operator, "events:read", record.scope)))
+    ) {
+      return detail;
+    }
+    const under = await this.auditScopesUnder(record.scope);
+    const services = under
+      ?.filter((scope) => scope.startsWith("service:"))
+      .map((scope) => scope.slice("service:".length));
+    const filter = {
+      ...(subject.type === "ip"
+        ? { ip: subject.value }
+        : subject.type === "user"
+          ? { user: subject.value }
+          : { apiKey: subject.value }),
+      ...(services === undefined ? {} : { services }),
+    };
+    const before = await listEvents({
+      ...filter,
+      limit: 20,
+      direction: "desc",
+      to: record.createdAt,
+    });
+    const rights = new Map<string, boolean>();
+    const events = [];
+    for (const event of before.items) {
+      let whole = rights.get(event.service);
+      if (whole === undefined) {
+        whole = await this.can(
+          operator,
+          "events:read",
+          serviceScope(event.service),
+        );
+        rights.set(event.service, whole);
+      }
+      events.push(eventView(event, { detail: whole, live: false }));
+    }
+    // The hits since it started, counted a page at a time to a bound.
+    let hits = 0;
+    let cursor: string | undefined;
+    let capped = false;
+    do {
+      const page = await listEvents({
+        ...filter,
+        limit: 200,
+        from: record.createdAt,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      hits += page.items.length;
+      cursor = page.next;
+      if (hits >= 1_000 && cursor !== undefined) capped = true;
+    } while (cursor !== undefined && !capped);
+    return {
+      ...detail,
+      events,
+      hitsSince: hits,
+      hitsSinceCapped: capped,
+    };
+  }
+
+  /**
+   * Lengthens a ban in force to `duration` from now, or makes it permanent
+   * (`null`); its subject is kept as stored, so a keyed account needs no
+   * raw id. A ban no longer in force, or a shorter end, is a `409`. Audited.
+   */
+  async extendBan(id: string, duration: string | null): Promise<BanDto> {
+    const before = await this.store.getBan(id);
+    if (before === undefined) throw notFound(`ban "${id}"`);
+    const now = this.options.now();
+    if (!banActive(before, now)) {
+      throw new ApiProblem(
+        409,
+        "conflict",
+        `ban "${id}" is not in force: ban the subject again instead`,
+      );
+    }
+    let expiresAt: number | null = null;
+    if (duration !== null) {
+      try {
+        expiresAt = now + toDurationMs(duration, "a ban's duration");
+      } catch (error) {
+        throw new ApiProblem(
+          400,
+          "invalid_request",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
+    if (
+      before.expiresAt === null ||
+      (expiresAt !== null && expiresAt <= before.expiresAt)
+    ) {
+      throw new ApiProblem(
+        409,
+        "conflict",
+        before.expiresAt === null
+          ? `ban "${id}" is already permanent`
+          : `an extension only lengthens a ban: "${id}" already ends later`,
+      );
+    }
+    const record: BanInputRecord = {
+      scope: before.scope,
+      subject: before.subject,
+      action: before.action,
+      reason: before.reason,
+      source: before.source,
+      expiresAt,
+      ...(before.createdBy === undefined
+        ? {}
+        : { createdBy: before.createdBy }),
+      ...(before.rule === undefined ? {} : { rule: before.rule }),
+      ...(before.code === undefined ? {} : { code: before.code }),
+      ...(before.service === undefined ? {} : { service: before.service }),
+    };
+    const ban = await this.#audited(
+      {
+        action: "ban.extend",
+        scope: before.scope,
+        target: { kind: "ban", id, revision: before.revision + 1 },
+        before: this.banDto(before),
+        after: { expiresAt },
+      },
+      async () => await this.store.upsertBan(record),
+      (written) => ({ revision: written.revision }),
+    );
+    this.#emit("ban.changed", before.scope, { id, op: "extend" });
+    this.#publishBan(ban);
+    return this.banDto(ban);
+  }
+
+  /**
+   * Bans the range around a banned address on its scope: its /24 (IPv4) or
+   * /64 (IPv6), with the same action and end, the reason naming where it
+   * came from. Only an address widens (`409` for a range or an account).
+   * Audited.
+   */
+  async widenBan(id: string, operator: Operator): Promise<BanDto> {
+    const from = await this.store.getBan(id);
+    if (from === undefined) throw notFound(`ban "${id}"`);
+    const address =
+      from.subject.type === "ip" ? parseAddress(from.subject.value) : null;
+    if (address === null) {
+      throw new ApiProblem(
+        409,
+        "conflict",
+        `ban "${id}" is not on an address: only an address widens`,
+      );
+    }
+    const range = parseCidr(
+      `${address.text}/${address.family === 4 ? 24 : 64}`,
+    )!;
+    const subject: StoredBanSubject = { type: "cidr", value: range.text };
+    const scope = from.scope;
+    const now = this.options.now();
+    const record: BanInputRecord = {
+      scope,
+      subject,
+      action: from.action,
+      reason: `widened from ${address.text}: ${from.reason}`.slice(0, 500),
+      source: "manual",
+      expiresAt: banActive(from, now)
+        ? from.expiresAt
+        : now + toDurationMs("24h", "a ban's duration"),
+      createdBy: operator.id,
+      ...(from.country === undefined ? {} : { country: from.country }),
+      ...(from.asn === undefined ? {} : { asn: from.asn }),
+    };
+    const newId = banId(scope, subject);
+    const existing = await this.store.getBan(newId);
+    const ban = await this.#audited(
+      {
+        action: "ban.widen",
+        scope,
+        target: {
+          kind: "ban",
+          id: newId,
+          revision: (existing?.revision ?? 0) + 1,
+        },
+        ...(existing === undefined ? {} : { before: this.banDto(existing) }),
+        after: {
+          subject,
+          action: record.action,
+          reason: record.reason,
+          expiresAt: record.expiresAt,
+          widenedFrom: id,
+        },
+      },
+      async () => await this.store.upsertBan(record),
+      (written) => ({ revision: written.revision, count: written.count }),
+    );
+    this.#emit("ban.changed", scope, { id: newId, op: "ban" });
+    this.#publishBan(ban);
+    return this.banDto(ban);
+  }
+
+  /**
+   * The active bans a bulk lift's filter matches (at most
+   * {@link BULK_LIFT_LIMIT}; a `400` past it, to narrow the filter).
+   */
+  async #bulkLiftMatches(filter: BanLiftFilter): Promise<BanRecord[]> {
+    const scopes =
+      filter.scope === undefined
+        ? undefined
+        : await this.auditScopesUnder(filter.scope);
+    const values =
+      filter.search === undefined ? undefined : banSearchValues(filter.search);
+    const matched: BanRecord[] = [];
+    let cursor: string | undefined;
+    walk: do {
+      let page;
+      try {
+        page = await this.store.listBans({
+          limit: 200,
+          active: true,
+          sort: "created",
+          direction: "desc",
+          ...(cursor === undefined ? {} : { cursor }),
+          ...(scopes === undefined ? {} : { scopes }),
+          ...(filter.kind === undefined ? {} : { kind: filter.kind }),
+          ...(filter.source === undefined ? {} : { source: filter.source }),
+          ...(filter.rule === undefined ? {} : { rule: filter.rule }),
+          ...(values === undefined ? {} : { values }),
+        });
+      } catch (error) {
+        if (error instanceof ConfigError)
+          throw new ApiProblem(400, "invalid_request", error.message);
+        throw error;
+      }
+      for (const ban of page.items) {
+        // Newest first: past the window's start, nothing later matches.
+        if (
+          filter.createdFrom !== undefined &&
+          ban.createdAt < filter.createdFrom
+        )
+          break walk;
+        if (filter.createdTo !== undefined && ban.createdAt >= filter.createdTo)
+          continue;
+        matched.push(ban);
+        if (matched.length > BULK_LIFT_LIMIT) {
+          throw new ApiProblem(
+            400,
+            "invalid_request",
+            `the filter matches more than ${BULK_LIFT_LIMIT} bans; narrow it`,
+          );
+        }
+      }
+      cursor = page.next;
+    } while (cursor !== undefined);
+    return matched;
+  }
+
+  /**
+   * Lifts every active ban a filter matches, or with `dryRun` counts them.
+   * One audit entry holds the filter, the count and the outcome; each ban
+   * lifted is pushed to the agents under it.
+   */
+  async liftBans(
+    input: BanLiftInput,
+    operator: Operator,
+  ): Promise<BanLiftResultDto> {
+    const { dryRun, ...filter } = input;
+    const matched = await this.#bulkLiftMatches(filter);
+    if (dryRun === true) {
+      return { dryRun: true, matched: matched.length, lifted: 0 };
+    }
+    const scope = filter.scope ?? "global";
+    const lifted = await this.#audited(
+      {
+        action: "bans.lift",
+        scope,
+        target: {
+          kind: "bans",
+          id: createHash("sha256")
+            .update(JSON.stringify(filter))
+            .digest("hex")
+            .slice(0, 16),
+        },
+        before: { filter, matched: matched.length },
+      },
+      async () => {
+        let count = 0;
+        const at = this.options.now();
+        for (const ban of matched) {
+          if (await this.store.liftBan(ban.id, operator.id, at)) {
+            count++;
+            this.#emit("ban.changed", ban.scope, { id: ban.id, op: "lift" });
+            const after = await this.store.getBan(ban.id);
+            if (after !== undefined) this.#publishBan(after);
+          }
+        }
+        return count;
+      },
+      (count) => ({ lifted: count }),
+    );
+    return { dryRun: false, matched: matched.length, lifted };
   }
 
   // ── The audit log (PR-CP3) ───────────────────────────────────────────────
@@ -1950,9 +2443,24 @@ export class ControlPlane {
       throw error;
     }
     return {
-      items: await this.audit.describe(page.items),
+      items: this.#shownAudit(await this.audit.describe(page.items)),
       ...(page.next === undefined ? {} : { next: page.next }),
     };
+  }
+
+  /**
+   * Audit entries as they are shown: an entry written before list entries
+   * were keyed (PR-U3) has the account ids in its policy or diff keyed.
+   * The stored entry, its hash and `/audit/export` keep what was written.
+   */
+  #shownAudit(entries: AuditEntryDto[]): AuditEntryDto[] {
+    return entries.map((dto) => {
+      const entry = showAuditBody(
+        dto.entry as Record<string, unknown>,
+        this.options.banKeys,
+      );
+      return entry === dto.entry ? dto : { ...dto, entry };
+    });
   }
 
   /**
@@ -2000,7 +2508,7 @@ export class ControlPlane {
     const page = await this.store.listAudit({ limit: 1, fromN: n, toN: n });
     const record = page.items[0];
     if (record === undefined) throw notFound(`audit entry ${n}`);
-    return (await this.audit.describe([record]))[0];
+    return this.#shownAudit(await this.audit.describe([record]))[0];
   }
 
   // ── Audited changes (PR-CP3) ─────────────────────────────────────────────
@@ -2109,19 +2617,25 @@ export class ControlPlane {
     );
   }
 
-  /** Saves a scope's draft at `revision`. Audited, as a diff from the previous draft. */
+  /**
+   * Saves a scope's draft at `revision`. Audited, as a diff from the
+   * previous draft. Its account ids are keyed before anything is written
+   * (the audit intent included); the answer alone shows them, as `entered`.
+   */
   async putDraft(
     scope: PolicyScopeId,
     policy: JsonObject,
     revision: number | null,
     operator: Operator,
   ): Promise<PolicyDraftDto> {
-    const previous =
+    const keyed = this.#writePolicy(policy);
+    const previous = this.#readPolicy(
       (
         (await this.#before("policyDraft", scope)) as
           { policy?: JsonObject } | undefined
-      )?.policy ?? {};
-    return await this.#audited(
+      )?.policy ?? {},
+    );
+    const draft = await this.#audited(
       {
         action: "policy.draft",
         scope,
@@ -2130,17 +2644,26 @@ export class ControlPlane {
           id: scope,
           revision: (revision ?? 0) + 1,
         },
-        after: { diff: diffPolicies(previous, policy) },
+        after: { diff: diffPolicies(previous, keyed.policy) },
       },
-      async () => await this.#putDraftNow(scope, policy, revision, operator),
-      (draft) => ({ revision: draft.revision }),
+      async () =>
+        await this.#putDraftNow(scope, keyed.policy, revision, operator),
+      (saved) => ({ revision: saved.revision }),
     );
+    // What the operator typed is shown in this answer only, never stored.
+    return keyed.entered.length === 0
+      ? draft
+      : { ...draft, entered: keyed.entered };
   }
 
-  /** Publishes `policy` at `scope` (see the core's description). Audited, as a diff from the head. */
+  /**
+   * Publishes `policy` at `scope` (see the core's description). Audited, as
+   * a diff from the head. Its account ids are keyed first, as a draft's are
+   * (nothing typed is shown back).
+   */
   async publish(
     scope: PolicyScopeId,
-    policy: JsonObject,
+    given: JsonObject,
     request: PublishRequest,
     operator: Operator,
     context: {
@@ -2148,6 +2671,7 @@ export class ControlPlane {
       readonly forceApproval?: boolean;
     } = {},
   ): Promise<PublishOutcome> {
+    const policy = this.#writePolicy(given).policy;
     const versionId = newId("pv");
     const head =
       parseScope(scope) === undefined

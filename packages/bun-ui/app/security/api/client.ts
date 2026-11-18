@@ -128,13 +128,22 @@ export function createSecurityClient(
   });
 }
 
+/** The data of a call's successful answers (a union when it has several, as `200 | 202`). */
+export type DataOf<R> = R extends { ok: true; data: infer D } ? D : never;
+
 /** A call's data, its failure thrown as an `ApiError` (the middleware already threw for a problem). */
-export async function dataOf<T>(
-  call: Promise<
-    { ok: true; data: T } | { ok: false; status: number; response: Response }
-  >,
-): Promise<T> {
+export async function dataOf<R extends { ok: boolean }>(
+  call: Promise<R>,
+): Promise<DataOf<R>> {
   const result = await call;
-  if (result.ok) return result.data;
-  throw await errorFromResponse(result.response);
+  if (result.ok) return (result as unknown as { data: DataOf<R> }).data;
+  const response = (result as unknown as { response?: Response }).response;
+  if (response === undefined) {
+    throw new ApiError({
+      status: 0,
+      code: "NETWORK_ERROR",
+      title: "The security API could not be reached",
+    });
+  }
+  throw await errorFromResponse(response);
 }

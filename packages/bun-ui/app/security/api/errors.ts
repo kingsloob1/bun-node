@@ -20,7 +20,7 @@ export class ApiError extends Error implements ApiProblemLike {
   readonly detail: string | undefined;
   /** Validation issues. */
   readonly issues: readonly ProblemIssueLike[];
-  /** Safe context (`stepUpUrl` for a step-up). */
+  /** Safe context: `stepUpUrl` for a step-up, `dangerous` (what made a change dangerous) for a `428`, `current` for a `409`. */
   readonly context: Readonly<Record<string, unknown>>;
 
   /**
@@ -91,7 +91,17 @@ export async function errorFromResponse(response: Response): Promise<ApiError> {
         : response.statusText || `HTTP ${response.status}`,
     ...(typeof body.detail === "string" ? { detail: body.detail } : {}),
     issues,
-    context:
-      typeof body.stepUpUrl === "string" ? { stepUpUrl: body.stepUpUrl } : {},
+    context: {
+      ...(typeof body.stepUpUrl === "string"
+        ? { stepUpUrl: body.stepUpUrl }
+        : {}),
+      // What made a change dangerous (`428 confirmation_required`).
+      ...(Array.isArray(body.dangerous) &&
+      body.dangerous.every((item) => typeof item === "string")
+        ? { dangerous: body.dangerous as string[] }
+        : {}),
+      // The current state of what changed under the request (a `409`).
+      ...(body.current === undefined ? {} : { current: body.current }),
+    },
   });
 }

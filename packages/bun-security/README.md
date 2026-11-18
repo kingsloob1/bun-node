@@ -125,6 +125,13 @@ ban, and only one with no ban is challenged. Entries take an `id`, `reason`, `cr
 `code`, `expiresAt` (an ISO 8601 timestamp with its time zone), `paths`
 (route prefixes), `scope`, `override`, `locked` and `mode`.
 
+An account can also be named by its key rather than its id: `userHash` or
+`apiKeyHash`, the id's HMAC under the engine's `secret` (32 lower-case hex
+characters, the same key as `Decision.subject.user` or `.apiKey`). It matches
+exactly as the raw entry it stands for, under that secret only, and its
+default id is `user:<key>` or `apiKey:<key>`. The control plane stores every
+account entry this way (below), so a policy it serves never holds an id.
+
 A `/0` range (`0.0.0.0/0`, `::/0`, or `::ffff:0:0/96`, which maps to the
 IPv4 `/0`) covers every address of its family, so it is refused, saying so:
 `lists[0].ip: a /0 range covers every address of its family; use a request
@@ -1496,7 +1503,17 @@ await agent.ready; // the last known good is in, before the control plane is ask
   is stored and sent as its HMAC under `bans.secret` (the services'
   `secret`), never the id; what the operator typed comes back in the create
   answer only (`entered`), and the store refuses a raw one. `bans.secret` is
-  required unless `bans: { apiKeys: false, users: false }`. Bans reach every
+  required unless `bans: { apiKeys: false, users: false }`.
+  **Account list entries** are keyed the same way: a draft's (or a
+  publish's) `lists[].user` and `lists[].apiKey` are stored as `userHash`
+  and `apiKeyHash`, keyed with `bans.secret` before anything is written (the
+  audit entry included); `PUT /policies/:scope/draft`'s answer alone shows
+  what was typed (`entered: [{ index, user | apiKey }]`). Without the secret,
+  or with that kind off (`bans.users: false`, `bans.apiKeys: false`), such an
+  entry is a `400` (a key given as `userHash` or `apiKeyHash` is taken as it
+  is). A policy, draft, version or audit diff stored with raw ids before this
+  is keyed when read, and the bundle repair pass recompiles a bundle that
+  still holds one. Bans reach every
   agent whose service
   they cover (`global`, its groups, itself): changes every 5 s and on a
   nudge, the whole set every 60 s. Each batch is **signed with the bundle

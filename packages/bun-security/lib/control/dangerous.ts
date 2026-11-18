@@ -33,9 +33,17 @@ const COLLECTIONS: readonly (readonly [
 /** An item's key in its collection. */
 function keyOf(item: JsonObject, at: number): string {
   if (typeof item.id === "string") return item.id;
-  for (const subject of ["ip", "user", "apiKey", "country", "asn"]) {
-    if (item[subject] !== undefined)
-      return `${subject}:${String(item[subject])}`;
+  // An account's key reads as its id would once keyed (`user:<key>`).
+  for (const [field, name] of [
+    ["ip", "ip"],
+    ["user", "user"],
+    ["userHash", "user"],
+    ["apiKey", "apiKey"],
+    ["apiKeyHash", "apiKey"],
+    ["country", "country"],
+    ["asn", "asn"],
+  ] as const) {
+    if (item[field] !== undefined) return `${name}:${String(item[field])}`;
   }
   return `#${at}`;
 }

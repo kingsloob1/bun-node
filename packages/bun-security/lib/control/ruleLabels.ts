@@ -97,10 +97,19 @@ export function ruleLabels(
 ): Map<string, RuleLabelDto> {
   const out = new Map<string, RuleLabelDto>();
   const add = (dto: RuleLabelDto) => out.set(dto.rule, dto);
-  const lists = (policy.lists ?? []) as { user?: unknown; apiKey?: unknown }[];
+  const lists = (policy.lists ?? []) as {
+    user?: unknown;
+    userHash?: unknown;
+    apiKey?: unknown;
+    apiKeyHash?: unknown;
+  }[];
   if (lists.length > 0) {
     const accounts = lists.some(
-      (entry) => entry.user !== undefined || entry.apiKey !== undefined,
+      (entry) =>
+        entry.user !== undefined ||
+        entry.userHash !== undefined ||
+        entry.apiKey !== undefined ||
+        entry.apiKeyHash !== undefined,
     );
     add(
       label(

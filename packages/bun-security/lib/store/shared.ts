@@ -21,7 +21,12 @@ import {
   decodePageCursor,
   encodePageCursor,
 } from "@kingsleyweb/bun-sql/cursor";
-import { DOC_KINDS, MAX_AUDIT_SCOPES, MAX_PAGE_LIMIT } from "./types";
+import {
+  DOC_KINDS,
+  MAX_AUDIT_SCOPES,
+  MAX_BAN_SEARCH_VALUES,
+  MAX_PAGE_LIMIT,
+} from "./types";
 
 /** The longest id a document or version may have. */
 export const MAX_ID_LENGTH = 200;
@@ -444,7 +449,26 @@ export interface ResolvedAuditQuery {
     readonly until: number;
     readonly fromN: number;
     readonly toN: number;
+    /** The target, `<kind>:<id>`, or `""` for any. */
+    readonly target: string;
   };
+}
+
+/**
+ * An audit entry's target as a query names it, `<kind>:<id>`, from the
+ * entry's `target` (the plane's `{ kind, id }`); `""` for an entry without
+ * one.
+ */
+export function auditTargetOf(entry: unknown): string {
+  const target =
+    typeof entry === "object" && entry !== null
+      ? (entry as { target?: unknown }).target
+      : undefined;
+  if (typeof target !== "object" || target === null) return "";
+  const { kind, id } = target as { kind?: unknown; id?: unknown };
+  return typeof kind === "string" && typeof id === "string"
+    ? `${kind}:${id}`.slice(0, 400)
+    : "";
 }
 
 /** Checks an audit query. */
@@ -478,6 +502,16 @@ export function resolveAuditQuery(query: AuditQuery): ResolvedAuditQuery {
     }
     scopes = [...new Set(query.scopes)].sort();
   }
+  if (
+    query.target !== undefined &&
+    (typeof query.target !== "string" ||
+      query.target === "" ||
+      query.target.length > 400)
+  ) {
+    throw new ConfigError(
+      "security store: an audit query's target must be 1 to 400 characters",
+    );
+  }
   return {
     limit: base.limit,
     cursor: base.cursor,
@@ -491,6 +525,7 @@ export function resolveAuditQuery(query: AuditQuery): ResolvedAuditQuery {
       until: query.until ?? -1,
       fromN: query.fromN ?? -1,
       toN: query.toN ?? -1,
+      target: query.target ?? "",
     },
   };
 }
@@ -512,6 +547,7 @@ function auditWalk(query: ResolvedAuditQuery): string[] {
     String(f.until),
     String(f.fromN),
     String(f.toN),
+    f.target,
   ];
 }
 
@@ -586,7 +622,13 @@ export function checkBanInput(ban: BanInputRecord): BanInputRecord {
     text(ban.createdBy, 200, true) &&
     text(ban.rule, 200, true) &&
     text(ban.code, 200, true) &&
-    text(ban.service, 200, true);
+    text(ban.service, 200, true) &&
+    (ban.country === undefined ||
+      (typeof ban.country === "string" && /^[A-Z]{2}$/.test(ban.country))) &&
+    (ban.asn === undefined ||
+      (Number.isSafeInteger(ban.asn) &&
+        ban.asn >= 0 &&
+        ban.asn <= 4_294_967_295));
   if (!ok) throw new ConfigError("security store: a malformed ban", { ban });
   return Object.freeze({
     scope: ban.scope,
@@ -602,6 +644,8 @@ export function checkBanInput(ban: BanInputRecord): BanInputRecord {
     ...(ban.rule === undefined ? {} : { rule: ban.rule }),
     ...(ban.code === undefined ? {} : { code: ban.code }),
     ...(ban.service === undefined ? {} : { service: ban.service }),
+    ...(ban.country === undefined ? {} : { country: ban.country }),
+    ...(ban.asn === undefined ? {} : { asn: ban.asn }),
   });
 }
 
@@ -647,9 +691,17 @@ export function mergeStoredBan(
   now: number,
 ): BanRecord {
   const id = banId(input.scope, input.subject);
+  // The subject's country and ASN: the newest known.
+  const country = input.country ?? existing?.country;
+  const asn = input.asn ?? existing?.asn;
+  const facts = {
+    ...(country === undefined ? {} : { country }),
+    ...(asn === undefined ? {} : { asn }),
+  };
   if (existing === undefined || !banActive(existing, now)) {
     return Object.freeze({
       ...input,
+      ...facts,
       id,
       createdAt: now,
       updatedAt: now,
@@ -683,6 +735,7 @@ export function mergeStoredBan(
     ...(describing.service === undefined
       ? {}
       : { service: describing.service }),
+    ...facts,
     id,
     createdAt: existing.createdAt,
     updatedAt: now,
@@ -704,6 +757,16 @@ export interface ResolvedBanQuery {
   readonly scopes: readonly string[] | null;
   /** Active only, inactive only, or `null` for both. */
   readonly active: boolean | null;
+  /** The subject kind, or `null` for any. */
+  readonly kind: BanQuery["kind"] | null;
+  /** The source, or `null` for any. */
+  readonly source: BanQuery["source"] | null;
+  /** The rule, or `null` for any. */
+  readonly rule: string | null;
+  /** The subject values, sorted and unique; `null` for any. */
+  readonly values: readonly string[] | null;
+  /** The order. */
+  readonly sort: "id" | "created" | "expires";
 }
 
 /** Checks a ban query. */
@@ -732,40 +795,178 @@ export function resolveBanQuery(query: BanQuery): ResolvedBanQuery {
       "security store: a ban query's active must be a boolean",
     );
   }
+  if (
+    query.kind !== undefined &&
+    !["ip", "cidr", "user", "apiKey"].includes(query.kind)
+  ) {
+    throw new ConfigError(
+      "security store: a ban query's kind must be ip, cidr, user or apiKey",
+    );
+  }
+  if (
+    query.source !== undefined &&
+    query.source !== "auto" &&
+    query.source !== "manual"
+  ) {
+    throw new ConfigError(
+      "security store: a ban query's source must be auto or manual",
+    );
+  }
+  if (
+    query.rule !== undefined &&
+    (typeof query.rule !== "string" ||
+      query.rule === "" ||
+      query.rule.length > 200)
+  ) {
+    throw new ConfigError(
+      "security store: a ban query's rule must be 1 to 200 characters",
+    );
+  }
+  let values: string[] | null = null;
+  if (query.values !== undefined) {
+    if (
+      !Array.isArray(query.values) ||
+      query.values.length === 0 ||
+      query.values.length > MAX_BAN_SEARCH_VALUES ||
+      query.values.some(
+        (value) =>
+          typeof value !== "string" || value === "" || value.length > 512,
+      )
+    ) {
+      throw new ConfigError(
+        `security store: a ban query's values must be 1 to ${MAX_BAN_SEARCH_VALUES} subject values`,
+      );
+    }
+    values = [...new Set(query.values)].sort();
+  }
+  const sort = query.sort ?? "id";
+  if (sort !== "id" && sort !== "created" && sort !== "expires") {
+    throw new ConfigError(
+      "security store: a ban query's sort must be id, created or expires",
+    );
+  }
   return {
     limit: base.limit,
     cursor: base.cursor,
     direction: base.direction,
     scopes,
     active: query.active ?? null,
+    kind: query.kind ?? null,
+    source: query.source ?? null,
+    rule: query.rule ?? null,
+    values,
+    sort,
   };
 }
 
-/** The walk a ban cursor is bound to. */
+/** A permanent ban's expiry as an `expires` sort reads it: after every timed one. */
+export const PERMANENT_SORT_KEY = Number.MAX_SAFE_INTEGER;
+
+/** What `ban` sorts by under `sort`, besides its id; `undefined` under `id`. */
+export function banSortKey(
+  ban: BanRecord,
+  sort: ResolvedBanQuery["sort"],
+): number | undefined {
+  if (sort === "created") return ban.createdAt;
+  if (sort === "expires") return ban.expiresAt ?? PERMANENT_SORT_KEY;
+  return undefined;
+}
+
+/** Whether `ban` passes `query`'s filters at `now` (not its cursor). */
+export function banMatches(
+  ban: BanRecord,
+  query: ResolvedBanQuery,
+  now: number,
+): boolean {
+  return (
+    (query.scopes === null || query.scopes.includes(ban.scope)) &&
+    (query.active === null || banActive(ban, now) === query.active) &&
+    (query.kind === null || ban.subject.type === query.kind) &&
+    (query.source === null || ban.source === query.source) &&
+    (query.rule === null || ban.rule === query.rule) &&
+    (query.values === null || query.values.includes(ban.subject.value))
+  );
+}
+
+/** Orders bans as `query` walks them (its sort key, then its id). */
+export function compareBans(
+  query: ResolvedBanQuery,
+): (a: BanRecord, b: BanRecord) => number {
+  const sign = query.direction === "desc" ? -1 : 1;
+  return (a, b) => {
+    const ka = banSortKey(a, query.sort) ?? 0;
+    const kb = banSortKey(b, query.sort) ?? 0;
+    if (ka !== kb) return (ka < kb ? -1 : 1) * sign;
+    return (a.id < b.id ? -1 : a.id > b.id ? 1 : 0) * sign;
+  };
+}
+
+/** The walk a ban cursor is bound to: its order and every filter. */
 function banWalk(query: ResolvedBanQuery): string[] {
+  const digest = (parts: readonly string[] | null) =>
+    parts === null
+      ? ""
+      : new Bun.CryptoHasher("sha256").update(parts.join("\n")).digest("hex");
   return [
     query.direction,
     String(query.active),
-    query.scopes === null
-      ? ""
-      : new Bun.CryptoHasher("sha256")
-          .update(query.scopes.join("\n"))
-          .digest("hex"),
+    digest(query.scopes),
+    query.sort,
+    query.kind ?? "",
+    query.source ?? "",
+    query.rule ?? "",
+    digest(query.values),
   ];
 }
 
-/** The cursor after ban `id`. */
-export function banCursor(query: ResolvedBanQuery, id: string): string {
-  return encodePageCursor("sb1.", "bans", banWalk(query), [id]);
+/** The cursor after `ban` in `query`'s walk. */
+export function banCursor(query: ResolvedBanQuery, ban: BanRecord): string {
+  const key = banSortKey(ban, query.sort);
+  return encodePageCursor(
+    "sb2.",
+    "bans",
+    banWalk(query),
+    key === undefined ? [ban.id] : [key, ban.id],
+  );
 }
 
-/** The ban id a cursor names, or a `ConfigError`. */
-export function banPosition(query: ResolvedBanQuery): string | undefined {
+/** Where a ban cursor stands: the sort key (absent under `id`) and the id; a `ConfigError` for a cursor of another walk. */
+export function banPosition(
+  query: ResolvedBanQuery,
+): { readonly key?: number; readonly id: string } | undefined {
   if (query.cursor === undefined) return undefined;
-  const [id] = decodePageCursor(query.cursor, "sb1.", "bans", banWalk(query), [
-    "string",
-  ]);
-  return id as string;
+  if (query.sort === "id") {
+    const [id] = decodePageCursor(
+      query.cursor,
+      "sb2.",
+      "bans",
+      banWalk(query),
+      ["string"],
+    );
+    return { id: id as string };
+  }
+  const [key, id] = decodePageCursor(
+    query.cursor,
+    "sb2.",
+    "bans",
+    banWalk(query),
+    ["number", "string"],
+  );
+  return { key: key as number, id: id as string };
+}
+
+/** Whether `ban` comes after `position` in `query`'s walk. */
+export function banAfter(
+  ban: BanRecord,
+  query: ResolvedBanQuery,
+  position: { readonly key?: number; readonly id: string },
+): boolean {
+  const desc = query.direction === "desc";
+  const key = banSortKey(ban, query.sort);
+  if (key !== undefined && position.key !== undefined && key !== position.key) {
+    return desc ? key < position.key : key > position.key;
+  }
+  return desc ? ban.id < position.id : ban.id > position.id;
 }
 
 /** The cursor after checkpoint `n`. */

@@ -286,6 +286,8 @@ export interface AuditQuery {
   readonly fromN?: number;
   /** Only entries numbered at most this. */
   readonly toN?: number;
+  /** Only entries on this target, `<kind>:<id>` (`ban:ban_…`), as the entry's `target` names it. */
+  readonly target?: string;
 }
 
 /** What a ban refuses, as the control plane keeps it: the subject an EP's `ban()` takes. */
@@ -318,6 +320,10 @@ export interface BanInputRecord {
   readonly code?: string;
   /** The service that reported an automatic ban. */
   readonly service?: string;
+  /** The subject's country when the ban was written (ISO 3166-1 alpha-2, from its latest event); absent when none was known. */
+  readonly country?: string;
+  /** The subject's autonomous system number when the ban was written (from its latest event); absent when none was known. */
+  readonly asn?: number;
 }
 
 /** A stored ban. */
@@ -350,7 +356,29 @@ export interface BanQuery {
   readonly scopes?: readonly string[];
   /** `true`: only bans in force now (not lifted, not expired); `false`: only the others (history). */
   readonly active?: boolean;
+  /** Only bans on this kind of subject. */
+  readonly kind?: StoredBanSubject["type"];
+  /** Only bans of this source. */
+  readonly source?: BanInputRecord["source"];
+  /** Only bans a rule with this id wrote. */
+  readonly rule?: string;
+  /**
+   * Only bans whose subject value is one of these (1 to
+   * {@link MAX_BAN_SEARCH_VALUES}): an address, a range in its canonical
+   * text, or an account's key. The control plane passes an address together
+   * with every range that contains it, so a search finds both.
+   */
+  readonly values?: readonly string[];
+  /**
+   * The order: `id` (the default), `created` (when it last started) or
+   * `expires` (when it ends; a permanent ban after every timed one). The id
+   * breaks ties, so a page is stable while bans arrive.
+   */
+  readonly sort?: "id" | "created" | "expires";
 }
+
+/** The most subject values a ban query's `values` names (an IPv6 address and its 128 ranges, with room). */
+export const MAX_BAN_SEARCH_VALUES = 200;
 
 /** A short-lived counter's value. */
 export interface CounterValue {
@@ -462,9 +490,9 @@ export type RetainedTable = "events" | "minute" | "hour" | "day" | "batches";
 export interface SecurityEventSubjects {
   /** The address key: an IPv4 address, or an IPv6 `/64`. */
   readonly ip?: string;
-  /** The user id the app's `identify()` answered. */
+  /** The user id the app's `identify()` answered, as its key (its HMAC under the fleet's secret; never the id). */
   readonly user?: string;
-  /** The API key's id (never the key). */
+  /** The API key's id as its key (its HMAC under the fleet's secret; never the id, nor the key). */
   readonly apiKey?: string;
   /** The attempted login identifier, as its HMAC. */
   readonly username?: string;

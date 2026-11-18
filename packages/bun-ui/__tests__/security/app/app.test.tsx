@@ -84,13 +84,22 @@ describe("each Overview card reads on its own", () => {
 describe("the nav", () => {
   it("shows only the built sections, each keeping the scope", async () => {
     renderApp({ path: "/?scope=group:payments" });
-    expect(await navLabels()).toEqual(["Overview", "API reference"]);
+    expect(await navLabels()).toEqual([
+      "Overview",
+      "Lists",
+      "Bans",
+      "Events",
+      "API reference",
+    ]);
     const nav = page().getByTestId("nav");
     const hrefs = within(nav)
       .getAllByRole("link")
       .map((link) => link.getAttribute("href"));
     expect(hrefs).toEqual([
       "/security?scope=group%3Apayments",
+      "/security/lists?scope=group%3Apayments",
+      "/security/bans?scope=group%3Apayments",
+      "/security/events?scope=group%3Apayments",
       "/security/api?scope=group%3Apayments",
     ]);
   });

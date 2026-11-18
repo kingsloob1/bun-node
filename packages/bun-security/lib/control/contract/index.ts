@@ -46,6 +46,7 @@ export type {
   BanDto,
   CompiledBundleDto,
   EffectivePolicyDto,
+  EnteredListEntryDto,
   GroupDto,
   GroupInput,
   OperatorDto,

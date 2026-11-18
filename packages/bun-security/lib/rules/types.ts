@@ -115,7 +115,11 @@ export type RuleMatch =
   | { readonly user: StringMatcher }
   | { readonly session: StringMatcher }
   | { readonly tenant: StringMatcher }
-  | { readonly apiKey: StringMatcher };
+  | { readonly apiKey: StringMatcher }
+  /** A user's key (its HMAC under the fleet's secret), matched whole: `equals` or `in`. */
+  | { readonly userHash: StringMatcher }
+  /** An API key's key (its HMAC under the fleet's secret), matched whole: `equals` or `in`. */
+  | { readonly apiKeyHash: StringMatcher };
 
 /** A rule's condition: a test, or `all`, `any` and `not` over conditions. */
 export type RuleCondition =

@@ -70,15 +70,19 @@ import {
 } from "./analytics";
 import {
   auditCursor,
+  auditTargetOf,
   auditPosition,
   bundleEtag,
   checkAuditInput,
   checkCheckpoint,
   banActive,
+  banAfter,
   banCursor,
   banId,
+  banMatches,
   banPosition,
   checkBanInput,
+  compareBans,
   checkCounter,
   UNFED_KINDS,
   checkLift,
@@ -508,7 +512,8 @@ export function memoryStore(
           (f.since < 0 || entry.at >= f.since) &&
           (f.until < 0 || entry.at < f.until) &&
           (f.fromN < 0 || entry.n >= f.fromN) &&
-          (f.toN < 0 || entry.n <= f.toN),
+          (f.toN < 0 || entry.n <= f.toN) &&
+          (f.target === "" || auditTargetOf(entry.entry) === f.target),
       );
       if (desc) matching.reverse();
       const rest =
@@ -614,23 +619,19 @@ export function memoryStore(
       const resolved = resolveBanQuery(query);
       const after = banPosition(resolved);
       const at = now();
-      const desc = resolved.direction === "desc";
       const matching = [...bans.values()]
         .filter(
           (ban) =>
-            (resolved.scopes === null || resolved.scopes.includes(ban.scope)) &&
-            (resolved.active === null ||
-              banActive(ban, at) === resolved.active) &&
-            (after === undefined || (desc ? ban.id < after : ban.id > after)),
+            banMatches(ban, resolved, at) &&
+            (after === undefined || banAfter(ban, resolved, after)),
         )
-        .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-      if (desc) matching.reverse();
+        .sort(compareBans(resolved));
       const items = matching.slice(0, resolved.limit).map((ban) => copy(ban));
       const last = items.at(-1);
       return Object.freeze({
         items,
         ...(matching.length > resolved.limit && last !== undefined
-          ? { next: banCursor(resolved, last.id) }
+          ? { next: banCursor(resolved, last) }
           : {}),
       });
     },

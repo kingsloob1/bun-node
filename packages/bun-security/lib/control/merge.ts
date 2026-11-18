@@ -72,14 +72,29 @@ function idOf(item: JsonObject): string | undefined {
   return typeof item.id === "string" ? item.id : undefined;
 }
 
+/**
+ * A list entry's subject fields and the name each is keyed under: an
+ * account's key reads as its id would once keyed (`user:<key>`), as its
+ * default id does.
+ */
+const LIST_SUBJECTS: readonly (readonly [field: string, name: string])[] = [
+  ["ip", "ip"],
+  ["user", "user"],
+  ["userHash", "user"],
+  ["apiKey", "apiKey"],
+  ["apiKeyHash", "apiKey"],
+  ["country", "country"],
+  ["asn", "asn"],
+];
+
 /** A list entry's key when it has no id: its subject, scope and paths. */
 function listKey(item: JsonObject): string {
-  for (const subject of ["ip", "user", "apiKey", "country", "asn"]) {
-    if (item[subject] !== undefined) {
+  for (const [field, name] of LIST_SUBJECTS) {
+    if (item[field] !== undefined) {
       const paths = Array.isArray(item.paths)
         ? `|${(item.paths as unknown[]).join(",")}`
         : "";
-      return `${subject}:${String(item[subject])}${paths}`;
+      return `${name}:${String(item[field])}${paths}`;
     }
   }
   return JSON.stringify(item);
