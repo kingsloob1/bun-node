@@ -4,7 +4,7 @@
  * `manifest` it takes. Do not edit; regenerate it, and run the same command
  * with `--check` in CI.
  *
- * typesHash: 8d427934eea5ffb3
+ * typesHash: 59ec44a70c3cfb3b
  *
  * Warnings:
  * - GET /agent/artefacts/:sha256: no response is declared; typed `{ 200: unknown }`
@@ -23,7 +23,7 @@ import type { RouteManifest } from "@kingsleyweb/bun-client";
  * The documents' hash, as the header records it: the `buster` of a
  * persisted query cache (`@kingsleyweb/bun-client/persist`).
  */
-export const typesHash = "8d427934eea5ffb3";
+export const typesHash = "59ec44a70c3cfb3b";
 
 /** letters, digits, _, . and - */
 export type Schema1 = string;
@@ -14501,6 +14501,252 @@ export interface Routes {
       };
     };
   };
+  /** What a scope's draft does to each service under it: each one's effective policy as published and with the draft, as their differences (at most 200 services; each needs policy:read) */
+  "GET /policies/:scope/draft/effect": {
+    operationId: "getPoliciesByScopeDraftEffect";
+    params: {
+      /** global, group:<id> or service:<id> */
+      scope: string;
+    };
+    query: Record<never, never>;
+    headers: Record<never, never>;
+    body: undefined;
+    responses: {
+      200: {
+        scope: string;
+        services: {
+          service: string;
+          changes: {
+            path: string;
+            /** the value as published */
+            before?: unknown;
+            /** the value with the draft */
+            after?: unknown;
+          }[];
+          /** the differences past those listed */
+          more: number;
+          /** why the draft does not compile for this service */
+          error?: string;
+        }[];
+        skipped: {
+          service: string;
+          reason: string;
+        }[];
+        /** services past the bound, not compared */
+        notCompared: number;
+      };
+      400: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      401: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      403: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      404: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      429: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+      500: {
+        type: string;
+        title: string;
+        status: number;
+        code:
+          | "invalid_request"
+          | "unauthenticated"
+          | "forbidden"
+          | "csrf"
+          | "step_up_required"
+          | "not_found"
+          | "conflict"
+          | "invalid_policy"
+          | "locked"
+          | "confirmation_required"
+          | "approval_required"
+          | "approval_closed"
+          | "self_approval"
+          | "not_modified"
+          | "audit_unavailable"
+          | "break_glass_locked"
+          | "too_large"
+          | "unsupported_encoding"
+          | "rate_limited"
+          | "internal";
+        detail?: string;
+        issues?: {
+          message: string;
+          path: unknown[];
+        }[];
+        stepUpUrl?: string;
+        /** the current state of what the request raced */
+        current?: unknown;
+        dangerous?: string[];
+      };
+    };
+  };
   /** A scope's draft against its published policy over stored events: what would be refused, challenged or allowed differently, by rule and route (bounded; nothing stored) */
   "POST /policies/:scope/impact": {
     operationId: "postPoliciesByScopeImpact";
@@ -19919,6 +20165,10 @@ export const manifest = {
   "DELETE /policies/:scope/draft": {
     operationId: "deletePoliciesByScopeDraft",
     statuses: [204, 400, 401, 403, 404, 409, 500],
+  },
+  "GET /policies/:scope/draft/effect": {
+    operationId: "getPoliciesByScopeDraftEffect",
+    statuses: [200, 400, 401, 403, 404, 429, 500],
   },
   "POST /policies/:scope/impact": {
     operationId: "postPoliciesByScopeImpact",

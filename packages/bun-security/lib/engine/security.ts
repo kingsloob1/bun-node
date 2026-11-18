@@ -4077,8 +4077,15 @@ class SecurityEngine<TRequest> implements Security<TRequest> {
             action: "log",
             ...(dry && action !== "log" ? { wouldHaveBeen: action } : {}),
             reason: dry ? `dry run: ${reason}` : reason,
+            claimed: claim.id,
           }
-        : { layer: "L10", rule: "crawler.spoofed", action, reason },
+        : {
+            layer: "L10",
+            rule: "crawler.spoofed",
+            action,
+            reason,
+            claimed: claim.id,
+          },
       logged ? undefined : { status: 403, code: "blocked" },
     );
     pass.trace?.push({

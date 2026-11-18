@@ -32,4 +32,5 @@ export const CRAWLER_OUTCOMES = [
   "limited",
   "probe",
   "honeypot",
+  "spoofed",
 ] as const;

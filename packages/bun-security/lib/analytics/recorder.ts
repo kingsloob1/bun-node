@@ -94,7 +94,9 @@ export const ANALYTICS_METRICS = Object.freeze({
  * (PR-AN2): every `request`; each answered `not-found` (a `404`); each
  * `limited` by its own limit (a `429`); and what its allowance lifted, a
  * managed probe rule (`probe`, logged as `crawler.probe`) or a honeypot
- * (`honeypot`, no score or ban).
+ * (`honeypot`, no score or ban). And per claimed crawler (PR-U4F): each
+ * `spoofed` claimant, a request with its name that failed verification
+ * (counted under the crawler it claimed, never as its `request`).
  */
 export const CRAWLER_OUTCOMES = Object.freeze([
   "request",
@@ -102,6 +104,7 @@ export const CRAWLER_OUTCOMES = Object.freeze([
   "limited",
   "probe",
   "honeypot",
+  "spoofed",
 ] as const);
 
 /** One of {@link CRAWLER_OUTCOMES}. */
@@ -147,9 +150,11 @@ export interface AnalyticsRecord {
     /** The outcomes besides `request`. */
     readonly outcomes: readonly Exclude<
       CrawlerOutcome,
-      "request" | "not-found"
+      "request" | "not-found" | "spoofed"
     >[];
   };
+  /** The crawler a spoofed claimant claimed to be (PR-U4F): counted as its `spoofed`. */
+  readonly spoofed?: string;
 }
 
 /** What {@link AnalyticsRecorder.recordDecision} takes beside the decision. */
@@ -264,6 +269,14 @@ export interface SignalRecord {
   readonly at?: number;
 }
 
+/** The crawler a decision's `crawler.spoofed` hit says its request claimed (PR-U4F). */
+function spoofedOf(decision: Decision): { spoofed?: string } {
+  const hit = decision.hits.find(
+    (h) => h.rule === "crawler.spoofed" && h.claimed !== undefined,
+  );
+  return hit?.claimed === undefined ? {} : { spoofed: hit.claimed };
+}
+
 /**
  * A decision's verified crawler and its outcomes (PR-AN2): `limited` when
  * its own limit refused it (enforced, not in dry run), `probe` and
@@ -273,7 +286,10 @@ function crawlerOf(decision: Decision): {
   crawler?: NonNullable<AnalyticsRecord["crawler"]>;
 } {
   if (decision.crawler?.verified !== true) return {};
-  const outcomes: Exclude<CrawlerOutcome, "request" | "not-found">[] = [];
+  const outcomes: Exclude<
+    CrawlerOutcome,
+    "request" | "not-found" | "spoofed"
+  >[] = [];
   for (const hit of decision.hits) {
     if (hit.lifted !== undefined) outcomes.push(hit.lifted);
     else if (
@@ -575,6 +591,15 @@ export function createAnalyticsRecorder(
         1,
       );
     }
+    if (input.spoofed !== undefined) {
+      add(
+        minute,
+        at,
+        ANALYTICS_METRICS.crawlers,
+        { crawler: input.spoofed, outcome: "spoofed" },
+        1,
+      );
+    }
     if (input.crawler !== undefined) {
       const crawler = input.crawler.id;
       add(
@@ -703,6 +728,7 @@ export function createAnalyticsRecorder(
         })),
         subject: decision.subject,
         ...crawlerOf(decision),
+        ...spoofedOf(decision),
       });
     },
     count: (metric, dims = {}, value = 1, at = now()) => {

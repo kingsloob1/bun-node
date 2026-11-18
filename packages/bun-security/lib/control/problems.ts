@@ -27,6 +27,7 @@ export class ApiProblem extends Error {
    * @param code The problem's code.
    * @param detail What went wrong, for a person.
    * @param extra More members of the problem body (`issues`, `current`, `dangerous`, `stepUpUrl`).
+   * @param headers Headers the answer carries (`retry-after` on a `429`).
    */
   constructor(
     readonly status: number,
@@ -35,6 +36,7 @@ export class ApiProblem extends Error {
     readonly extra: Readonly<
       Partial<Omit<ProblemDto, "type" | "title" | "status" | "code" | "detail">>
     > = {},
+    readonly headers: Readonly<Record<string, string>> = {},
   ) {
     super(detail);
     this.name = "ApiProblem";
