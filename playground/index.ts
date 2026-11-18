@@ -20,6 +20,7 @@
  * 127.0.0.1 only.
  */
 import "reflect-metadata";
+import { join } from "node:path";
 import process from "node:process";
 import {
   BunHttpAdapter,
@@ -73,6 +74,11 @@ import {
 import { startSimulation } from "./simulation";
 import { createSummoning } from "./summoning";
 import { CLIENT_BASE, mountTypedClientDemo } from "./typed-client";
+import {
+  mountSecurityDemo,
+  SECURITY_API_BASE,
+  SECURITY_DEMO_BASE,
+} from "./security";
 
 /**
  * The port to listen on (`PORT`, default 4000; `PORT=0` picks a free one
@@ -199,6 +205,16 @@ const cacheDemo = await mountCacheDemo(app);
 // validation and the query layer, and a devTypes() endpoint for
 // `bun-client watch`.
 const typedClient = await mountTypedClientDemo(app);
+// The security demo (security.ts, bun-security PR-X2): a real control plane
+// at /security-api, the security UI at /security, three demo services whose
+// engines run behind agents, and an attacker loop keeping every screen moving.
+const securityDemo = await mountSecurityDemo(app, {
+  intervalMs: Number(process.env.PLAYGROUND_SECURITY_INTERVAL_MS ?? 1_000),
+  dataDir: join(import.meta.dir, ".data", `security-${process.pid}`),
+  ...(theme === undefined ? {} : { theme }),
+  ...(layout === undefined ? {} : { layout }),
+  logger: uiLogger,
+});
 // The validated chat channel (bun-validate V8, chat.ts): one `ws()` call —
 // `app.ws(chat.path, chat.checks(), chat.handler(…), chat.options(…))` — at
 // `/playground/chat/:room`.
@@ -398,6 +414,7 @@ const origin = `http://localhost:${server.port}`;
 // every queue's summon status, `GET /summon` read over loopback, so after
 // `listen` (the URL needs the port). A GET needs no CSRF header.
 await summoning.start(jobs, { summonList: `${origin}${api.basePath}/summon` });
+securityDemo.start();
 
 console.log(`
 bun-node playground (${playgroundBackend()} driver)
@@ -422,6 +439,7 @@ bun-node playground (${playgroundBackend()} driver)
   Cache report  ${origin}/playground/cache/report  (PR-C1's getOrSet demo: a 250 ms report, cached 10 s + 30 s stale — fire ten at once, one build)
   Typed client  ${origin}${CLIENT_BASE}  (bun-client: the generated route map beside its OpenAPI document, live typed calls, validation, the query layer; devTypes() for bun-client watch${typedClient.dev.token === undefined ? " — off under NODE_ENV=production" : ""})
   Throttle      ${origin}/playground/throttle  (throttle(): 5 requests per 30 s, RateLimit headers, then a 429 with Retry-After — try curl -i in a loop)
+  Security      ${origin}${securityDemo.uiBase}  (bun-security: the control plane's UI over three demo services and their agents; the attacker loop's figures and the alert emails at ${origin}${SECURITY_DEMO_BASE}; the API at ${origin}${SECURITY_API_BASE}/meta)
   Chat channel  ws://localhost:${server.port}/playground/chat/lobby?name=ada  (V8's defineChannel: {"type":"say","data":{"text":"hi"}}; a bad room is a 400)
 
   A job is added every ${intervalMs > 0 ? `${intervalMs} ms` : "— never (PLAYGROUND_INTERVAL_MS=0)"}. Ctrl+C to stop.
@@ -449,6 +467,7 @@ async function shutdown(): Promise<void> {
       `waited for ${units} summoned unit${units === 1 ? "" : "s"} to exit`,
     );
     await simulation.stop();
+    await securityDemo.stop();
     await mailer.stop();
     await flows.stop();
     await stopRunners();

@@ -116,7 +116,12 @@ bun scripts/typecheck.ts   # every project in the repo — must be clean
 **Manual playground:** `bun playground/index.ts` serves bun-jobs, its
 management API and bun-ui's jobs app on one adapter at
 `http://localhost:4000/jobs`, with a simulation that keeps every screen
-moving (`playground/README.md`). It is a project of its own, like
+moving (`playground/README.md`). It also serves the security demo
+(`playground/security.ts`, `mountSecurityDemo`): the security UI at
+`/security` over a control plane at `/security-api`, three demo services
+whose agents connect through the adapter's `fetch()`, and an attacker loop
+that keeps every security screen moving (`PLAYGROUND_SECURITY_INTERVAL_MS`,
+`0` seeds only); `bun run test:security` there is its test. It is a project of its own, like
 `benchmarks/`: typechecked by `scripts/typecheck.ts`, linted with
 `cd playground && bun run lint && bun run format:check && bun run check:client`
 (the last is `bun-client generate --check` on its committed typed-client

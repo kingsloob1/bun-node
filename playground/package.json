@@ -11,6 +11,7 @@
     "format": "bun fmt",
     "format:check": "bun fmt --check",
     "gen:client": "bun-client generate --module typed-client-api.ts --out typed-client-api.gen.ts --zod typed-client-api.zod.gen.ts",
-    "check:client": "bun-client generate --module typed-client-api.ts --out typed-client-api.gen.ts --zod typed-client-api.zod.gen.ts --check"
+    "check:client": "bun-client generate --module typed-client-api.ts --out typed-client-api.gen.ts --zod typed-client-api.zod.gen.ts --check",
+    "test:security": "bun test security.test.ts"
   }
 }
