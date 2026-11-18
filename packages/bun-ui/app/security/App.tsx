@@ -25,7 +25,7 @@ import {
 } from "./screens/lazy";
 import { NoAccess } from "./screens/NoAccess";
 import { NotFound } from "./screens/NotFound";
-import { Overview } from "./screens/Overview";
+import { AnalyticsScreen } from "./analytics/AnalyticsScreen";
 
 /** The routes and nav for the scope on screen (inside its permissions). */
 function Sections({ scope }: { scope: string | null }) {
@@ -68,8 +68,8 @@ function Sections({ scope }: { scope: string | null }) {
           {
             path: "/",
             element: guard(
-              "overview",
-              scope === null ? null : <Overview scope={scope} />,
+              "analytics",
+              scope === null ? null : <AnalyticsScreen scope={scope} />,
             ),
           },
           ...scoped("lists", [

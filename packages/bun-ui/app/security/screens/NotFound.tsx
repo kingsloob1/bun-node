@@ -10,7 +10,7 @@ export function NotFound() {
     >
       <h1>Not found</h1>
       <p>
-        There is no screen here. <Link to="/">Go to the Overview</Link>.
+        There is no screen here. <Link to="/">Go to the analytics page</Link>.
       </p>
     </div>
   );

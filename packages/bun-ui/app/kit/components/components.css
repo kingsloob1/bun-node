@@ -689,3 +689,15 @@ kbd {
   font-size: var(--text-xs);
   text-align: center;
 }
+
+/* The range picker (moved from the jobs app, PR-U2). */
+.range-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+
+.range-picker > .field {
+  min-width: 0;
+}

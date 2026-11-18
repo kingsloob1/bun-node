@@ -3,10 +3,11 @@
 `securityUi()` serves the management UI of `@kingsleyweb/bun-security`'s
 control plane (`createSecurityApi()`): a React app on bun-ui's kit, mounted
 beside the API on the same adapter. Built so far: the frame, the scope
-picker, the Overview, the API reference, the live updates, step-up and the
-break-glass sign-in (PR-U1 of the bun-security plan); the bans, the
-allow and deny lists and the events (PR-U3). The screens of later parts
-(analytics, policy, approvals, audit) join the nav as they are built.
+picker, the API reference, the live updates, step-up and the break-glass
+sign-in (PR-U1 of the bun-security plan); the bans, the allow and deny
+lists and the events (PR-U3); the analytics page (PR-U2), the landing
+screen in place of U1's Overview. The screens of later parts (policy,
+approvals, audit) join the nav as they are built.
 
 ## Install
 
@@ -57,10 +58,25 @@ server-sent events, so `connect-src` allows no `ws(s)` origin.
 
 ## Screens
 
-- **Overview** (`/`), the landing screen: the scope's published policy, its
-  active bans, the agents' health and the audit chain's check. Each card
-  shows only when the operator may read it, reads on its own, and is left
-  out when the deployment does not run that part (no agents).
+- **Analytics** (`/`), the landing screen (PR-U2, in place of U1's
+  Overview): the scope's panels over a time range (the last 15 minutes to
+  30 days, or a custom span; `?range=` in the URL, the default 24 hours).
+  A range ending now refreshes as it goes, and the traffic chart and the
+  activity feed follow the live stream. The panels: headline totals,
+  traffic over time (stacked by action, with the dry run's would-block),
+  the outcome mix (by action and by status class), top offenders (with an
+  hourly sparkline, an address's highest offence score, its ban state, and
+  links to the ban and allow-list forms), the activity feed (paused while
+  hovered or focused, "N new" while paused, each row opening the event),
+  per-rule hits (hits, blocks, would-blocks, false positives; sortable, with
+  a trend), services and routes (with each service's p95 decision latency),
+  geography and ASN (tables), the ban timeline, sign-in figures (the failure
+  ratio against the same hours of the seven days before, successes after
+  failures, the most usernames tried from one address in a minute),
+  identifier patterns, agent health and IP-intel sources. Each panel loads
+  on its own and fails on its own; one a deployment does not record says
+  so. Every chart is an image with a text summary and a **Table** button
+  that shows the same data as a table.
 - **Lists** (`/lists`, `/lists/new`): the scope's allow and deny entries
   (addresses and ranges, users, API keys, countries, ASNs), from its draft
   when there is one, else its published version, with the entries a
@@ -140,11 +156,13 @@ operator may not use is absent, not disabled.
 
 | Element | Needs |
 |---|---|
-| Overview (nav and route) | `policy:read` on the scope |
-| Overview: Policy card | `policy:read` on the scope |
-| Overview: Active bans card | `bans:read` on the scope |
-| Overview: Agents card | `agents:read` on global |
-| Overview: Audit chain card | `audit:read` on global |
+| Analytics (nav and route) | `analytics:read` on the scope |
+| Analytics: every panel but those below | `analytics:read` on the scope |
+| Analytics: headline's ban tiles, ban timeline, top offenders' ban state | `bans:read` on the scope |
+| Analytics: top offenders by user, username or API key | `events:read` on the scope |
+| Analytics: top offenders' Ban link | `bans:write` on the scope |
+| Analytics: top offenders' Allow link | `policy:draft` on the scope |
+| Analytics: agent health, IP-intel sources | `agents:read` on global |
 | API reference (nav and route) | signing in |
 | Scope picker: every group and service | `policy:read`, `groups:read`, `services:read` on global |
 | Live updates: `bans:<scope>` topic | `bans:read` on the scope |
@@ -156,7 +174,8 @@ operator may not use is absent, not disabled.
 | A ban: what led to it, hits since (an account) | `analytics:read` and `events:read` on the ban's scope |
 | A ban: its bans in other scopes | `bans:read` on each of them |
 | Bans: Automatic bans link | `analytics:read` on the scope |
-| Live updates: `events:<scope>` topic (while the events list is open) | `analytics:read` on the scope |
+| Live updates: `events:<scope>` topic (while the events list or the analytics page is open) | `analytics:read` on the scope |
+| Live updates: `overview:<scope>` topic (while the analytics page is open) | `analytics:read` on the scope |
 | Lists (nav and route), the entries, CSV export | `policy:read` on the scope |
 | Lists: entries inherited from the scopes above (a service's or a group's) | `policy:read` on the scope |
 | Lists: New entry, Remove, CSV import, Save draft, Discard draft | `policy:draft` on the scope |

@@ -311,9 +311,9 @@ describe.skipIf(chromePath === undefined)(
 
     /** The jobs app is ready once its Overview's screen renders. */
     const JOBS_READY = '[data-testid="app-ready"] .screen';
-    /** The security app is ready once its Overview renders. */
+    /** The security app is ready once its landing (the analytics page, PR-U2) renders. */
     const SECURITY_READY =
-      '[data-testid="app-ready"] .screen[data-testid="overview"]';
+      '[data-testid="app-ready"] .screen[data-testid="analytics"]';
     /** The docs viewer is ready once the document's reference renders. */
     const DOCS_READY = ".screen.http-docs";
 

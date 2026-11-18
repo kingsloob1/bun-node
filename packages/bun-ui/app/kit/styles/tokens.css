@@ -67,6 +67,18 @@
   --state-dead: #b42318;
   --state-waiting-children: #7a6a1f;
 
+  /*
+   * The charts' series colours (PR-U2): aliases of the state colours, so a
+   * custom theme and the dark scheme carry them; each is held to 3:1
+   * against the surface (WCAG 1.4.11) in both schemes by a test.
+   */
+  --chart-allow: var(--state-completed);
+  --chart-block: var(--state-dead);
+  --chart-challenge: var(--state-failed);
+  --chart-delay: var(--state-delayed);
+  --chart-dryrun: var(--state-waiting-children);
+  --chart-log: var(--state-active);
+  --chart-other: var(--state-waiting);
   --shadow: 0 1px 2px rgb(16 24 40 / 6%), 0 1px 3px rgb(16 24 40 / 8%);
   --header-height: 56px;
   --nav-width: 200px;

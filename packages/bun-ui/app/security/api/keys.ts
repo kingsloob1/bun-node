@@ -11,8 +11,6 @@ export const queryKeys = {
   me: () => [META_KEY, "me"] as const,
   /** The scope picker's groups and services. */
   scopes: () => ["scopes"] as const,
-  /** The Overview's summary for a scope. */
-  overview: (scope: string) => ["overview", scope] as const,
   /** The OpenAPI document. */
   openapi: () => ["docs", "openapi"] as const,
 } satisfies Record<string, (...args: never[]) => readonly unknown[]>;

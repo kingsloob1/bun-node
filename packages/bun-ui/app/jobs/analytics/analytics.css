@@ -1,16 +1,5 @@
 /* The analytics range picker, and the sections it drives. */
 
-.range-picker {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: var(--space-3);
-}
-
-.range-picker > .field {
-  min-width: 0;
-}
-
 .range-scope {
   margin-top: var(--space-2);
 }

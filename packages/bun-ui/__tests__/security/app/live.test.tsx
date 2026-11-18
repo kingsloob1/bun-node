@@ -1,8 +1,9 @@
 /**
  * The live stream (ui.md §6): CP5's `/live` over server-sent events,
- * subscribed to the scope's readable topics; an event refetches the
- * screen's data, coalesced; a refusal falls back to polling, said in the
- * badge.
+ * subscribed to the scope's readable topics (and the analytics panels'
+ * `overview` and `events` while they are mounted, PR-U2); an event
+ * refetches the screen's data, coalesced; a refusal falls back to polling,
+ * said in the badge.
  */
 import type { MockCall } from "./mockApi";
 import { describe, expect, it } from "bun:test";
@@ -54,19 +55,33 @@ function banReads(calls: readonly MockCall[]): number {
 
 describe("the live stream", () => {
   it("subscribes to the scope's readable topics, goes live, and an event refetches the screen once", async () => {
-    const stream = eventStream();
+    // The analytics panels add their topics as they mount: a new stream each time.
+    let stream = eventStream();
     const { api } = renderApp({
       live: true,
       path: "/?scope=group:payments",
-      routes: { "GET /live": () => stream.response },
+      routes: {
+        "GET /live": () => {
+          stream = eventStream();
+          return stream.response;
+        },
+      },
     });
-    await page().findByTestId("overview-bans", {}, LOADED);
-    const live = api.calls.find((call) => call.path === "/live");
-    expect(topicsOf(live)).toEqual([
-      "bans:group:payments",
-      "policy:group:payments",
-    ]);
+    await page().findByTestId("panel-offenders", {}, LOADED);
+    await waitFor(
+      () =>
+        expect(
+          topicsOf(api.calls.filter((call) => call.path === "/live").at(-1)),
+        ).toEqual([
+          "bans:group:payments",
+          "policy:group:payments",
+          "overview:group:payments",
+          "events:group:payments",
+        ]),
+      LOADED,
+    );
     await page().findByText("Live", {}, LOADED);
+    await waitFor(() => expect(banReads(api.calls)).toBeGreaterThan(0), LOADED);
     const before = banReads(api.calls);
     stream.send("ban", { id: "b9" }, "e1:1");
     stream.send("ban.changed", { event: "ban.changed" }, "e1:2");
@@ -100,7 +115,7 @@ describe("the live stream", () => {
       live: true,
       routes: { "GET /live": problem(403, "forbidden") },
     });
-    await page().findByTestId("overview", {}, LOADED);
+    await page().findByTestId("analytics", {}, LOADED);
     const badge = await page().findByText("Polling 15s", {}, LOADED);
     await waitFor(
       () =>
