@@ -19,10 +19,12 @@ import { MAX_AUDIT_SCOPES } from "../store/types";
 import { banActive, banId } from "../store/shared";
 import { parseAddress, parseCidr } from "../ip/address";
 import type { BanListQuery } from "./banOps";
+import type { AgentBanReport } from "../agent/protocol";
 import {
   BULK_LIFT_LIMIT,
   banSearchValues,
   banSubjectOf,
+  reportedSubject,
   subjectFacts,
 } from "./banOps";
 import { eventView } from "./live/view";
@@ -1929,6 +1931,81 @@ export class ControlPlane {
   // ── Bans (storage.md §3.1, PR-CP4) ───────────────────────────────────────
 
   /** Tells the live hub (CP5) of a ban written or lifted; a hook that throws is logged. */
+  /**
+   * Stores the bans an agent of `service` reports its engine wrote itself
+   * (`POST /agent/ban-reports`): each on the service's scope as an
+   * automatic ban (its rule, service and ladder step), merged with the
+   * scope's record of the subject, and pushed to the service's agents.
+   * A report of a ban that started before an operator lifted it is not
+   * re-created (the lift is remembered); one started after is a new ban.
+   * Not audited one by one: the events record each, and these arrive at
+   * attack volume.
+   */
+  async reportBans(
+    service: string,
+    reports: readonly AgentBanReport[],
+  ): Promise<{ stored: number; lifted: number }> {
+    const scope = serviceScope(service);
+    let stored = 0;
+    let lifted = 0;
+    for (const report of reports) {
+      const subject = reportedSubject(report.subject);
+      if (subject === undefined) continue;
+      const id = banId(scope, subject);
+      const existing = await this.store.getBan(id);
+      if (
+        existing !== undefined &&
+        existing.liftedAt !== null &&
+        report.createdAt <= existing.liftedAt
+      ) {
+        lifted++;
+        continue;
+      }
+      const ban = await this.store.upsertBan({
+        scope,
+        subject,
+        action: report.action,
+        reason: report.reason,
+        source: "auto",
+        expiresAt: report.expiresAt,
+        service,
+        ...(report.rule === undefined ? {} : { rule: report.rule }),
+        ...(report.code === undefined ? {} : { code: report.code }),
+        ...(report.step === undefined ? {} : { step: report.step }),
+      });
+      stored++;
+      this.#emit("ban.changed", scope, { id, op: "ban" });
+      this.#publishBan(ban);
+    }
+    return { stored, lifted };
+  }
+
+  /**
+   * Deletes the automatic bans that ended (lifted, or expired) before
+   * `before`, a page at a time, at most `max` (the retention pass). One
+   * audit event holds the count when it deleted any. Answers the count.
+   */
+  async purgeAutoBans(before: number, max = 50_000): Promise<number> {
+    let purged = 0;
+    while (purged < max) {
+      const deleted = await this.store.purgeBans({
+        source: "auto",
+        before,
+        limit: Math.min(500, max - purged),
+      });
+      purged += deleted;
+      if (deleted === 0) break;
+    }
+    if (purged > 0) {
+      await this.audit.event("bans.purge", "global", {
+        target: { kind: "bans", id: "auto" },
+        count: purged,
+        before,
+      });
+    }
+    return purged;
+  }
+
   #publishBan(ban: BanRecord): void {
     try {
       liveHooksOf(this).publishBan(ban);
@@ -1961,6 +2038,7 @@ export class ControlPlane {
       revision: ban.revision,
       ...(ban.country === undefined ? {} : { country: ban.country }),
       ...(ban.asn === undefined ? {} : { asn: ban.asn }),
+      ...(ban.step === undefined ? {} : { step: ban.step }),
     };
   }
 
@@ -2120,6 +2198,7 @@ export class ControlPlane {
         otherBans.push(this.banDto(ban));
     }
     const detail: BanDetailDto = {
+      ...(record.step === undefined ? {} : { ladderStep: record.step }),
       ban: this.banDto(record),
       history: await this.audit.describe(audit.items),
       historyTruncated: audit.next !== undefined,

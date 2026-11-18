@@ -9,7 +9,7 @@
 import { randomBytes } from "node:crypto";
 import type { StoredDoc } from "../store/types";
 import type { AgentHeartbeat } from "../agent/protocol";
-import { AGENT_ID_PATTERN } from "../agent/protocol";
+import { AGENT_ID_PATTERN, BAN_REPORT_LIMITS } from "../agent/protocol";
 import type {
   AgentCreateInput,
   AgentDto,
@@ -355,7 +355,23 @@ export class AgentRegistry {
               ...(w.share === undefined ? {} : { share: w.share }),
             })),
           }),
+      ...(beat.bansDropped === undefined
+        ? {}
+        : { bansDropped: beat.bansDropped }),
     };
+    if (beat.bansDropped !== undefined && beat.bansDropped > 0) {
+      // Never silent: the operators hear of every report an agent dropped.
+      this.plane.alert({
+        kind: "agent.banReportsDropped",
+        severity: "warning",
+        message: `agent "${doc.id}" of ${serviceScope(body.service)} dropped ${beat.bansDropped} ban report${beat.bansDropped === 1 ? "" : "s"} since its last heartbeat (past its cap of ${BAN_REPORT_LIMITS.perMinute} a minute, or unsendable); its engine still enforces them`,
+        detail: {
+          agent: doc.id,
+          service: body.service,
+          dropped: beat.bansDropped,
+        },
+      });
+    }
     for (let attempt = 0; attempt < 2; attempt++) {
       const current = await this.plane.store.get("agentHealth", doc.id);
       const previous = current?.doc as AgentHealthBody | undefined;

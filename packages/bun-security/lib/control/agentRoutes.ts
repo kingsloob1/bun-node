@@ -29,7 +29,12 @@ import type {
 } from "@kingsleyweb/bun-common";
 import type { StoredDoc } from "../store/types";
 import type { BanBatch } from "../bundle/bans";
-import type { AgentHeartbeat, AgentNudge, AgentRoute } from "../agent/protocol";
+import type {
+  AgentBanReportBatch,
+  AgentHeartbeat,
+  AgentNudge,
+  AgentRoute,
+} from "../agent/protocol";
 import { Buffer } from "node:buffer";
 import { gunzipSync } from "node:zlib";
 import { banBatchSigningBytes, BAN_BATCH_FORMAT } from "../bundle/bans";
@@ -47,6 +52,7 @@ import {
   agentRouteOf,
   artefactSignedBody,
   MAX_HEARTBEAT_FEEDS,
+  MAX_BAN_REPORTS,
   MAX_HEARTBEAT_WARNINGS,
   notModifiedBody,
 } from "../agent/protocol";
@@ -557,7 +563,65 @@ export function isHeartbeat(
     (value.lastError === undefined ||
       (typeof value.lastError === "string" && value.lastError.length <= 500)) &&
     (value.warnings === undefined || isWarnings(value.warnings)) &&
-    (value.intel === undefined || isIntel(value.intel))
+    (value.intel === undefined || isIntel(value.intel)) &&
+    (value.bansDropped === undefined ||
+      (Number.isSafeInteger(value.bansDropped) &&
+        (value.bansDropped as number) >= 0))
+  );
+}
+
+/** Whether `value` is a batch of ban reports: bounded, every field checked, nothing else. */
+export function isBanReportBatch(
+  value: Record<string, unknown>,
+): value is AgentBanReportBatch & Record<string, unknown> {
+  const text = (v: unknown, max: number) =>
+    typeof v === "string" && v.length > 0 && v.length <= max;
+  return (
+    Object.keys(value).every((key) =>
+      ["route", "sentAt", "bans"].includes(key),
+    ) &&
+    Number.isSafeInteger(value.sentAt) &&
+    Array.isArray(value.bans) &&
+    value.bans.length <= MAX_BAN_REPORTS &&
+    value.bans.every((item: unknown) => {
+      if (typeof item !== "object" || item === null) return false;
+      const r = item as Record<string, unknown>;
+      const subject = r.subject as Record<string, unknown> | null | undefined;
+      return (
+        Object.keys(r).every((key) =>
+          [
+            "subject",
+            "action",
+            "reason",
+            "rule",
+            "createdAt",
+            "expiresAt",
+            "step",
+            "code",
+          ].includes(key),
+        ) &&
+        typeof subject === "object" &&
+        subject !== null &&
+        Object.keys(subject).every(
+          (key) => key === "type" || key === "value",
+        ) &&
+        ["ip", "cidr", "user", "apiKey"].includes(subject.type as string) &&
+        text(subject.value, 64) &&
+        (r.action === "ban" || r.action === "challenge") &&
+        text(r.reason, 500) &&
+        (r.rule === undefined || text(r.rule, 200)) &&
+        (r.code === undefined || text(r.code, 200)) &&
+        Number.isSafeInteger(r.createdAt) &&
+        (r.createdAt as number) >= 0 &&
+        (r.expiresAt === null ||
+          (Number.isSafeInteger(r.expiresAt) &&
+            (r.expiresAt as number) >= 0)) &&
+        (r.step === undefined ||
+          (Number.isSafeInteger(r.step) &&
+            (r.step as number) >= 1 &&
+            (r.step as number) <= 100))
+      );
+    })
   );
 }
 
@@ -994,6 +1058,35 @@ export function addAgentRoutes(
           "cache-control": "no-store",
         },
         artefactSignedBody(sha256Of(bytes)),
+      );
+    }),
+  );
+
+  post(
+    "/agent/ban-reports",
+    handle(AGENT_ROUTES.banReports, async (request, _req, res) => {
+      const batch = boundJson(request.body, AGENT_ROUTES.banReports);
+      if (batch === undefined) {
+        throw new ApiProblem(
+          401,
+          "unauthenticated",
+          "the body was not signed for the ban-reports route",
+        );
+      }
+      if (!isBanReportBatch(batch))
+        throw new ApiProblem(
+          400,
+          "invalid_request",
+          `a malformed batch of ban reports (at most ${MAX_BAN_REPORTS})`,
+        );
+      const answer = await plane.reportBans(request.service, batch.bans);
+      await sendSigned(
+        res,
+        200,
+        JSON.stringify(answer),
+        request.secret,
+        null,
+        plane.now(),
       );
     }),
   );

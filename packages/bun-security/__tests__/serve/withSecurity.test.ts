@@ -366,6 +366,7 @@ function fixedEngine(decision: Decision): Security<Request> {
     challenge: undefined,
     crawlerConflicts: () => [],
     revokeApiKey: () => real.revokeApiKey("x"),
+    watchBans: () => () => {},
     evaluate: async () => {
       await Bun.sleep(1);
       return decision;

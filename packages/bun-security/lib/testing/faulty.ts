@@ -33,6 +33,7 @@ export type StoreOperation =
   | "liftBan"
   | "getBan"
   | "listBans"
+  | "purgeBans"
   | "changesSince"
   | "appendEvents"
   | "addCounters"
@@ -101,6 +102,7 @@ export function faultyStore(
     liftBan: wrap("liftBan", store.liftBan),
     getBan: wrap("getBan", store.getBan),
     listBans: wrap("listBans", store.listBans),
+    purgeBans: wrap("purgeBans", store.purgeBans),
     changesSince: wrap("changesSince", store.changesSince),
     // The analytics operations, where the store has them.
     ...(store.appendEvents === undefined

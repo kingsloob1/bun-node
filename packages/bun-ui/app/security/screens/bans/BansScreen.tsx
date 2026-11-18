@@ -285,7 +285,11 @@ export function BansScreen({ scope }: BansScreenProps) {
                   <td>
                     {ban.source}
                     {ban.rule === undefined ? null : (
-                      <span className="muted"> ({ban.rule})</span>
+                      <span className="muted">
+                        {" "}
+                        ({ban.rule}
+                        {ban.step === undefined ? "" : `, step ${ban.step}`})
+                      </span>
                     )}
                   </td>
                   <td>{when(ban.createdAt)}</td>

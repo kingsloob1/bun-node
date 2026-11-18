@@ -5,6 +5,7 @@
  */
 import type {
   BanInputRecord,
+  BanPurgeQuery,
   BanQuery,
   BanRecord,
   StoredBanSubject,
@@ -628,7 +629,9 @@ export function checkBanInput(ban: BanInputRecord): BanInputRecord {
     (ban.asn === undefined ||
       (Number.isSafeInteger(ban.asn) &&
         ban.asn >= 0 &&
-        ban.asn <= 4_294_967_295));
+        ban.asn <= 4_294_967_295)) &&
+    (ban.step === undefined ||
+      (Number.isSafeInteger(ban.step) && ban.step >= 1 && ban.step <= 100));
   if (!ok) throw new ConfigError("security store: a malformed ban", { ban });
   return Object.freeze({
     scope: ban.scope,
@@ -646,6 +649,7 @@ export function checkBanInput(ban: BanInputRecord): BanInputRecord {
     ...(ban.service === undefined ? {} : { service: ban.service }),
     ...(ban.country === undefined ? {} : { country: ban.country }),
     ...(ban.asn === undefined ? {} : { asn: ban.asn }),
+    ...(ban.step === undefined ? {} : { step: ban.step }),
   });
 }
 
@@ -694,9 +698,15 @@ export function mergeStoredBan(
   // The subject's country and ASN: the newest known.
   const country = input.country ?? existing?.country;
   const asn = input.asn ?? existing?.asn;
+  // The ladder's step: the highest reported while it stays in force.
+  const step =
+    existing !== undefined && banActive(existing, now)
+      ? Math.max(existing.step ?? 0, input.step ?? 0) || undefined
+      : input.step;
   const facts = {
     ...(country === undefined ? {} : { country }),
     ...(asn === undefined ? {} : { asn }),
+    ...(step === undefined ? {} : { step }),
   };
   if (existing === undefined || !banActive(existing, now)) {
     return Object.freeze({
@@ -988,4 +998,27 @@ export function checkpointPosition(
     ["number"],
   );
   return n as number;
+}
+
+/** Checks a ban purge's query. */
+export function checkBanPurge(query: BanPurgeQuery): BanPurgeQuery {
+  if (
+    typeof query !== "object" ||
+    query === null ||
+    (query.source !== "auto" && query.source !== "manual") ||
+    !Number.isSafeInteger(query.before) ||
+    !Number.isSafeInteger(query.limit) ||
+    query.limit < 1 ||
+    query.limit > MAX_PAGE_LIMIT
+  ) {
+    throw new ConfigError(
+      `security store: a ban purge takes a source (auto, manual), before (epoch ms) and a limit of 1 to ${MAX_PAGE_LIMIT}`,
+    );
+  }
+  return query;
+}
+
+/** When `ban` ended (lifted, or expired), or `null` while it may still be in force. */
+export function banEnd(ban: BanRecord): number | null {
+  return ban.liftedAt ?? ban.expiresAt;
 }

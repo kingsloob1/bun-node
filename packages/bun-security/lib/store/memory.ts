@@ -77,11 +77,13 @@ import {
   checkCheckpoint,
   banActive,
   banAfter,
+  banEnd,
   banCursor,
   banId,
   banMatches,
   banPosition,
   checkBanInput,
+  checkBanPurge,
   compareBans,
   checkCounter,
   UNFED_KINDS,
@@ -634,6 +636,22 @@ export function memoryStore(
           ? { next: banCursor(resolved, last) }
           : {}),
       });
+    },
+    purgeBans: async (query) => {
+      refuseClosed(name, closed);
+      const { source, before, limit } = checkBanPurge(query);
+      const ended = [...bans.values()]
+        .filter((ban) => {
+          const end = banEnd(ban);
+          return ban.source === source && end !== null && end < before;
+        })
+        .sort((a, b) => banEnd(a)! - banEnd(b)! || (a.id < b.id ? -1 : 1))
+        .slice(0, limit);
+      for (const ban of ended) {
+        bans.delete(ban.id);
+        record("ban", ban.id, ban.revision, true);
+      }
+      return ended.length;
     },
     incrementCounter: async (key, ttlMs) => {
       refuseClosed(name, closed);

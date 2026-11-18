@@ -42,7 +42,9 @@ import type { BundlePublicKey, SecurityBundle } from "../bundle/bundle";
 import type { BanRecord } from "../store/types";
 import type { AgentEventBatch, AgentEventSource } from "./events";
 import type { EventBatcher } from "./batcher";
+import type { Ban, BanWrite } from "../engine/bans";
 import type {
+  AgentBanReportBatch,
   AgentHeartbeat,
   AgentFeedStatus,
   AgentWarning,
@@ -53,6 +55,7 @@ import type {
 import type { AgentState } from "./state";
 import { verifyBanBatch } from "../bundle/bans";
 import { verifyBundle } from "../bundle/bundle";
+import { BanReporter } from "./banReports";
 import { createEventBatcher } from "./batcher";
 import {
   AGENT_HEADER,
@@ -64,6 +67,7 @@ import {
   agentEnvelope,
   agentRequestId,
   artefactSignedBody,
+  BAN_REPORT_LIMITS,
   MAX_HEARTBEAT_FEEDS,
   MAX_HEARTBEAT_WARNINGS,
   notModifiedBody,
@@ -87,6 +91,14 @@ export interface AgentEngine {
   }) => { readonly id: string };
   /** Lifts a ban by id. */
   readonly unban: (id: string, options?: { readonly by?: string }) => unknown;
+  /**
+   * Listens to the bans the engine writes itself (`createSecurity`'s
+   * `watchBans`); the agent reports the automatic ones to the control
+   * plane. Absent: nothing is reported.
+   */
+  readonly watchBans?: (
+    listener: (ban: Ban, write: BanWrite) => void,
+  ) => () => void;
   /** The engine's state; its `warnings` go in every heartbeat (PR-CP6). Optional for a stand-in engine. */
   readonly status?: () => {
     readonly warnings?: readonly {
@@ -171,6 +183,13 @@ export interface ConnectAgentOptions {
   /** Whether to hold the nudge stream open. Default `true`. */
   readonly nudge?: boolean;
   /**
+   * Whether to report the engine's automatic bans to the control plane
+   * (`POST /agent/ban-reports`, every 5 s, one per subject a minute unless
+   * it escalates, 600 a minute at most, the rest counted in the heartbeat).
+   * Default `true` when the engine has `watchBans`.
+   */
+  readonly banReports?: boolean;
+  /**
    * `false`: no timer and no nudge; nothing is fetched until the host calls
    * `sync()`, `reconcile()` or `heartbeat()` (a host driving it itself, or a
    * test). Default `true`.
@@ -206,6 +225,8 @@ export interface AgentStatusReport {
   readonly lastError: string | null;
   /** Whether the nudge stream is open. */
   readonly nudged: boolean;
+  /** The engine's ban reports: waiting to be sent, and dropped (not yet carried by a heartbeat); absent when not reporting. */
+  readonly banReports?: { readonly pending: number; readonly dropped: number };
 }
 
 /** A running agent. */
@@ -220,6 +241,8 @@ export interface SecurityAgent {
   readonly reconcile: () => Promise<void>;
   /** Sends a heartbeat now. */
   readonly heartbeat: () => Promise<void>;
+  /** Sends the engine's waiting ban reports now. */
+  readonly reportBans: () => Promise<void>;
   /** The event batcher, when events are configured. */
   readonly events: EventBatcher | undefined;
   /** Stops every timer and the nudge. */
@@ -825,6 +848,60 @@ export function connectAgent(options: ConnectAgentOptions): SecurityAgent {
     banSeq = verdict.seq;
   };
 
+  /** The engine's ban reports (when it can be watched and they are not turned off). */
+  let reporter =
+    options.banReports === false || options.security.watchBans === undefined
+      ? undefined
+      : new BanReporter({ now });
+  let stopWatching: (() => void) | undefined;
+  if (reporter !== undefined) {
+    const reports = reporter;
+    try {
+      stopWatching = options.security.watchBans!((ban, write) => {
+        reports.offer(ban, write);
+      });
+    } catch (error) {
+      // An engine that cannot be watched (a wrapper around one) reports
+      // nothing; the agent runs on.
+      reporter = undefined;
+      logger.warn(
+        "bun-security agent: the engine's bans cannot be watched, so none are reported",
+        { error },
+      );
+    }
+  }
+
+  /** Sends the waiting ban reports, a batch at a time; a batch not taken is put back. */
+  const sendReports = async () => {
+    if (reporter === undefined) return;
+    while (reporter.pending > 0) {
+      const bans = reporter.take();
+      const batch: AgentBanReportBatch = {
+        route: "banReports",
+        sentAt: now(),
+        bans,
+      };
+      let answer;
+      try {
+        answer = await call(
+          AGENT_ROUTES.banReports,
+          "POST",
+          "/agent/ban-reports",
+          { bytes: new TextEncoder().encode(JSON.stringify(batch)) },
+        );
+      } catch (error) {
+        reporter.requeue(bans);
+        throw error;
+      }
+      if (answer.status !== 200) {
+        reporter.requeue(bans);
+        throw new Error(
+          `the control plane answered ${answer.status} to ${bans.length} ban reports`,
+        );
+      }
+    }
+  };
+
   /** Sends a heartbeat. */
   const heartbeat = async () => {
     const beat: AgentHeartbeat = {
@@ -844,6 +921,7 @@ export function connectAgent(options: ConnectAgentOptions): SecurityAgent {
       ...(lastError === null ? {} : { lastError: lastError.slice(0, 500) }),
       ...warningsOf(options.security),
       ...intelOf(options.security),
+      ...(reporter === undefined ? {} : { bansDropped: reporter.dropped }),
     };
     const answer = await call(
       AGENT_ROUTES.heartbeat,
@@ -852,6 +930,9 @@ export function connectAgent(options: ConnectAgentOptions): SecurityAgent {
       { bytes: new TextEncoder().encode(JSON.stringify(beat)) },
     );
     if (answer.status === 200) {
+      // The drops it carried are reported: the control plane alerts on them.
+      if (reporter !== undefined && beat.bansDropped !== undefined)
+        reporter.acknowledge(beat.bansDropped);
       const interval = (json(answer.bytes) as { intervalMs?: unknown })
         .intervalMs;
       if (Number.isSafeInteger(interval) && (interval as number) >= 1_000)
@@ -877,7 +958,9 @@ export function connectAgent(options: ConnectAgentOptions): SecurityAgent {
       await track(task());
     } catch (error) {
       lastError = `${what}: ${error instanceof Error ? error.message : String(error)}`;
-      if (error instanceof AnswerRefused) {
+      // A refused answer counts against the fetches it guards (bundles and
+      // ban batches), never against a report's.
+      if (error instanceof AnswerRefused && !what.startsWith("reporting")) {
         signatures(what.includes("ban") ? "bans" : "bundle", false, lastError);
       }
       logger.warn(`bun-security agent: ${what} failed`, { error });
@@ -1052,6 +1135,12 @@ export function connectAgent(options: ConnectAgentOptions): SecurityAgent {
       () => heartbeatMs,
       () => guard("a heartbeat", heartbeat),
     )();
+    if (reporter !== undefined) {
+      void every(
+        () => BAN_REPORT_LIMITS.intervalMs,
+        () => guard("reporting bans", sendReports),
+      )();
+    }
     if (options.nudge !== false) void nudgeLoop();
   });
 
@@ -1071,6 +1160,14 @@ export function connectAgent(options: ConnectAgentOptions): SecurityAgent {
       health: health(),
       lastError,
       nudged,
+      ...(reporter === undefined
+        ? {}
+        : {
+            banReports: {
+              pending: reporter.pending,
+              dropped: reporter.dropped,
+            },
+          }),
     }),
     sync: async () => {
       await track(
@@ -1096,9 +1193,18 @@ export function connectAgent(options: ConnectAgentOptions): SecurityAgent {
         })(),
       );
     },
+    reportBans: async () => {
+      await track(
+        (async () => {
+          await ready;
+          await guard("reporting bans", sendReports);
+        })(),
+      );
+    },
     events: batcher,
     close: async () => {
       closed = true;
+      stopWatching?.();
       for (const timer of timers) clearTimeout(timer);
       nudgeAbort?.abort();
       batcher?.close();

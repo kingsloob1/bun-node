@@ -126,6 +126,13 @@ export interface SecurityApiOptions {
     readonly apiKeys?: boolean;
     /** Whether user bans are taken. Default `true` (and then `secret` is required). */
     readonly users?: boolean;
+    /**
+     * How long the automatic bans the agents report are kept after they
+     * end (lifted, or expired), purged by a pass once an hour and at
+     * start, its count audited. Default `"30d"`; `false` keeps them (the
+     * host then runs `purgeAutoBans()` itself).
+     */
+    readonly autoRetention?: Duration | false;
   };
   /**
    * The bundle repair pass (#847): how often it runs, and at start, to
@@ -201,6 +208,8 @@ export interface ResolvedSecurityApiOptions {
   readonly bundleTtlMs: number;
   /** The bundle repair pass's interval, ms; `undefined` when off. */
   readonly bundleRepairMs: number | undefined;
+  /** How long ended automatic bans are kept, ms; `undefined`: no purge pass. */
+  readonly autoBanRetentionMs: number | undefined;
   /** The audit log's settings, resolved. */
   readonly audit: {
     /** The audit key. */
@@ -351,6 +360,7 @@ export function resolveOptions(
       "createSecurityApi(): bundleTtl",
     ),
     bundleRepairMs: resolveBundleRepair(options.bundleRepair),
+    autoBanRetentionMs: resolveAutoRetention(options.bans?.autoRetention),
     basePath,
     csrf,
     docs: {
@@ -375,6 +385,23 @@ export function resolveOptions(
 }
 
 /** The bundle repair pass's interval in ms (1 s to 1 h), or `undefined` when off. */
+function resolveAutoRetention(
+  retention: Duration | false | undefined,
+): number | undefined {
+  if (retention === false) return undefined;
+  const ms = toDurationMs(
+    retention ?? "30d",
+    "createSecurityApi(): bans.autoRetention",
+  );
+  if (ms < 3_600_000) {
+    throw new ConfigError(
+      `createSecurityApi(): bans.autoRetention must be at least 1 h; got ${ms} ms`,
+    );
+  }
+  return ms;
+}
+
+/** The bundle repair pass's interval, ms; `undefined` when off. */
 function resolveBundleRepair(
   repair: SecurityApiOptions["bundleRepair"],
 ): number | undefined {

@@ -107,7 +107,14 @@ export interface SecurityApi {
    * false`. The bundles compiled.
    */
   readonly repairBundles: () => Promise<readonly CompiledBundleDto[]>;
-  /** Stops what the API runs by itself (the bundle repair pass, alerting). The store is the host's: never closed here. */
+  /**
+   * Runs the retention pass of the agents' automatic bans now: deletes
+   * those that ended more than `bans.autoRetention` ago (30 days by
+   * default), audited as `bans.purge` with the count; `0` with
+   * `autoRetention: false`. The count.
+   */
+  readonly purgeAutoBans: () => Promise<number>;
+  /** Stops what the API runs by itself (the bundle repair and ban retention passes, alerting). The store is the host's: never closed here. */
   readonly close: () => void;
   /** Signs and writes a checkpoint of the chain's head now; `null` when the chain is empty. */
   readonly checkpointAudit: () => Promise<AuditCheckpoint | null>;
@@ -305,13 +312,42 @@ export function createSecurityApi(options: SecurityApiOptions): SecurityApi {
     repairTimer.unref?.();
   }
 
+  // The retention of the agents' automatic bans: once an hour and at
+  // start, one pass at a time; a failing pass is logged, the next retries.
+  const purgeOnce = async (): Promise<number> =>
+    resolved.autoBanRetentionMs === undefined
+      ? 0
+      : await plane.purgeAutoBans(plane.now() - resolved.autoBanRetentionMs);
+  let purging: Promise<unknown> | undefined;
+  const purgeScheduled = (): void => {
+    if (purging !== undefined) return;
+    purging = purgeOnce()
+      .catch((error: unknown) => {
+        logger.error("bun-security: the automatic-ban purge failed", {
+          error,
+        });
+      })
+      .finally(() => {
+        purging = undefined;
+      });
+  };
+  let purgeTimer: ReturnType<typeof setInterval> | undefined;
+  if (resolved.autoBanRetentionMs !== undefined) {
+    queueMicrotask(purgeScheduled);
+    purgeTimer = setInterval(purgeScheduled, 3_600_000);
+    purgeTimer.unref?.();
+  }
+
   return Object.freeze({
     router,
     basePath: resolved.basePath,
     repairBundles: repairOnce,
+    purgeAutoBans: purgeOnce,
     close: () => {
       if (repairTimer !== undefined) clearInterval(repairTimer);
       repairTimer = undefined;
+      if (purgeTimer !== undefined) clearInterval(purgeTimer);
+      purgeTimer = undefined;
       alerts?.close();
     },
     breakGlass: resolved.breakGlass !== undefined,
