@@ -725,12 +725,12 @@ describe("sqliteDriver table names and schema sync", () => {
     const calls: unknown[] = [];
     const spyOn = (driver: ReturnType<typeof sqliteDriver>) => {
       const target = driver as unknown as {
-        migrateSchema: (db: Database, options: unknown) => unknown;
+        migrateSchema: (options: unknown) => Promise<unknown>;
       };
       const original = target.migrateSchema.bind(driver);
-      target.migrateSchema = (db, options) => {
+      target.migrateSchema = async (options) => {
         calls.push(options);
-        return original(db, options);
+        return await original(options);
       };
     };
     const off = sqliteDriver({ path: join(dir, "sync-off.db") });
@@ -757,7 +757,8 @@ describe("sqliteDriver table names and schema sync", () => {
     spyOn(dry);
     await dry.connect!();
     expect(calls).toEqual([{}, { dryRun: true }]);
-    // One schema version: nothing to change, whether asked on connect or not.
+    // A schema the driver created: nothing to change, whether asked on
+    // connect or not.
     expect(await dry.syncSchema!()).toEqual([]);
     await dry.close();
   });

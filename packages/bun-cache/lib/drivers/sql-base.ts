@@ -34,7 +34,12 @@ import type {
 } from "../core/types";
 import type { EntryOrCounter } from "../core/read";
 import type { ConnectionInput, SqlCacheAdapter } from "./sql-connection";
-import { isPublicKeyRetrievalRefusal, openSqlClient } from "./sql-connection";
+import {
+  isPublicKeyRetrievalRefusal,
+  openSqlClient,
+  withLockRetry,
+} from "./sql-connection";
+import { sqlCacheSchema, syncCacheSchema } from "./sql-schema";
 import type { SqlCacheTable } from "./sql-tables";
 import { resolveSqlCacheTables, SQL_CACHE_TABLES } from "./sql-tables";
 
@@ -290,14 +295,16 @@ export abstract class SqlCacheDriverBase implements CacheDriver {
           }
         }
       }
-      await this.afterMigrate();
       // After the tables exist, not instead of creating them: a sync
-      // compares against what is there (bun-jobs' order).
+      // compares against what is there (bun-jobs' order). And before
+      // `afterMigrate`, which reads what the tables have (MySQL's tag index),
+      // so it sees an index the sync has just built.
       if (this.#syncOnConnect !== false) {
         await this.migrateSchema(
           this.#syncOnConnect === true ? {} : this.#syncOnConnect,
         );
       }
+      await this.afterMigrate();
     } catch (error) {
       // The client's own wording names a client option the caller never sees
       // and says nothing of the URL, so the driver says what to change (as
@@ -329,21 +336,44 @@ export abstract class SqlCacheDriverBase implements CacheDriver {
     await this.sql.unsafe("SELECT 1");
   }
 
-  /** Creates the tables if they are missing, then syncs them: `[]` until the schema first changes (§7.4, §8.3). */
+  /**
+   * Creates the tables if they are missing, then syncs them with bun-sql's
+   * engine (`sql-schema.ts`): `[]` for a schema the driver created; a missing
+   * column or `ix_…` index is reported, and repaired unless `dryRun`.
+   */
   async syncSchema(options: SchemaSyncOptions = {}): Promise<SchemaChange[]> {
     await this.ready();
-    return await this.migrateSchema(options);
+    const changes = await this.migrateSchema(options);
+    // What `afterMigrate` read (MySQL's tag index) may be stale now.
+    if (changes.some((change) => change.applied)) {
+      await this.afterMigrate();
+    }
+    return changes;
   }
 
   /**
    * The sync itself, without connecting first (connect runs it, under the
-   * `syncSchema` option, and must not wait on itself). Internal. There is
-   * one schema version, so there is nothing to change: `[]`.
+   * `syncSchema` option, and must not wait on itself). Internal.
    */
-  protected migrateSchema(
-    _options: SchemaSyncOptions,
+  protected async migrateSchema(
+    options: SchemaSyncOptions,
   ): Promise<SchemaChange[]> {
-    return Promise.resolve([]);
+    const sql = this.sql;
+    return await syncCacheSchema(
+      {
+        all: async <T>(text: string, params: unknown[]) =>
+          await withLockRetry(
+            async () => await sql.unsafe<T[]>(text, params as never),
+          ),
+        run: async (text: string) =>
+          await withLockRetry(
+            async (): Promise<unknown> => await sql.unsafe<unknown>(text),
+          ),
+      },
+      this.name,
+      sqlCacheSchema(this.name, this.tables, this.name !== "postgres"),
+      options,
+    );
   }
 
   /** Registers a listener for `maxEntries` evictions (reason `"cap"`); the core turns them into `evict` events. */

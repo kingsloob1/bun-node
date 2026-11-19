@@ -13,6 +13,7 @@ import { afterAll, describe, expect, it, test } from "bun:test";
 import type { BusMessage, StoredEntry } from "../../lib/index";
 import { createCache } from "../../lib/index";
 import type { PostgresCacheDriver } from "../../lib/drivers/postgres";
+import { sqlCacheIndexName } from "../../lib/drivers/sql-tables";
 import { runCacheDriverConformance } from "../../lib/testing/index";
 import type { SqlBackend } from "./backends";
 import { registerEntryOrCounterTests } from "./entryOrCounter";
@@ -389,9 +390,87 @@ export async function registerSqlSuite(
       spy(dry);
       await dry.connect!();
       expect(calls).toEqual([{}, { dryRun: true }]);
-      // One schema version: nothing to change, on connect or asked.
+      // A schema the driver created: nothing to change, on connect or asked.
       expect(await dry.syncSchema!()).toEqual([]);
       await dry.close();
+    });
+
+    test("syncSchema: a drifted schema is reported, then repaired unless dryRun; nothing of the operator's is touched", async () => {
+      const driver = make("drift_");
+      await driver.connect!();
+      const tables = (driver as unknown as { tables: Record<string, string> })
+        .tables;
+      const keyIndex = sqlCacheIndexName(tables.tags!, "key");
+      const stray = `ix_${tables.tags}_old`;
+      const mine = `op_${tables.tags}_mine`;
+      const sql = rawClient(backend);
+      const indexes = async (): Promise<string[]> =>
+        (
+          (await sql.unsafe(
+            name === "postgres"
+              ? "SELECT indexname AS name FROM pg_indexes WHERE tablename = $1"
+              : "SELECT DISTINCT INDEX_NAME AS name FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?",
+            [tables.tags],
+          )) as { name: string }[]
+        )
+          .map((row) => row.name)
+          .filter((index) => index !== "PRIMARY" && !index.endsWith("_pkey"))
+          .sort();
+      try {
+        // The drift: the tag index gone, an `ix_` index the driver does not
+        // define, and one an operator added under a name of their own.
+        await sql.unsafe(
+          name === "postgres"
+            ? `DROP INDEX ${keyIndex}`
+            : `DROP INDEX ${keyIndex} ON ${tables.tags}`,
+        );
+        await sql.unsafe(`CREATE INDEX ${stray} ON ${tables.tags} (k)`);
+        await sql.unsafe(`CREATE INDEX ${mine} ON ${tables.tags} (tag)`);
+
+        const planned = await driver.syncSchema!({ dryRun: true });
+        expect(planned).toEqual([
+          {
+            description: `create-index ${tables.tags}.${keyIndex}: the driver defines it and the table does not have it`,
+            applied: false,
+            blocking: false,
+          },
+          {
+            description: `drop-index ${tables.tags}.${stray}: the driver no longer defines it, and it costs a write per row`,
+            applied: false,
+            blocking: false,
+          },
+        ]);
+        // The dry run changed nothing.
+        expect(await indexes()).toEqual([mine, stray].sort());
+
+        const applied = await driver.syncSchema!();
+        expect(applied.map((change) => change.applied)).toEqual([true, true]);
+        expect(await indexes()).toEqual([keyIndex, mine].sort());
+        // Repaired: a second sync finds nothing.
+        expect(await driver.syncSchema!()).toEqual([]);
+      } finally {
+        await sql.close();
+        await driver.close();
+      }
+    });
+
+    if (name === "postgres") {
+      test("syncSchema: an UNLOGGED schema the driver created answers []", async () => {
+        const driver = make("unlogged_", { unlogged: true });
+        expect(await driver.syncSchema!({ dryRun: true })).toEqual([]);
+        expect(await driver.syncSchema!()).toEqual([]);
+        await driver.close();
+      });
+    }
+
+    test("syncSchema: tables named outright (the tables option) answer []", async () => {
+      const driver = backend.make({
+        url,
+        prefix: prefix("named_"),
+        tables: { entries: named("ent_"), tags: named("tg_") },
+      });
+      expect(await driver.syncSchema!({ dryRun: true })).toEqual([]);
+      await driver.close();
     });
   });
 

@@ -6,6 +6,10 @@
  * allowed is the error class, which the `configError` seam restores (bun-jobs'
  * `ConfigError`, bun-cache's `TypeError`), message for message.
  *
+ * Since PR-D0b and PR-D0c bun-jobs' lock retry, cursors and guard and
+ * bun-cache's helpers are bun-sql's, so those comparisons now guard the
+ * seams (the error class, message for message) rather than a copy.
+ *
  * Reads bun-jobs' and bun-cache's source by relative path, which only this
  * repository has. No server is needed.
  */

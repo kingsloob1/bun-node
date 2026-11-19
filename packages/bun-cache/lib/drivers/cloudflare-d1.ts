@@ -49,6 +49,7 @@ import type {
 import type { D1Statement } from "../cloudflare/client";
 import { CloudflareClient } from "../cloudflare/client";
 import type { SqlCacheTable } from "./sql-tables";
+import { sqlCacheSchema, syncCacheSchema } from "./sql-schema";
 import { resolveSqlCacheTables, sqlCacheIndexName } from "./sql-tables";
 
 /** The default table prefix (§21). */
@@ -790,15 +791,36 @@ export class CloudflareD1CacheDriver implements CacheDriver {
     this.#evictListeners.push(listener);
   }
 
-  /** There is one schema version: nothing to sync (§7.4). Creates the tables first when they are missing. */
-  async syncSchema(_options: SchemaSyncOptions = {}): Promise<SchemaChange[]> {
+  /**
+   * Creates the tables first when they are missing, then syncs them with
+   * bun-sql's SQLite engine (`sql-schema.ts`), over the same REST calls:
+   * `[]` for a schema the driver created; a missing column or `ix_…` index
+   * is reported, and repaired unless `dryRun`. An index build blocks writers
+   * while it runs, so it says `blocking: true`. The triggers are the
+   * driver's own and are not compared.
+   */
+  async syncSchema(options: SchemaSyncOptions = {}): Promise<SchemaChange[]> {
     if (this.#ready === undefined) {
       await this.client.d1Query(
         this.#databaseId,
         this.#sql.schema.map((sql) => ({ sql })),
       );
     }
-    return [];
+    return await syncCacheSchema(
+      {
+        all: async <T>(text: string, params: unknown[]) =>
+          ((
+            await this.client.d1Query(this.#databaseId, [
+              { sql: text, params: params.map(String) },
+            ])
+          )[0]?.results ?? []) as T[],
+        run: async (text: string) =>
+          await this.client.d1Query(this.#databaseId, [{ sql: text }]),
+      },
+      "sqlite",
+      sqlCacheSchema("sqlite", this.tables, false),
+      options,
+    );
   }
 }
 

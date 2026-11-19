@@ -23,6 +23,7 @@ import {
   CloudflareD1CacheDriver,
   D1_MAX_ENTRY_BYTES,
 } from "../../lib/drivers/cloudflare-d1";
+import { sqlCacheIndexName } from "../../lib/drivers/sql-tables";
 import { runCacheDriverConformance } from "../../lib/testing/index";
 import { D1_BINDING, startLocalCloudflare } from "../cloudflare/harness";
 
@@ -186,11 +187,46 @@ describe("cloudflareD1Driver: schema", () => {
     expect(driver.tables.entries).toBe(`e${process.pid}_named`);
   });
 
-  test("syncSchema answers [] (one schema version), and runs on connect when asked", async () => {
+  test("syncSchema answers [] for a schema the driver created, and runs on connect when asked", async () => {
     const driver = make({ syncSchema: true });
     await driver.connect();
     expect(await driver.syncSchema({ dryRun: true })).toEqual([]);
     expect(await make().syncSchema()).toEqual([]);
+  });
+
+  test("syncSchema on bun-sql's: a lost index and a lost column are reported, then repaired unless dryRun", async () => {
+    const driver = make();
+    await driver.connect();
+    const { entries, tags } = driver.tables;
+    const keyIndex = sqlCacheIndexName(tags, "key");
+    await rows(driver, `DROP INDEX "${keyIndex}"`);
+    await rows(driver, `ALTER TABLE "${entries}" DROP COLUMN ca`);
+    const index = {
+      description: `create-index ${tags}.${keyIndex}: the driver defines it and the table does not have it`,
+      blocking: true,
+    };
+    const column = {
+      description: `add-column ${entries}.ca: the driver defines it and the table does not have it`,
+      blocking: false,
+    };
+    expect(await driver.syncSchema({ dryRun: true })).toEqual([
+      { ...column, applied: false },
+      { ...index, applied: false },
+    ]);
+    expect(await driver.syncSchema()).toEqual([
+      { ...column, applied: true },
+      { ...index, applied: true },
+    ]);
+    expect(await driver.syncSchema()).toEqual([]);
+    expect(
+      (
+        await rows(
+          driver,
+          "SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?",
+          keyIndex,
+        )
+      ).length,
+    ).toBe(1);
   });
 });
 
