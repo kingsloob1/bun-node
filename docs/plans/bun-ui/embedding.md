@@ -404,6 +404,30 @@ a host's unlayered rules above every layer, measured in Chrome.
     `onUnauthorized` replaces the redirect: called once per mount, for the
     statuses the UI's `unauthorized` lists (`[401]` by default).
 
+### Measured in EM-4
+
+18. **The host-shell e2e** (`__tests__/kit/e2e/embed.e2e.test.ts`, over
+    `hostShell.ts`): a host page with its own header, menu (the three
+    `*_SECTIONS` through `sectionsFor()`), strict CSP and aggressive
+    stylesheet mounts each UI from its router (`*UiMountTags()`), in Chrome.
+    The menu moves the UI with the page's history and with a host router
+    (`onNavigate`); back, forward and reload land on the same screen; the
+    UI's computed styles equal its own page's and the host's elements are
+    unchanged (control: the page's stylesheet unscoped restyles them);
+    every shell passes U6's structure, contrast and width checks at 1440
+    and 375 px; `unmount()` closes the security UI's live stream and leaves
+    no root, twice. No CSP violation, no console error.
+19. **The reader's text size** is set through CDP (`Page.setFontSizes`, as
+    Chrome's settings page sets it): Bun spawns one Chrome per process, the
+    first view's profile, so a profile's preferences cannot be given to a
+    later one. At 24 px, `--bun-ui-rem` is `24px` and the screen title 1.5
+    times its 16 px size.
+20. **The docs viewer's frame is a `<main>`** (it was a `<div>`): mounted it
+    has no landmark otherwise, which U6's structure check names. Its own
+    page gains the landmark too.
+21. **The playground's host-shell demo** is `/playground/embed`
+    (`playground/embed.ts`), linked from the startup banner.
+
 EM-1 also makes `shell` a kit option like `layout`: `resolveShell` in
 `lib/kit/options.ts`, taken by every `xxxUi()` (default `"full"`) and carried
 in each UI's config. The `:root` selectors in the kit's CSS stay until EM-2's

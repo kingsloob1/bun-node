@@ -94,12 +94,13 @@ export function App({
           >
             <Guard>
               {config.shell === "tabs" && <DocsTabs />}
-              <div
+              {/* The page's main landmark: the viewer has no header or nav of its own. */}
+              <main
                 className="docs-viewer"
                 data-shell={config.shell ?? "full"}
               >
                 <DocsViewer />
-              </div>
+              </main>
             </Guard>
           </RouterProvider>
         </QueryClientProvider>

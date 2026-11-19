@@ -493,6 +493,10 @@ the UI's own page needs are accepted and ignored.
   UI's are a WebSocket, which cannot carry headers, so it authenticates by
   cookie.
 - **React is bundled in** (any page, React or not, any React version).
+- **Give it a plain element**, not a `<main>`: the UI renders its own
+  `<main>` landmark and its screen's `<h1>`, so your page keeps its own
+  header and navigation landmarks beside them, as in the [host-shell
+  demo](../../playground/README.md).
 
 **Without a bundler**, load the module from the UI's router: `jobsUi()`
 serves `<basePath>/mount.js` and `<basePath>/mount.css` (revalidated on
