@@ -1,5 +1,5 @@
 /**
- * The security app's frame under each `chrome` (embedding.md §2; the user's
+ * The security app's frame under each `shell` (embedding.md §2; the user's
  * decision 2026-11-18, §12 item 7), and its sections as one list: the nav
  * renders the browser contract's `SECURITY_SECTIONS`, filtered by the kit's
  * `sectionsFor` exactly as a host's side menu would be.
@@ -68,25 +68,25 @@ describe("SECURITY_SECTIONS is the nav's list", () => {
   });
 });
 
-describe("chrome", () => {
+describe("shell", () => {
   it('"full" (the default): the header, its brand and theme toggle, and the side nav', async () => {
     renderApp();
     await page().findByTestId("nav", {}, LOADED);
-    expect(page().getByTestId("app-ready").dataset.chrome).toBe("full");
+    expect(page().getByTestId("app-ready").dataset.shell).toBe("full");
     expect(page().getByRole("banner")).toBeTruthy();
     expect(page().getByRole("button", { name: /^Theme:/ })).toBeTruthy();
     expectNone(page().queryAllByTestId("app-bar"), "compact bars");
   });
 
   it('"tabs": the sections as tabs, with the scope picker and live badge; no brand, nav or theme toggle', async () => {
-    renderApp({ config: { chrome: "tabs" } });
+    renderApp({ config: { shell: "tabs" } });
     expect(await linkLabels("section-tabs")).toEqual(
       SECURITY_SECTIONS.map((section) => section.label),
     );
     const bar = page().getByTestId("app-bar");
     expect(within(bar).getByTestId("scope-picker")).toBeTruthy();
     expect(within(bar).getByTestId("live-status")).toBeTruthy();
-    expect(page().getByTestId("app-ready").dataset.chrome).toBe("tabs");
+    expect(page().getByTestId("app-ready").dataset.shell).toBe("tabs");
     expectNone(page().queryAllByRole("banner"), "headers");
     expectNone(page().queryAllByTestId("nav"), "side navs");
     expectNone(
@@ -106,14 +106,14 @@ describe("chrome", () => {
   it('"tabs" keeps the operator\'s permissions: a section they lack is no tab', async () => {
     renderApp({
       path: "/?scope=global",
-      config: { chrome: "tabs" },
+      config: { shell: "tabs" },
       routes: defaultRoutes({ permissions: { global: { "bans:read": true } } }),
     });
     expect(await linkLabels("section-tabs")).toEqual(["Bans", "API reference"]);
   });
 
   it('"none": the screen under a bar of the scope picker alone; no tabs, nav, header or live badge', async () => {
-    renderApp({ config: { chrome: "none" } });
+    renderApp({ config: { shell: "none" } });
     await page().findByTestId("analytics", {}, LOADED);
     const bar = page().getByTestId("app-bar");
     expect(within(bar).getByTestId("scope-picker")).toBeTruthy();
@@ -121,7 +121,7 @@ describe("chrome", () => {
     expectNone(page().queryAllByTestId("section-tabs"), "tab bars");
     expectNone(page().queryAllByTestId("nav"), "side navs");
     expectNone(page().queryAllByRole("banner"), "headers");
-    expect(page().getByTestId("app-ready").dataset.chrome).toBe("none");
+    expect(page().getByTestId("app-ready").dataset.shell).toBe("none");
   });
 
   it('"none" still shows an elevated session: the break-glass badge stays in the bar', async () => {
@@ -134,7 +134,7 @@ describe("chrome", () => {
       }),
     );
     try {
-      renderApp({ config: { chrome: "none", breakGlass: true } });
+      renderApp({ config: { shell: "none", breakGlass: true } });
       const badge = await page().findByTestId(
         "break-glass-session",
         {},
@@ -147,13 +147,13 @@ describe("chrome", () => {
   });
 
   it("negative control: without a session, no break-glass badge", async () => {
-    renderApp({ config: { chrome: "none", breakGlass: true } });
+    renderApp({ config: { shell: "none", breakGlass: true } });
     await page().findByTestId("app-bar", {}, LOADED);
     expectAbsent(page().queryByTestId("break-glass-session"));
   });
 });
 
-describe("readUiConfig: chrome", () => {
+describe("readUiConfig: shell", () => {
   /** Reads `config` back from a page's config element. */
   function read(config: object) {
     const element = document.createElement("script");
@@ -168,13 +168,13 @@ describe("readUiConfig: chrome", () => {
     }
   }
 
-  it("takes a missing chrome as full (an older shell), keeps a valid one, refuses a bad one", () => {
-    const { chrome: _chrome, ...without } = securityConfig();
-    expect(read(without).chrome).toBe("full");
-    expect(read(securityConfig({ chrome: "tabs" })).chrome).toBe("tabs");
+  it("takes a missing shell as full (an older shell), keeps a valid one, refuses a bad one", () => {
+    const { shell: _chrome, ...without } = securityConfig();
+    expect(read(without).shell).toBe("full");
+    expect(read(securityConfig({ shell: "tabs" })).shell).toBe("tabs");
     for (const bad of [null, "side", 2]) {
-      expect(() => read({ ...securityConfig(), chrome: bad })).toThrow(
-        '"chrome" must be',
+      expect(() => read({ ...securityConfig(), shell: bad })).toThrow(
+        '"shell" must be',
       );
     }
   });

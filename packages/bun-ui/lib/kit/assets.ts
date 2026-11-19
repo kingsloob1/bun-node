@@ -13,10 +13,16 @@
  *
  * It imports no domain package: an error for a bad configuration is made by
  * the caller's {@link AssetsFail}, so the kit never makes an entry need a peer.
+ *
+ * A UI's bundle also carries its **mount stylesheet** (embedding.md §4): the
+ * entry stylesheet scoped to the mount element (`./scopeCss.ts`), made from
+ * the very stylesheet the page links, so the two never drift. The page never
+ * links it; `/assets/:file` serves it like any other file.
  */
 import type { Logger } from "@kingsleyweb/bun-common";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { scopeStylesheet } from "./scopeCss";
 
 /** The package root (`packages/bun-ui`, or `node_modules/@kingsleyweb/bun-ui`). */
 export const PACKAGE_DIR = resolve(import.meta.dir, "..", "..");
@@ -52,6 +58,9 @@ export const MANIFEST_FILE = "manifest.json";
 /** The sub-directory of a dist directory holding the hashed files. */
 export const ASSETS_DIR = "assets";
 
+/** The unhashed copy of a UI's mount stylesheet in its dist directory (`dist/<ui>/mount.css`), for `exports["./<ui>/mount.css"]`. */
+export const MOUNT_STYLESHEET = "mount.css";
+
 /** One file of the bundle, as `dist/manifest.json` records it. */
 export interface UiManifestFile {
   /** The `Content-Type` it is served with, e.g. `"text/javascript; charset=utf-8"`. */
@@ -75,6 +84,17 @@ export interface UiManifest {
   };
   /** Every file under `dist/assets/`, by file name. */
   files: Record<string, UiManifestFile>;
+  /**
+   * The mount stylesheets (embedding.md §4), the ones a host links beside
+   * the mounted UI; absent from a bundle built without
+   * {@link BuildAssetsOptions.mount}.
+   */
+  mount?: {
+    /** The UI they are scoped to (`"jobs"`): the mount root's `data-bun-ui`. */
+    ui: string;
+    /** File names of the scoped stylesheets, in the order to link them: the entry's, then any the server adds (a custom theme's). */
+    css: string[];
+  };
 }
 
 /** One file of the bundle, held in memory. */
@@ -93,6 +113,8 @@ export interface UiAssets {
   entry: UiManifest["entry"];
   /** Every file, by its hashed name. */
   files: ReadonlyMap<string, UiAsset>;
+  /** The mount stylesheets, when the bundle was built with them ({@link BuildAssetsOptions.mount}). */
+  mount?: UiManifest["mount"];
   /** Where the bundle came from: a `dist/` directory or an in-memory build. */
   source: "dist" | "memory";
 }
@@ -118,6 +140,12 @@ export interface BuildAssetsOptions {
   check?: boolean;
   /** Makes the error for a missing entry. Defaults to {@link plainFail}. */
   fail?: AssetsFail;
+  /**
+   * The UI's name (`"jobs"`): also emit the entry stylesheet scoped to that
+   * UI's mount element, as `mount-<hash>.css` ({@link UiAssets.mount}).
+   * Defaults to none (a test fixture's bundle).
+   */
+  mount?: string;
 }
 
 /** Content types by extension, so both sources agree whatever Bun reports. */
@@ -240,18 +268,55 @@ export async function buildAssets(
   if (js === undefined) {
     throw new Error(`bun-ui: building ${entry} produced no entry module`);
   }
-  return {
-    entry: { js, css: entryStylesheets(js, css) },
+  const stylesheets = entryStylesheets(js, css);
+  const assets: UiAssets = {
+    entry: { js, css: stylesheets },
     files,
     source: "memory",
   };
+  return options.mount === undefined
+    ? assets
+    : withMountStylesheet(assets, options.mount, stylesheets);
+}
+
+/** A file's hashed name, `<stem>-<hash>.css`, after its content. */
+function hashedName(stem: string, body: Uint8Array): string {
+  const hash = new Bun.CryptoHasher("sha256")
+    .update(body)
+    .digest("hex")
+    .slice(0, 12);
+  return `${stem}-${hash}.css`;
+}
+
+/** The text of the bundle's stylesheets `names`, in order. */
+function stylesheetText(assets: UiAssets, names: readonly string[]): string {
+  const decoder = new TextDecoder();
+  return names
+    .map((name) => decoder.decode(assets.files.get(name)!.body))
+    .join("\n");
+}
+
+/** The bundle with the entry stylesheets `names` scoped for mounting as `mount-<hash>.css`. */
+function withMountStylesheet(
+  assets: UiAssets,
+  ui: string,
+  names: readonly string[],
+): UiAssets {
+  const body = new TextEncoder().encode(
+    scopeStylesheet(stylesheetText(assets, names), ui),
+  ) as Uint8Array<ArrayBuffer>;
+  const name = hashedName("mount", body);
+  const files = new Map(assets.files);
+  files.set(name, toAsset(name, body, CONTENT_TYPES.css));
+  return { ...assets, files, mount: { ui, css: [name] } };
 }
 
 /**
  * The bundle with one more stylesheet, linked after the built-in ones: a
  * custom theme's (`./theme`), named `<stem>-<hash>.css` after its content so
- * it caches like the rest, with its own SRI and ETag. The bundle is not
- * changed; a new one is returned.
+ * it caches like the rest, with its own SRI and ETag. A bundle with mount
+ * stylesheets gets its scoped copy too (`<stem>-mount-<hash>.css`), after
+ * theirs. The bundle is not changed; a new one is returned.
  *
  * @param assets The loaded bundle.
  * @param stem The file's name before the hash (`"theme"`).
@@ -263,17 +328,23 @@ export function withStylesheet(
   css: string,
 ): UiAssets {
   const body = new TextEncoder().encode(css) as Uint8Array<ArrayBuffer>;
-  const hash = new Bun.CryptoHasher("sha256")
-    .update(body)
-    .digest("hex")
-    .slice(0, 12);
-  const name = `${stem}-${hash}.css`;
+  const name = hashedName(stem, body);
   const files = new Map(assets.files);
   files.set(name, toAsset(name, body, CONTENT_TYPES.css));
+  let mount = assets.mount;
+  if (mount !== undefined) {
+    const scoped = new TextEncoder().encode(
+      scopeStylesheet(css, mount.ui),
+    ) as Uint8Array<ArrayBuffer>;
+    const scopedName = hashedName(`${stem}-mount`, scoped);
+    files.set(scopedName, toAsset(scopedName, scoped, CONTENT_TYPES.css));
+    mount = { ui: mount.ui, css: [...mount.css, scopedName] };
+  }
   return {
     ...assets,
     entry: { js: assets.entry.js, css: [...assets.entry.css, name] },
     files,
+    ...(mount === undefined ? {} : { mount }),
   };
 }
 
@@ -309,6 +380,9 @@ export function manifestOf(assets: UiAssets): UiManifest {
     version: 1,
     entry: { js: assets.entry.js, css: [...assets.entry.css] },
     files,
+    ...(assets.mount === undefined
+      ? {}
+      : { mount: { ui: assets.mount.ui, css: [...assets.mount.css] } }),
   };
 }
 
@@ -417,7 +491,27 @@ export function loadDistAssets(
       throw corrupt(`the entry file ${name} is not in the manifest`);
     }
   }
-  return { entry: { js, css: cssList }, files, source: "dist" };
+  let mount: UiManifest["mount"];
+  if (record.mount !== undefined) {
+    const ui = stringField(record.mount, "ui");
+    const mountCss = (record.mount as { css?: unknown } | null)?.css;
+    if (
+      ui === undefined ||
+      !Array.isArray(mountCss) ||
+      !mountCss.every(
+        (name): name is string => typeof name === "string" && files.has(name),
+      )
+    ) {
+      throw corrupt("a bad mount entry");
+    }
+    mount = { ui, css: mountCss };
+  }
+  return {
+    entry: { js, css: cssList },
+    files,
+    ...(mount === undefined ? {} : { mount }),
+    source: "dist",
+  };
 }
 
 /** In-memory builds, by entry path: each entry is built at most once per process. */
@@ -441,7 +535,7 @@ export function buildAssetsOnce(
       `bun-ui: no dist/${ui} build, bundling the app in memory (run \`bun scripts/build.ts\` to prebuild)`,
       { entry: key },
     );
-    build = buildAssets({ entry: key });
+    build = buildAssets({ entry: key, mount: ui });
     memoryBuilds.set(key, build);
     build.catch(() => {
       if (memoryBuilds.get(key) === build) {

@@ -144,7 +144,7 @@ function Main({ children }: { children: ReactNode }) {
 }
 
 /**
- * The app frame, as the config's `chrome` asks (embedding.md §2, §12 item 7).
+ * The app frame, as the config's `shell` asks (embedding.md §2, §12 item 7).
  * `"full"`: a skip link to the main landmark, the header (banner), the
  * section nav and the screen in `<main>`. `"tabs"`: the kit's compact bar,
  * the top-level sections as tabs and the live status, above the screen.
@@ -154,12 +154,12 @@ function Main({ children }: { children: ReactNode }) {
  * the E2E smoke waits on it.
  */
 export function Layout({ nav, children }: LayoutProps) {
-  const { chrome } = useUiConfig();
-  if (chrome === "full") {
+  const { shell } = useUiConfig();
+  if (shell === "full") {
     return (
       <div
         className="app"
-        data-chrome="full"
+        data-shell="full"
         data-testid="app-ready"
       >
         <SkipLink />
@@ -175,10 +175,10 @@ export function Layout({ nav, children }: LayoutProps) {
   return (
     <div
       className="app"
-      data-chrome={chrome}
+      data-shell={shell}
       data-testid="app-ready"
     >
-      {chrome === "tabs" && (
+      {shell === "tabs" && (
         <>
           <SkipLink />
           <FrameBar

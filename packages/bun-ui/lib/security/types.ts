@@ -6,7 +6,7 @@ import type {
   RouterHandler,
 } from "@kingsleyweb/bun-common";
 import type { SecurityApi } from "@kingsleyweb/bun-security/control";
-import type { UiChrome } from "../kit/browser/mount";
+import type { UiShell } from "../kit/browser/mount";
 import type { UiLayoutOptions, UiThemeInput } from "../kit/browser/shared";
 import type { UnauthorizedOptions } from "../kit/browser/unauthorized";
 import type { UiAuthorizeContext } from "../kit/serve";
@@ -54,7 +54,7 @@ export interface SecurityUiBaseOptions {
    * screen alone, for a page whose own menu is the nav. A host that mounts
    * the UI in its own page passes it to the mount function instead.
    */
-  chrome?: UiChrome;
+  shell?: UiShell;
   /** Where the bundle comes from: unset, `dist/` when present else built in memory; `true` always build; `false` require `dist/`. */
   dev?: boolean;
   /** Logger, or anything `resolveLogger` accepts. */

@@ -46,7 +46,7 @@ function useSearchShortcut() {
  * the browser to the sign-in target, once (`unauthorized.ts`). Only the
  * viewer's own queries reach the cache: the try-it panel's calls do not, so
  * the documented API's 401 to a tried request never redirects. With
- * `chrome: "tabs"`, the kit's compact bar names the document's section
+ * `shell: "tabs"`, the kit's compact bar names the document's section
  * above it ({@link DocsTabs}).
  */
 export function App({ config, queryClient, fetch }: AppProps) {
@@ -64,10 +64,10 @@ export function App({ config, queryClient, fetch }: AppProps) {
       <DocsFetchContext value={fetch ?? null}>
         <QueryClientProvider client={queryClient}>
           <RouterProvider basePath={config.basePath}>
-            {config.chrome === "tabs" && <DocsTabs />}
+            {config.shell === "tabs" && <DocsTabs />}
             <div
               className="docs-viewer"
-              data-chrome={config.chrome ?? "full"}
+              data-shell={config.shell ?? "full"}
             >
               <DocsViewer />
             </div>

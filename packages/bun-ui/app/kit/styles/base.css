@@ -168,10 +168,10 @@ code {
   outline: none;
 }
 
-/* ---- Compact frame: chrome "tabs" and "none" (app/kit/components/FrameBar.tsx) ---- */
+/* ---- Compact frame: shell "tabs" and "none" (app/kit/components/FrameBar.tsx) ---- */
 /* Inside a host's content area: the host decides the height. */
-.app[data-chrome="tabs"],
-.app[data-chrome="none"] {
+.app[data-shell="tabs"],
+.app[data-shell="none"] {
   min-height: 0;
 }
 

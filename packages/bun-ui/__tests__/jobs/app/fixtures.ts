@@ -50,7 +50,7 @@ export function uiConfig(overrides: Partial<JobsUiConfig> = {}): JobsUiConfig {
     sections: { manage: true, docs: true },
     theme: "system",
     layout: { align: "center", scope: "content", maxWidth: 1400 },
-    chrome: "full",
+    shell: "full",
     unauthorized: null,
     ...overrides,
   };

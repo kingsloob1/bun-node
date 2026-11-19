@@ -36,6 +36,7 @@ UI never loads another's code or bundle.
 - [Layout](#layout)
 - [Frame and sections](#frame-and-sections)
 - [Forms](#forms)
+- [The mount stylesheet](#the-mount-stylesheet)
 - [What a UI serves](#what-a-ui-serves)
 - [Tree-shaking](#tree-shaking)
 - [Troubleshooting](#troubleshooting)
@@ -92,7 +93,7 @@ option when called and throws bun-jobs' `ConfigError` for anything unusable.
 | `middleware` | `[]` | Handlers run before `authorize` on the requests the UI answers. |
 | `theme` | `"system"` | `"system"`, `"light"` or `"dark"`, or `{ mode?, light?, dark? }` to set your own colours too ([Colour themes](#colour-themes)). |
 | `layout` | centred, 1400px | `{ align?, scope?, maxWidth? }`: where the content sits on a wide screen ([Layout](#layout)). |
-| `chrome` | `"full"` | `"full"`, `"tabs"` or `"none"`: how much of its own frame the UI draws ([Frame and sections](#frame-and-sections)). |
+| `shell` | `"full"` | `"full"`, `"tabs"` or `"none"`: how much of its own frame the UI draws ([Frame and sections](#frame-and-sections)). |
 | `dev` | unset | Unset or `false`: serve the prebuilt `dist/jobs/` (`false` throws without it). `true` rebuilds from the app's source, which the published package does not ship for `/jobs`: leave it unset. |
 | `logger` | console | Any `LoggerLike` bun-common's `resolveLogger` accepts. |
 
@@ -141,7 +142,7 @@ bun-common's `ConfigError` for an unusable option. Every URL under
 | `title` | `"API docs"` | Page title. |
 | `theme` | `"system"` | `"system"`, `"light"` or `"dark"`, or `{ mode?, light?, dark? }` to set your own colours too ([Colour themes](#colour-themes)). |
 | `layout` | centred, 1400px | `{ align?, scope?, maxWidth? }`: where the content sits on a wide screen ([Layout](#layout)). |
-| `chrome` | `"full"` | `"tabs"` names the document's section in a compact bar; `"full"` and `"none"` draw no frame ([Frame and sections](#frame-and-sections)). |
+| `shell` | `"full"` | `"tabs"` names the document's section in a compact bar; `"full"` and `"none"` draw no frame ([Frame and sections](#frame-and-sections)). |
 | `extensions` | `["x-bun-common", "x-bun-jobs"]` | Specification-extension prefixes the viewer reads, first hit winning (`DEFAULT_EXTENSION_PREFIXES`). |
 | `csrfHeader` | none | A header the try-it panel adds on every mutation, or `false`. |
 | `authorize` | none | Guards the shell, the bundle and a thunk's document (not the documented API). Same shape and fail-closed rules as `jobsUi()`'s. |
@@ -217,8 +218,8 @@ reading the injected config) may import them:
   `SECURITY_UI_CONFIG_ELEMENT_ID` and `SECURITY_SECTIONS`.
 - **Every `/<ui>/browser` entry** also carries the kit's frame and mount
   contract: `UiSection` and `sectionsFor` ([Frame and
-  sections](#frame-and-sections)); `UiChrome`, `UI_CHROMES`,
-  `isUiChrome`, `MountOptions`, `MountedUi`, `MountTheme`, `MountLayout`
+  sections](#frame-and-sections)); `UiShell`, `UI_SHELLS`,
+  `isUiShell`, `MountOptions`, `MountedUi`, `MountTheme`, `MountLayout`
   and their defaults and resolvers, which the mount functions of a later
   release take.
 - **`@kingsleyweb/bun-ui/docs/browser`**: `DocsUiConfig`, `DocsUiTheme`,
@@ -338,13 +339,13 @@ docsUi({ document: "/api/openapi.json", layout: { align: "left", maxWidth: 1200 
 
 ## Frame and sections
 
-`chrome` decides how much of its own frame a UI draws. Every UI takes it,
+`shell` decides how much of its own frame a UI draws. Every UI takes it,
 like `layout`:
 
 ```ts
 jobsUi({ api });                      // "full", the default: header and side nav
-securityUi({ api, chrome: "tabs" });  // a compact bar of the sections above the screen
-jobsUi({ api, chrome: "none" });      // the screen alone: the page's own menu is the nav
+securityUi({ api, shell: "tabs" });  // a compact bar of the sections above the screen
+jobsUi({ api, shell: "none" });      // the screen alone: the page's own menu is the nav
 ```
 
 - **`"full"`** is the frame as before: the header (brand, chips, live
@@ -397,6 +398,44 @@ shows none, since a placeholder is for an empty field. Checkboxes, dates and
 files have none. The kit's `TextInput`, `NumberInput` and `JsonEditor`
 require a `placeholder`, and `Select` either a `placeholder` or `alwaysSet`;
 a test reads every app's fields so no raw one goes without.
+
+## The mount stylesheet
+
+Each UI also ships its stylesheet **scoped to a mount element**, for a page
+that shows the UI inside its own layout (the mount functions that render it
+there arrive in a later release):
+
+```ts
+import "@kingsleyweb/bun-ui/jobs/mount.css";     // a bundling host
+// also /security/mount.css and /docs/mount.css
+```
+
+It is the UI's own page stylesheet, rewritten when the package is built:
+
+- **Every rule sits under the UI's root**, `[data-bun-ui="jobs"]`, an
+  element the UI creates inside the host's: nothing of the UI's reaches the
+  host's page.
+- **A guard comes first**: the root starts from initial values and every
+  element in it from the browser's own styles, so the host's universal and
+  element rules (`* { font }`, `button { … }`) do not reach in. A host rule
+  more specific than that (`.card p` around the root) still does.
+- **`rem` is the reader's size**, not the host's: a host with
+  `html { font-size: 62.5% }` does not shrink the UI.
+- **Its keyframes are renamed** (`bun-ui-jobs-spin`), so a host's `spin`
+  does not replace the UI's.
+- **Not in a cascade layer**: the CSS spec ranks a host's unlayered rules
+  above every layer, so a layered UI would lose to any global rule.
+
+**To restyle a mounted UI on purpose**, set the theme's custom properties on
+the root (`[data-bun-ui="jobs"] { --accent: #0f766e; }`, or the `theme`
+option's colours), or write a selector at least as specific as the UI's
+(`[data-bun-ui="jobs"] .btn { … }`) in a stylesheet linked after it. The
+kit's class names are not a public API.
+
+Within a UI's own page nothing changes: the page links its usual
+stylesheet, byte for byte the same, and never the mount one. The router
+serves the mount stylesheet as a hashed asset under `<basePath>/assets/`
+like the rest (a custom theme's colours get a scoped copy too).
 
 ## What a UI serves
 

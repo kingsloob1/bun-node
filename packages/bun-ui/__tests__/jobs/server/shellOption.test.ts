@@ -1,5 +1,5 @@
 /**
- * The `chrome` option (embedding.md §2, the kit's, like `layout`) through
+ * The `shell` option (embedding.md §2, the kit's, like `layout`) through
  * the real routers, socket-free: every UI (`jobsUi()`, `docsUi()`,
  * `securityUi()`) draws its full frame by default, hands the browser the
  * checked value, refuses a bad one with its own `ConfigError`, and serves
@@ -42,26 +42,26 @@ const UIS = [
 ] as const;
 
 for (const [name, make, shellOf, ConfigError] of UIS) {
-  describe(`${name} chrome`, () => {
+  describe(`${name} shell`, () => {
     it('is "full" when unset, in the config and the page', async () => {
       const ui = make();
-      expect(ui.config.chrome).toBe("full");
+      expect(ui.config.shell).toBe("full");
       const { shell } = await shellOf(ui.router, "/");
-      expect((shell.config as { chrome: unknown }).chrome).toBe("full");
+      expect((shell.config as { shell: unknown }).shell).toBe("full");
     });
 
     it("hands the browser the value given", async () => {
-      for (const chrome of ["tabs", "none", "full"] as const) {
-        const ui = make({ chrome });
-        expect(ui.config.chrome).toBe(chrome);
+      for (const value of ["tabs", "none", "full"] as const) {
+        const ui = make({ shell: value });
+        expect(ui.config.shell).toBe(value);
         const { shell } = await shellOf(ui.router, "/");
-        expect((shell.config as { chrome: unknown }).chrome).toBe(chrome);
+        expect((shell.config as { shell: unknown }).shell).toBe(value);
       }
     });
 
-    it("adds no stylesheet and leaves the CSP as it is (control: no chrome)", async () => {
+    it("adds no stylesheet and leaves the CSP as it is (control: no shell)", async () => {
       const plain = await shellOf(make().router, "/");
-      const compact = await shellOf(make({ chrome: "none" }).router, "/");
+      const compact = await shellOf(make({ shell: "none" }).router, "/");
       expect(compact.shell.styles).toEqual(plain.shell.styles);
       const csp = (response: Response) =>
         response.headers
@@ -70,11 +70,11 @@ for (const [name, make, shellOf, ConfigError] of UIS) {
       expect(csp(compact.response)).toBe(csp(plain.response));
     });
 
-    it("refuses a bad chrome with its own ConfigError", () => {
-      for (const chrome of ["header", null, true, "Full"]) {
-        expect(() => make({ chrome })).toThrow(ConfigError);
-        expect(() => make({ chrome })).toThrow(
-          'chrome must be "full", "tabs" or "none"',
+    it("refuses a bad shell with its own ConfigError", () => {
+      for (const value of ["header", null, true, "Full"]) {
+        expect(() => make({ shell: value })).toThrow(ConfigError);
+        expect(() => make({ shell: value })).toThrow(
+          'shell must be "full", "tabs" or "none"',
         );
       }
     });

@@ -25,7 +25,7 @@ import {
   normalizeMountPath,
   requireOptionsObject,
   resolveCommonOptions,
-  resolveChrome,
+  resolveShell,
   resolveLayout,
 } from "../kit/options";
 import { connectSources } from "../kit/connect";
@@ -132,7 +132,7 @@ export function createSecurityUi(
     live: { path: `${target.apiBase}/live` },
     theme: theme.mode,
     layout: resolveLayout(options.layout, fail),
-    chrome: resolveChrome(options.chrome, fail),
+    shell: resolveShell(options.shell, fail),
     unauthorized: resolveUnauthorized(options.unauthorized, basePath, fail),
   });
 

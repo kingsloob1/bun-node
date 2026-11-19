@@ -4,7 +4,7 @@ import type {
   LoggerLike,
   RouterHandler,
 } from "@kingsleyweb/bun-common";
-import type { UiChrome } from "../kit/browser/mount";
+import type { UiShell } from "../kit/browser/mount";
 import type { UiLayoutOptions, UiThemeInput } from "../kit/browser/shared";
 import type { DocsUiConfig } from "./browser/config";
 import type { UnauthorizedOptions } from "../kit/browser/unauthorized";
@@ -152,7 +152,7 @@ export interface DocsUiOptions {
    * screen alone, for a page whose own menu is the nav. A host that mounts
    * the UI in its own page passes it to the mount function instead.
    */
-  chrome?: UiChrome;
+  shell?: UiShell;
   /**
    * Where the bundle comes from. Unset (default): the prebuilt `dist/` when
    * present, else an in-memory `Bun.build` on the first request. `true`:

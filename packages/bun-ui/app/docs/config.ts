@@ -1,9 +1,6 @@
 import type { DocsUiConfig } from "../../lib/docs/browser/config.ts";
 import { DOCS_UI_CONFIG_ELEMENT_ID } from "../../lib/docs/browser/config.ts";
-import {
-  DEFAULT_SHELL_CHROME,
-  isUiChrome,
-} from "../../lib/kit/browser/mount.ts";
+import { DEFAULT_PAGE_SHELL, isUiShell } from "../../lib/kit/browser/mount.ts";
 import { DEFAULT_UI_LAYOUT, isUiLayout } from "../../lib/kit/browser/shared.ts";
 import { isUiUnauthorized } from "../../lib/kit/browser/unauthorized.ts";
 
@@ -74,11 +71,10 @@ export function parseDocsUiConfig(value: unknown): DocsUiConfig {
   // mirrors the config (bun-common's docsRouter): off.
   // Missing in a shell from before the option, or a mirrored config without
   // it (bun-common's self-hosted docs viewer): the shell's frame.
-  const chrome =
-    value.chrome === undefined ? DEFAULT_SHELL_CHROME : value.chrome;
-  if (!isUiChrome(chrome)) {
+  const shell = value.shell === undefined ? DEFAULT_PAGE_SHELL : value.shell;
+  if (!isUiShell(shell)) {
     throw new DocsUiConfigError(
-      `The UI configuration's "chrome" must be "full", "tabs" or "none".`,
+      `The UI configuration's "shell" must be "full", "tabs" or "none".`,
     );
   }
   const unauthorized = value.unauthorized ?? null;
@@ -87,7 +83,7 @@ export function parseDocsUiConfig(value: unknown): DocsUiConfig {
       `The UI configuration's "unauthorized" must be null or { redirectTo, returnParam, statuses }.`,
     );
   }
-  return { ...value, layout, chrome, unauthorized } as unknown as DocsUiConfig;
+  return { ...value, layout, shell, unauthorized } as unknown as DocsUiConfig;
 }
 
 /** Reads the {@link DocsUiConfig} the server inlined as `<script type="application/json" id="bun-api-docs-ui-config">`. */

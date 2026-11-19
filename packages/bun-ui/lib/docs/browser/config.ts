@@ -8,7 +8,7 @@
  * imports: both sides import it, and the app side is bundled for the browser.
  */
 
-import type { UiChrome } from "../../kit/browser/mount";
+import type { UiShell } from "../../kit/browser/mount";
 import type { UiLayout, UiTheme } from "../../kit/browser/shared";
 import type { UiUnauthorized } from "../../kit/browser/unauthorized";
 
@@ -60,13 +60,13 @@ export interface DocsUiConfig {
   /** Where the content sits on a wide screen (the `layout` option, checked). */
   layout: UiLayout;
   /**
-   * How much of its own frame the viewer draws (the `chrome` option,
+   * How much of its own frame the viewer draws (the `shell` option,
    * checked). Optional, unlike the other UIs': a host that renders the
    * viewer's screens itself (the jobs and security UIs' API reference,
    * bun-common's self-hosted viewer) builds this config without it, and
    * absent is `"full"`.
    */
-  chrome?: UiChrome;
+  shell?: UiShell;
   /**
    * Where an authorization failure sends the browser (`docsUi()`'s
    * `unauthorized`), or `null` when it is off: the viewer then shows the
