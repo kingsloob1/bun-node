@@ -258,5 +258,9 @@
       "values": ["createCache"]
     }
   ],
-  "workspaceDependencies": ["packages/bun-contract", "packages/bun-common"]
+  "workspaceDependencies": [
+    "packages/bun-contract",
+    "packages/bun-common",
+    "packages/bun-sql"
+  ]
 }

@@ -1,7 +1,9 @@
 /**
- * The drift test for the connection helpers bun-cache copied from bun-jobs
- * (plan §8.3): the same inputs through both copies, compared — behaviour,
- * not text. A fix that lands in one copy and not the other fails here.
+ * The drift test for bun-cache's connection helpers against bun-jobs' own
+ * (plan §8.3): the same inputs through both, compared — behaviour, not text.
+ * bun-cache's are bun-sql's since PR-D0c, through its `TypeError` seam;
+ * bun-jobs still has its own (`lib/shared/connection.ts`), so a fix that
+ * lands in one and not the other fails here.
  *
  * bun-jobs is not a dependency of bun-cache, so its source is imported by
  * relative path: this test only exists inside the repository.
@@ -49,7 +51,7 @@ const URLS = [
   "mysql://u:p@127.0.0.1:3307/db?",
 ];
 
-describe("drift: bun-cache's copied connection helpers behave like bun-jobs'", () => {
+describe("drift: bun-cache's connection helpers behave like bun-jobs'", () => {
   test("takeBooleanParam", () => {
     for (const url of URLS) {
       expect(

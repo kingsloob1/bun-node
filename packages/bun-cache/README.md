@@ -1708,12 +1708,20 @@ hash past 63 characters). The table keys are the `SqlCacheTable` type.
 
 **Schema.** The tables are created automatically on first use, with
 `CREATE TABLE IF NOT EXISTS` (and `CREATE INDEX IF NOT EXISTS`), once per
-connection; nothing is ever dropped. `syncSchema()` answers `[]`: there is
-one schema version, so there is nothing to migrate yet. The `syncSchema`
-option (`true`, or the `SchemaSyncOptions` to pass) runs it when the tables
-are created — **a no-op until the schema first changes**; set it now so later
-migrations run on connect. As in bun-jobs, connecting does not return the
-sync's report: `await driver.syncSchema({ dryRun: true })` reads one.
+connection. `syncSchema()` compares the tables with what the driver defines,
+with [bun-sql](../bun-sql/README.md)'s schema sync: a schema the driver
+created answers `[]`; a missing column or `ix_…` index is reported, and added
+unless `dryRun`; an `ix_…` index the driver no longer defines is dropped (an
+index under any other name is never touched); a column of another type is
+never rewritten. An index build locks out writers on SQLite while it runs, so
+its change says `blocking: true`. Each change is
+`{ description, applied, blocking }`, the description reading
+`"<kind> <table>.<target>: <reason>"` (`create-index bun_cache_tags.ix_bun_cache_tags_key: the driver defines it and the table does not have it`).
+The `syncSchema` option (`true`, or the `SchemaSyncOptions` to pass) runs it
+right after the tables are created, before anything else runs on them; a
+sync that fails fails that first operation (the next one tries again). As in
+bun-jobs, connecting does not return the sync's report:
+`await driver.syncSchema({ dryRun: true })` reads one.
 
 - **One connection per file per process.** Every `sqliteDriver` on the same
   file (after `path.resolve`) shares one `Database`; the last `close()`
@@ -1805,13 +1813,16 @@ type.
 **Schema.** The tables are created automatically on first use, with
 `CREATE TABLE IF NOT EXISTS` (and `IF NOT EXISTS` indexes on Postgres; the
 indexes are inline in `CREATE TABLE` on MySQL and MariaDB), once per driver;
-nothing is ever dropped. `syncSchema()` answers `[]`: there is one schema
-version, so there is nothing to migrate yet. The `syncSchema` option
-(`true`, or the `SchemaSyncOptions` to pass) runs it on connect, after the
-tables are created — **a no-op until the schema first changes**; set it now
-so later migrations run on connect. As in bun-jobs, `connect()` does not
-return the sync's report: `await driver.syncSchema({ dryRun: true })` reads
-one.
+connecting never drops anything. `syncSchema()` compares the tables with
+what the driver defines, with [bun-sql](../bun-sql/README.md)'s schema sync,
+as the SQLite driver's does (above): a schema the driver created answers
+`[]`; a missing column or `ix_…` index is reported, and added unless `dryRun`
+(on Postgres `CONCURRENTLY`; InnoDB builds online); an `ix_…` index the
+driver no longer defines is dropped, and an index under any other name never
+touched; a column of another type is never rewritten. The `syncSchema`
+option (`true`, or the `SchemaSyncOptions` to pass) runs it on connect, after
+the tables are created. As in bun-jobs, `connect()` does not return the
+sync's report: `await driver.syncSchema({ dryRun: true })` reads one.
 
 - **Connections**: a `url`, `connection` fields, or an existing `sql` client
   (never closed by the driver; the driver closes only what it built). `max`
@@ -2613,9 +2624,10 @@ filtered on read and reclaimed by the sweeper — with what HTTP changes:
 - **Options**: `prefix` (an SQL identifier, `bun_cache_` by default),
   `tables` (exact names, as the SQL drivers take them; no `bus`),
   `maxEntries` (enforced by the sweep, nearest to expiry first, then the
-  oldest unexpiring; counters never), `syncSchema` (a no-op until the schema
-  first changes). The tables, indexes and triggers are created on first use,
-  each `IF NOT EXISTS`.
+  oldest unexpiring; counters never), `syncSchema` (the SQLite driver's
+  sync, over the REST API, run on connect when set; the triggers are the
+  driver's own and are not compared). The tables, indexes and triggers are
+  created on first use, each `IF NOT EXISTS`.
 - **Cost**: D1 bills rows read and written; the triggers add the tag rows'
   writes to each tagged `set` and invalidation.
 - **Local development** works as for KV: the shipped Worker in workerd

@@ -59,8 +59,11 @@ published packages under `packages/`:
   bun-cache. bun-jobs runs on it since PR-D0b: its `SqlDialect` is bun-sql's
   plus the claim members, its schema renderers, sync, cursors and collation
   guard are bun-sql's re-exported, and its refusals go through the
-  `configError` seam (`lib/drivers/sql/seam.ts`). bun-cache keeps its own
-  copy until PR-D0c (`__tests__/parity/` compares it). Bun only;
+  `configError` seam (`lib/drivers/sql/seam.ts`). bun-cache runs on it
+  since PR-D0c: its connection helpers are bun-sql's through a `TypeError`
+  seam (`lib/drivers/sql-seam.ts`), and its SQL drivers' `syncSchema()` is
+  bun-sql's sync over its tables as definitions (`lib/drivers/sql-schema.ts`),
+  reported in its own `SchemaChange` shape. Bun only;
   bun-common is its one runtime dependency, `mongodb` an optional peer.
 
 Each package: `lib/` source, `__tests__/` (bun:test), a `bun check`

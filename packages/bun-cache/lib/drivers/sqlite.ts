@@ -59,6 +59,7 @@ import { sketchAdd, sketchCount, sketchNamespace } from "../core/hll";
 import type { ThrottleCounters } from "../core/throttle-counters";
 import { THROTTLE_COUNTERS } from "../core/throttle-counters";
 import { entryCapExcess, entryCapStatements } from "./entry-cap";
+import { sqlCacheSchema, syncCacheSchema } from "./sql-schema";
 import { sqliteThrottleCounters } from "./throttle-sql";
 import type { EntryCapStatements } from "./entry-cap";
 import type { SqlCacheTable } from "./sql-tables";
@@ -385,6 +386,12 @@ class SqliteDriver implements CacheDriver {
   /** The open database, once connected; cleared by `close()`. */
   #db: Database | undefined;
 
+  /** The `syncSchema` option's sync on open, in flight; reset when it fails. */
+  #syncing: Promise<void> | undefined;
+
+  /** Whether the `syncSchema` option's sync on open has run. */
+  #synced = false;
+
   /** Open bus pollers, stopped by `close()`. */
   readonly #pollers = new Set<ReturnType<typeof setInterval>>();
 
@@ -484,15 +491,9 @@ class SqliteDriver implements CacheDriver {
       preparedSchemas.set(db, prepared);
     }
     if (!prepared.has(this.#storeKey)) {
-      const sync = this.#options.syncSchema ?? false;
       db.transaction(() => {
         for (const statement of this.#sql.schema) {
           db.run(statement);
-        }
-        // After the tables exist, not instead of creating them: a sync
-        // compares against what is there (bun-jobs' order).
-        if (sync !== false) {
-          this.migrateSchema(db, sync === true ? {} : sync);
         }
       }).immediate();
       prepared.add(this.#storeKey);
@@ -507,6 +508,35 @@ class SqliteDriver implements CacheDriver {
    * SQLite's busy handler, which would stall the event loop (§7.3).
    */
   async #run<T>(work: (db: Database) => T): Promise<T> {
+    await this.#syncOnOpen();
+    return await this.#attempt(work);
+  }
+
+  /**
+   * The `syncSchema` option's sync, once per driver, right after the tables
+   * are created and before anything else runs on them: bun-sql's engine is
+   * asynchronous, so it cannot run inside the creating transaction. Every
+   * `#run` waits for it, and a failure fails the open (the next call tries
+   * again).
+   */
+  async #syncOnOpen(): Promise<void> {
+    const sync = this.#options.syncSchema ?? false;
+    if (sync === false || this.#synced === true) {
+      return;
+    }
+    this.#syncing ??= this.migrateSchema(sync === true ? {} : sync).then(() => {
+      this.#synced = true;
+    });
+    try {
+      await this.#syncing;
+    } catch (error) {
+      this.#syncing = undefined;
+      throw error;
+    }
+  }
+
+  /** `#run` without the sync gate: one unit of work, with the busy retry. The sync's own statements run through it. */
+  async #attempt<T>(work: (db: Database) => T): Promise<T> {
     const deadline = Date.now() + BUSY_RETRY_MS;
     for (let attempt = 0; ; attempt++) {
       try {
@@ -1071,19 +1101,36 @@ class SqliteDriver implements CacheDriver {
     };
   }
 
-  /** Creates the tables if they are missing, then syncs them: `[]` until the schema first changes (§7.4). */
+  /**
+   * Creates the tables if they are missing, then syncs them with bun-sql's
+   * engine (`sql-schema.ts`): `[]` for a schema the driver created; a missing
+   * column or `ix_…` index is reported, and repaired unless `dryRun`. An
+   * index build blocks writers on SQLite while it runs, so it says
+   * `blocking: true`.
+   */
   async syncSchema(options: SchemaSyncOptions = {}): Promise<SchemaChange[]> {
-    return await this.#run((db) => this.migrateSchema(db, options));
+    await this.#run(() => undefined);
+    return await this.migrateSchema(options);
   }
 
   /**
-   * The sync itself, on the connection, synchronous like everything in
-   * `bun:sqlite` (the table creation runs it under the `syncSchema` option).
-   * Internal. There is one schema version, so there is nothing to change:
-   * `[]`.
+   * The sync itself, on the connection, without the open's sync gate (the
+   * gate runs it, under the `syncSchema` option, and must not wait on
+   * itself). Internal.
    */
-  migrateSchema(_db: Database, _options: SchemaSyncOptions): SchemaChange[] {
-    return [];
+  async migrateSchema(options: SchemaSyncOptions): Promise<SchemaChange[]> {
+    return await syncCacheSchema(
+      {
+        all: async <T>(text: string, params: unknown[]) =>
+          await this.#attempt(
+            (db) => db.query(text).all(...(params as string[])) as T[],
+          ),
+        run: async (text: string) => await this.#attempt((db) => db.run(text)),
+      },
+      "sqlite",
+      sqlCacheSchema("sqlite", this.#tables, true),
+      options,
+    );
   }
 }
 

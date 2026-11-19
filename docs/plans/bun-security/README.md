@@ -2237,6 +2237,25 @@ Decided here, within the PR's brief ("no public change"):
 4. bun-sql's `__tests__/parity/` stays: its member test now asserts bun-jobs' dialect has every bun-sql member and exactly the claim members beside them. Byte parity with bun-jobs' former copy was measured once against develop's files before they were deleted (every member, claims included, every engine; schema DDL, the drift warning, page cursors and every refusal's class and message).
 5. Not moved here, left as they are: bun-jobs' own SQL connection handling (`sql-driver.ts`) and its MongoDB index sync, which bun-sql's `./connection` and `./mongo` could replace; the plan's D0b row names neither.
 
+### 17.47 Added with PR-D0c, bun-cache onto bun-sql (approved by the user, 2026-11-19)
+
+| Names | Where |
+|---|---|
+| `CACHE_SQL`, the `SqlErrorOptions` bun-cache hands bun-sql (its `configError` makes a `TypeError`, message for message) | bun-cache `lib/drivers/sql-seam.ts` |
+| `sqlCacheSchema(engine, tables, withBus)` (the five tables and their `ix_…` indexes as bun-sql definitions, column for column what each driver's DDL creates), `syncCacheSchema(backend, engine, definition, options)`, `toCacheChange`, `describeChange`, type `SqlCacheSchemaEngine` (`postgres`, `mysql`, `mariadb`, `sqlite`) | bun-cache `lib/drivers/sql-schema.ts` |
+| A `SchemaChange.description` reads `"<kind> <table>.<target>: <reason>"`, the kind and reason bun-sql's: `create-index bun_cache_tags.ix_bun_cache_tags_key: the driver defines it and the table does not have it` | the SQL drivers' `syncSchema()` |
+
+All reachable only through the `./lib/*` subpath; no entry point's exports change, and `SchemaSyncOptions { dryRun }` and `SchemaChange { description, applied, blocking? }` keep their shapes.
+
+Decided here (the user's rulings of 2026-11-19, and what building them needed):
+
+1. **A real sync.** The Postgres, MySQL, MariaDB, SQLite and Cloudflare D1 drivers' `syncSchema()` run bun-sql's `syncSqlSchema` over their tables as definitions: a schema the driver created answers `[]`; a missing column or `ix_…` index is reported, and repaired unless `dryRun`; an `ix_…` index the driver no longer defines is dropped, an index under any other name never touched; `alterColumns` stays off. The DDL is unchanged, byte for byte, MySQL's inline `KEY`s included. `blocking` is bun-sql's: `true` for an index build on SQLite and D1.
+2. **SQLite and D1** create their tables as before (SQLite in its `BEGIN IMMEDIATE` transaction), then run the `syncSchema` option's sync right after, before anything else runs on them; a sync that fails fails that operation, and the next one tries again. On `bun:sqlite` every operation waits on that sync, once per driver; the sync's own statements take the same busy retry. D1's triggers are the driver's own and are not compared.
+3. **The order on connect** (Postgres, MySQL, MariaDB) is now the tables, then the option's sync, then `afterMigrate`, so MySQL's tag-index check sees an index the sync has just built; an explicit `syncSchema()` that applied a change runs `afterMigrate` again.
+4. **MySQL's tag-index fallback stays.** The sync is opt-in (`syncSchema` defaults to `false`), so a table from before the index without a sync still needs the driver to work without it.
+5. **What a sync cannot see on SQLite:** a column of another type. bun-sql's SQLite dialect has no column retype (`alterColumnType` is `null`), so the engine reports no `alter-column` there; a missing column or index is reported.
+6. **A missing index on Postgres and SQLite is also recreated by connecting** (their DDL says `CREATE INDEX IF NOT EXISTS`); the sync finds one lost while the driver is connected, and on MySQL and MariaDB, whose indexes are inline in `CREATE TABLE`, one lost at any time.
+
 ## 18. Findings outside this plan
 
 Found while surveying; each is reported, none fixed here.
