@@ -40,7 +40,7 @@ prefer Bun and native APIs over third-party dependencies.
 | [bun-cache](packages/bun-cache/README.md) | `@kingsleyweb/bun-cache` | Caching over pluggable drivers: one typed API (TTLs, tags, single-flight, stale-while-revalidate, counters, an L1 memory tier kept coherent by a bus) over memory, file, SQLite, Postgres, MySQL, MariaDB, Redis, MongoDB, S3, Azure Blob Storage and Cloudflare drivers, an HTTP response cache for bun-common and a Keyv store. |
 | [bun-security](packages/bun-security/README.md) | `@kingsleyweb/bun-security` | A request-defence engine for Bun services, being built (plan [`bun-security`](docs/plans/bun-security/README.md), milestone M1): a policy compiled once and decided locally per request, client identity on bun-common's trusted-proxy foundation (IPv6 keyed by /64, service identities, trust misconfiguration detection), allow and deny lists over a CIDR trie with a built-in internal never-block list, rate limits on bun-common's throttle foundation, counted rules, bans with an offence score and escalation ladder, request shape on a canonical path, honeypots and canary credentials, connection limits and outcome signals, dry run and `explain()`; `./serve` protects and hardens a plain `Bun.serve`. |
 | [bun-sql](packages/bun-sql/README.md) | `@kingsleyweb/bun-sql` | The SQL layer the other packages share: one dialect per engine (Postgres, MySQL, MariaDB, SQLite), table and index definitions rendered to DDL, a schema sync that adds what is missing and changes only what cannot stall a running service unless asked, connection helpers, opaque keyset page cursors and a MongoDB index sync, one subpath per area. |
-| [bun-ui](packages/bun-ui/README.md) | `@kingsleyweb/bun-ui` | Every browser UI of the repo in one package, one subpath each: `@kingsleyweb/bun-ui/jobs` is the React management UI for bun-jobs' management API, served by a `jobsUi()` router that mounts beside `createJobsApi` (bun-jobs is an optional peer only that subpath needs); `@kingsleyweb/bun-ui/docs` is a self-hosted viewer for one OpenAPI 3.1 or AsyncAPI 3.0 document, served by a `docsUi()` handler under a strict self-only CSP. |
+| [bun-ui](packages/bun-ui/README.md) | `@kingsleyweb/bun-ui` | Every browser UI of the repo in one package, one subpath each: `@kingsleyweb/bun-ui/jobs` is the React management UI for bun-jobs' management API, served by a `jobsUi()` router that mounts beside `createJobsApi` (bun-jobs is an optional peer only that subpath needs); `@kingsleyweb/bun-ui/security` is the management UI of bun-security's control plane, served by a `securityUi()` router beside `createSecurityApi` (bun-security an optional peer only it needs); `@kingsleyweb/bun-ui/docs` is a self-hosted viewer for one OpenAPI 3.1 or AsyncAPI 3.0 document, served by a `docsUi()` handler under a strict self-only CSP. |
 
 bun-nest, bun-jobs, bun-cache, bun-security, bun-sql and bun-ui depend on
 bun-common, which depends on bun-contract; bun-client depends on bun-contract
@@ -56,7 +56,7 @@ project per package. Each example is a single script you run with `bun`.
 | [`examples/bun-common`](examples/bun-common/README.md) | Routing, the HTTP adapter, requests and responses, validation, CORS, static files, compression, multipart uploads, WebSockets, logging and utilities, plus option tours |
 | [`examples/bun-nest`](examples/bun-nest/README.md) | NestJS on Bun: the HTTP adapter, file upload interceptors and the WebSocket adapter, plus option tours |
 | [`examples/bun-jobs`](examples/bun-jobs/README.md) | Queues, workers, the job registry, scheduling, flow control, failures, the runner, every driver and integrations, plus option tours |
-| [`examples/bun-ui`](examples/bun-ui/README.md) | bun-ui, a folder per UI; `jobs/`: the management UI beside the management API: mounting, the shell and bundle with their security headers, a cross-origin API, plus an option tour |
+| [`examples/bun-ui`](examples/bun-ui/README.md) | bun-ui, a folder per UI; `jobs/`: the management UI beside the management API: mounting, the shell and bundle with their security headers, a cross-origin API, plus an option tour; `security/`: the security UI's permissions table checked against its API |
 
 ```bash
 bun install                 # at the repo root
@@ -205,7 +205,7 @@ bun-node/
 │   ├── bun-common/        # one runnable project per package
 │   ├── bun-nest/
 │   ├── bun-jobs/
-│   └── bun-ui/            # jobs/, a folder per UI
+│   └── bun-ui/            # jobs/, security/: a folder per UI
 ├── benchmarks/            # router benchmarks (its own package)
 ├── scripts/
 │   ├── typecheck.ts       # type-checks every project

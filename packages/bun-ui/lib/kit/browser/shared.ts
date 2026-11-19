@@ -84,7 +84,7 @@ export type UiAlign = "left" | "center" | "right";
 export type UiLayoutScope = "content" | "page";
 
 /**
- * The `layout` option (`jobsUi()`, `docsUi()`, bun-common's `docsRouter`
+ * The `layout` option (`jobsUi()`, `securityUi()`, `docsUi()`, bun-common's `docsRouter`
  * `"self-hosted"` viewer): where the content sits on a wide screen. Every
  * field is optional.
  */

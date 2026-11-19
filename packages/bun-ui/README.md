@@ -30,6 +30,7 @@ UI never loads another's code or bundle.
 
 - [Install](#install)
 - [The jobs UI: `/jobs`](#the-jobs-ui-jobs)
+- [The security UI: `/security`](#the-security-ui-security)
 - [The docs viewer: `/docs`](#the-docs-viewer-docs)
 - [Serving the viewer from `docsRouter`: `/docs/hosted`](#serving-the-viewer-from-docsrouter-docshosted)
 - [Embedding the docs screens: `/docs/embed`](#embedding-the-docs-screens-docsembed)
@@ -49,13 +50,14 @@ UI never loads another's code or bundle.
 ## Install
 
 ```bash
-bun add @kingsleyweb/bun-ui                          # for /docs
-bun add @kingsleyweb/bun-ui @kingsleyweb/bun-jobs   # for /jobs
+bun add @kingsleyweb/bun-ui                              # for /docs
+bun add @kingsleyweb/bun-ui @kingsleyweb/bun-jobs       # for /jobs
+bun add @kingsleyweb/bun-ui @kingsleyweb/bun-security   # for /security
 ```
 
 Requires Bun >= 1.4.2. `@kingsleyweb/bun-common` is a dependency and is
-installed with it; `@kingsleyweb/bun-jobs` and `@types/bun` (>= 1.4.2) are
-optional peers. Bun runs the shipped TypeScript source in `lib/`; your type
+installed with it; `@kingsleyweb/bun-jobs`, `@kingsleyweb/bun-security` and
+`@types/bun` (>= 1.4.2) are optional peers. Bun runs the shipped TypeScript source in `lib/`; your type
 checker reads the built declarations in `dts/`, which describe `lib/` only,
 so no React or TanStack type reaches your project.
 
@@ -107,6 +109,80 @@ On NestJS, mount the router on bun-nest's adapter:
 [guides/jobs.md](guides/jobs.md), has every option in full, the screens, the
 permissions each element needs, testing with `router.fetch()` and the
 [security notes](guides/jobs.md#security-notes).
+
+## The security UI: `/security`
+
+The management UI of `@kingsleyweb/bun-security`'s control plane
+(`createSecurityApi`): services and groups, each scope's policy with drafts,
+versions and approvals, rules, lists, bans, events, analytics, audit,
+agents and alerts. Like the jobs UI it holds no data and no secrets: every
+call goes to the API, which authenticates the operator and checks each
+permission itself; the UI only hides what `/meta/permissions` says the
+operator may not use.
+
+```ts
+import { BunHttpAdapter } from "@kingsleyweb/bun-common";
+import { createSecurityApi } from "@kingsleyweb/bun-security/control";
+import { securityUi } from "@kingsleyweb/bun-ui/security";
+
+const api = createSecurityApi({ store, authenticate, owners, stepUp, signing, audit, bans, basePath: "/admin/security-api" });
+const ui = securityUi({ api, basePath: "/admin/security" });
+
+const app = new BunHttpAdapter();
+app.use(api.basePath, api.router);
+app.use(ui.basePath, ui.router);
+await app.listen(3000);
+```
+
+Each sits at its own `basePath`: the UI's may not equal or sit under the
+API's (a `ConfigError`), while the API's may sit under the UI's (the UI's
+router leaves the API's paths to it). With the API elsewhere, name it:
+`securityUi({ apiUrl: "https://sec.example.com/api", breakGlass: true })`.
+
+`securityUi(options)` returns `{ router, basePath, config }`; `config` is
+the exact `SecurityUiConfig` the page receives. It checks every option when
+called and throws bun-common's `ConfigError` for anything unusable.
+
+| Option | Default | Notes |
+|---|---|---|
+| `api` | — | The `createSecurityApi` result: its `basePath` and whether it has a break-glass account are read from it. Exactly one of `api` and `apiUrl` is required. |
+| `apiUrl` | — | An API in another process or origin: a same-origin path or an `http(s)://` URL; a URL's origin is added to the CSP's `connect-src`. |
+| `breakGlass` | `false` | With `apiUrl`: whether that API has a break-glass account (the sign-in form is offered only then). |
+| `basePath` | `"/security"` | Absolute, not `"/"`. It must not equal or sit under the API's `basePath`. |
+| `title` | `"Security"` | Page title and brand text. |
+| `csrfHeader` | `"x-bun-security-csrf"` | The header every change carries, as the API's (`/meta` reports the real one once signed in). |
+| `authorize` | none | Guards the shell and the bundle, with the same shape and fail-closed rules as `jobsUi()`'s; the API checks every call itself. |
+| `unauthorized` | off | As for `jobsUi()` ([below](#authorization-and-sign-in-redirects)). |
+| `middleware` | `[]` | Handlers run before `authorize` on the requests the UI answers. |
+| `theme` | `"system"` | As for `jobsUi()` ([Colour themes](#colour-themes)). |
+| `layout` | centred, 1400px | As for `jobsUi()` ([Layout](#layout)). |
+| `shell` | `"full"` | `"full"`, `"tabs"` or `"none"`; under `"none"` a thin bar keeps the scope picker and the break-glass badge ([Frame and sections](#frame-and-sections)). |
+| `dev` | unset | Unset or `false`: serve the prebuilt `dist/security/`. `true` rebuilds from the app's source, which the published package does not ship for `/security`: leave it unset. |
+| `logger` | console | Any `LoggerLike`. |
+
+The screens, each a section of the nav (`SECURITY_SECTIONS`, shown only
+to an operator with its permission on the scope on screen):
+
+- **Analytics** (`/`): the scope's traffic, refusals, top offenders and
+  intel, live.
+- **Services** (`/services`, `/groups`): services, groups and their
+  effective policy.
+- **Policies** (`/policies`, `/policies/versions`): the policy editor, a
+  draft's impact, publishing and versions.
+- **Rules** (`/rules`, `/rules/test`): the request rules, and a request
+  tested against them.
+- **Lists** (`/lists`): allow and deny entries.
+- **Bans** (`/bans`, `/bans/auto`): bans, automatic bans and lifting them.
+- **Events** (`/events`): every stored event, filtered.
+- **Audit** (`/audit`): the audit log and its verification.
+- **Approvals** (`/approvals`): the approvals a dangerous change opened.
+- **Agents** (`/agents`): the agents on other hosts and their state.
+- **Alerts** (`/alerts`): open alerts, rules, channels and deliveries.
+- **API reference** (`/api`): the management API's documents.
+
+Step-up and the break-glass sign-in are built in. The guide,
+[guides/security.md](guides/security.md), has every screen, the scopes,
+what each element needs, the live updates, step-up and break-glass.
 
 ## The docs viewer: `/docs`
 
@@ -223,9 +299,9 @@ reading the injected config) may import them:
 - **Every `/<ui>/browser` entry** also carries the kit's frame and mount
   contract: `UiSection` and `sectionsFor` ([Frame and
   sections](#frame-and-sections)); `UiShell`, `UI_SHELLS`,
-  `isUiShell`, `MountOptions`, `MountedUi`, `MountTheme`, `MountLayout`
-  and their defaults and resolvers, which the mount functions of a later
-  release take.
+  `isUiShell`, `MountOptions`, `MountedUi`, `MountElement`, `MountTheme`,
+  `MountLayout` and their defaults and resolvers, which the mount functions
+  take ([Mounting a UI in your page](#mounting-a-ui-in-your-page)).
 - **`@kingsleyweb/bun-ui/docs/browser`**: `DocsUiConfig`, `DocsUiTheme`,
   `DOCS_UI_CONFIG_ELEMENT_ID`, `DEFAULT_EXTENSION_PREFIXES`, `DOCS_SECTIONS`,
   and the
@@ -262,7 +338,7 @@ Details: [jobs](guides/jobs.md#sending-the-browser-to-sign-in),
 
 ## Colour themes
 
-Every UI here (the jobs UI, the docs viewer, and `docsRouter`'s
+Every UI here (the jobs UI, the security UI, the docs viewer, and `docsRouter`'s
 `"self-hosted"` viewer) draws with one set of colour tokens, a light and a
 dark palette. `theme` takes your own colours for either, by token:
 
@@ -311,7 +387,7 @@ docsUi({ document: "/api/openapi.json", theme: { light: { accent: "#0f766e" } } 
 ## Layout
 
 On a screen wider than the content's width cap, `layout` decides where the
-content sits. Every UI takes it (the jobs UI, the docs viewer, and
+content sits. Every UI takes it (the jobs UI, the security UI, the docs viewer, and
 `docsRouter`'s `"self-hosted"` viewer), and the docs screens the jobs UI
 embeds follow the jobs UI's:
 
@@ -527,7 +603,18 @@ methods fall through to the host):
   `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, SRI
   `integrity` on every script and stylesheet, and the UI's config inlined as
   escaped JSON (never a secret).
+- `/mount.js` and `/mount.css`: the [mount module](#mounting-a-ui-in-your-page)
+  (re-exporting its hashed file) and the scoped
+  [mount stylesheet](#the-mount-stylesheet), revalidated on every load
+  (`Cache-Control: no-cache` and an ETag), for a page that cannot know the
+  hashed names; `jobsUiMountTags()`, `securityUiMountTags()` and
+  `docsUiMountTags()` give those, with SRI.
 - `/document.json`: the docs viewer's document, when `document` is a thunk.
+
+This holds for each UI (`jobsUi()` at `/jobs`, `securityUi()` at
+`/security`, `docsUi()` at `/docs` by default). The jobs and security UIs'
+routers leave their API's paths to it when the API is mounted under the
+UI's `basePath`.
 
 The published package ships each UI's prebuilt bundle in `dist/<ui>/`
 (hashed files and a `manifest.json` with each file's SRI digest), so a UI
@@ -544,8 +631,9 @@ stylesheets the `/docs/embed` screens import.
 ## Troubleshooting
 
 - **`Cannot find module "@kingsleyweb/bun-jobs"`** importing
-  `@kingsleyweb/bun-ui/jobs`: install the optional peer,
-  `bun add @kingsleyweb/bun-jobs`. No other entry needs it.
+  `@kingsleyweb/bun-ui/jobs` (or `@kingsleyweb/bun-security` importing
+  `/security`): install the optional peer, `bun add @kingsleyweb/bun-jobs`
+  (or `@kingsleyweb/bun-security`). No other entry needs it.
 - **`jobsUi()` throws a `ConfigError` about `basePath`**: the UI's
   `basePath` equals or sits under the API's. Mount the UI elsewhere; the API
   under the UI works.
@@ -565,8 +653,13 @@ stylesheets the `/docs/embed` screens import.
 
 - [guides/jobs.md](guides/jobs.md): the jobs UI in full (screens, URL
   parameters, what each element needs, runners, API docs, security).
+- [guides/security.md](guides/security.md): the security UI in full
+  (screens, scopes, what each element needs, live updates, step-up,
+  break-glass, accessibility).
 - [guides/docs.md](guides/docs.md): the docs viewer and embedding.
 - [examples/bun-ui/jobs](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-ui/jobs):
   runnable examples, from a quick start to deployments and options.
+- [examples/bun-ui/security](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-ui/security):
+  the security UI's permissions table checked against its API.
 - [examples/bun-common/13-api-docs](https://github.com/kingsloob1/bun-node/tree/develop/examples/bun-common/13-api-docs):
   `docsRouter`, including the self-hosted viewer.

@@ -6,6 +6,21 @@
   "description": "Background work for Bun: run JS/TS files on a schedule or on demand (child process, Worker or in-process) and queue/process jobs across processes and services, over memory, file, Redis, SQL (postgres/mysql/mariadb/sqlite) and MongoDB drivers",
   "author": "okafor obinna <kingsloob1@gmail.com>",
   "license": "MIT",
+  "keywords": [
+    "bun",
+    "queue",
+    "jobs",
+    "job-queue",
+    "background-jobs",
+    "scheduler",
+    "cron",
+    "worker",
+    "redis",
+    "postgres",
+    "mysql",
+    "sqlite",
+    "mongodb"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/kingsloob1/bun-node.git",
