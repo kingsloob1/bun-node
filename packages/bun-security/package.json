@@ -1,7 +1,7 @@
 {
   "name": "@kingsleyweb/bun-security",
   "type": "module",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "private": false,
   "description": "A request-defence engine for Bun services: a policy compiled once and decided locally per request, client identity on bun-common's trusted-proxy foundation (IPv6 keyed by /64, service identities, trust misconfiguration detection), allow and deny lists over a CIDR trie with a built-in internal never-block list, rate limits on bun-common's throttle foundation (policy-driven, composite keys, several per route), counted rules, bans with an offence score and escalation ladder, request shape on a canonical path, honeypots, canary credentials and trap fields, connection limits, dry run for every rule, explain(), shared state across processes over bun-cache (./stores: shared and hybrid limits, the ban stream, offence scores, onStoreError), WebSocket message limits, and a wrapper and hardening helper for a plain Bun.serve (./serve)",
   "author": "okafor obinna <kingsloob1@gmail.com>",

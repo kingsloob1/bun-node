@@ -7,8 +7,7 @@ beside the API on the same adapter, or in a page of your own
 page](../README.md#mounting-a-ui-in-your-page)). Its screens: the analytics
 page (the landing screen), services and groups, policies and their
 versions, rules and the request tester, lists, bans, events, the audit
-log, approvals, agents, alerts and the API reference (PR-U1 to PR-U6 of the
-bun-security plan), with the scope picker, the live updates, step-up and
+log, approvals, agents, alerts and the API reference, with the scope picker, the live updates, step-up and
 the break-glass sign-in.
 
 ## Install
@@ -61,8 +60,7 @@ server-sent events, so `connect-src` allows no `ws(s)` origin.
 
 ## Screens
 
-- **Analytics** (`/`), the landing screen (PR-U2, in place of U1's
-  Overview): the scope's panels over a time range (the last 15 minutes to
+- **Analytics** (`/`), the landing screen: the scope's panels over a time range (the last 15 minutes to
   30 days, or a custom span; `?range=` in the URL, the default 24 hours).
   A range ending now refreshes as it goes, and the traffic chart and the
   activity feed follow the live stream. The panels: headline totals,
@@ -108,8 +106,8 @@ server-sent events, so `connect-src` allows no `ws(s)` origin.
   switch to **Edit as JSON**. Changes collect as unsaved changes over the
   draft (else the published version): **Save draft** (a `422`'s issues show
   on their fields; someone else's save since is shown with **Reload**),
-  **Forget changes**, **Discard draft**, and **Publish…** (U3's dialog: an
-  impact estimate, a typed confirmation for a dangerous change, a step-up,
+  **Forget changes**, **Discard draft**, and **Publish…** (the publish
+  dialog the lists screen uses: an impact estimate, a typed confirmation for a dangerous change, a step-up,
   or an approval). The draft's changes against the published version are
   listed above the tabs, and for a group's or global's draft, what it does to
   each service under it: each one's effective policy as published against
@@ -125,7 +123,8 @@ server-sent events, so `connect-src` allows no `ws(s)` origin.
   requests, 404s, 429s from its own limit and the probe and honeypot hits
   its allowance lifted over the last 24 hours, and the spoofed claimants
   under the crawler each claimed.
-  The **Request rules** tab holds the rule editor (PR-U5's, embedded here):
+  The **Request rules** tab holds the rule editor (the Rules screen's,
+  embedded here):
   each of the scope's rules edited in place with the matcher builder and
   saved with the rest of the draft, the inherited ones read-only with their
   locks, the managed probe set's settings, and a link to **Test a request**.

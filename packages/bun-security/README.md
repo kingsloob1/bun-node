@@ -3,23 +3,43 @@
 A request-defence engine for Bun services. It decides every request locally,
 from a policy compiled once, before your handler sees it.
 
-> **Being built.** This is milestone M1's first parts (PR-S1 to PR-S5) of
-> the [bun-security plan](../../docs/plans/bun-security/README.md):
-> the engine, client identity, service identity, the trust check, allow and
-> deny lists, rate limits on bun-common's throttle foundation, counted rules,
-> bans with an offence score and an escalation ladder, request shape and a
-> canonical path, honeypots, canary credentials and trap fields, connection
-> limits, outcome signals, the plain `Bun.serve` integration, and the
-> bun-common adapter integration with security headers and CSRF, shared
-> state across processes (`./stores`), WebSocket message limits, request
-> rules, challenges with bot signals, the sensitive endpoints (sign-in,
-> codes, resets: presets, the login defences, device cookies, identifier
-> checks), IP intelligence (`./intel`), verified crawlers, API keys,
-> the security store (`./store`: a policy from a file, a SQLite or a
-> Postgres database, followed as it changes; `./sealing`: its secrets
-> sealed at rest), events and analytics (`./analytics`), and attack simulators for testing a policy
-> (`./testing`), and the control plane's management API (`./control`;
-> the agent, audit log and analytics follow in later PRs).
+It has three parts:
+
+- **The engine** (`.`). Each request is decided in layers:
+  - client identity on bun-common's trusted-proxy foundation, with IPv6 keyed
+    by its /64, service identities and a trust check;
+  - allow and deny lists over a CIDR trie, with a built-in internal list
+    that is never blocked;
+  - rate limits on bun-common's throttle foundation, counted rules, and bans
+    with an offence score and an escalation ladder;
+  - request shape on a canonical path, request rules, and the managed probe
+    set;
+  - honeypots, canary credentials and trap fields;
+  - connection limits and outcome signals;
+  - challenges with bot signals (`./challenge`);
+  - the sensitive endpoints: sign-in, codes and resets, with their presets,
+    device cookies and identifier checks;
+  - IP intelligence (`./intel`), verified crawlers and API keys;
+  - WebSocket message limits;
+  - dry run and `explain()`.
+- **Integrations** for a plain `Bun.serve` (`./serve`), bun-common's adapter
+  (`./http`, with security headers and CSRF), and NestJS (bun-nest's
+  `./security`).
+- **State and control:**
+  - state shared across processes (`./stores`);
+  - a security store (`./store`): a policy from a file, a SQLite or a
+    Postgres database, followed as it changes, with its secrets sealed at
+    rest (`./sealing`);
+  - events and analytics (`./analytics`);
+  - a control plane (`./control`): services and groups, drafts and signed
+    policy bundles, approvals and step-up, an audit log, live updates,
+    analytics reads and alerts;
+  - agents (`./agent`) that keep a fleet's enforcement points current from
+    the control plane.
+
+Attack simulators for testing a policy are in `./testing`. The control
+plane's management UI is
+[`@kingsleyweb/bun-ui/security`](https://github.com/kingsloob1/bun-node/blob/develop/packages/bun-ui/guides/security.md).
 
 ```sh
 bun add @kingsleyweb/bun-security
@@ -34,8 +54,10 @@ Runnable examples of everything below, each asserting what it shows, are in
 `Bun.serve`, bun-common and NestJS integrations, client identity, lists and
 bans, limits, presets, request rules, deception, sign-in protection,
 challenges, IP intelligence, verified crawlers, API keys, shared stores,
-policies from a file or a store, dry run and `explain()`, and testing a
-policy with simulated attacks.
+secrets sealed at rest, policies from a file or a store, dry run and
+`explain()`, testing a policy with simulated attacks, the control plane
+(bundles, approvals, the audit log, analytics and alerts), a fleet of agents,
+and three APIs on one host.
 
 ## A plain `Bun.serve`
 
@@ -95,8 +117,9 @@ subscriber rotating through its /64 is one key.
 
 **Service identity.** A sibling service calls with its token in
 `x-service-token`; the policy holds only the token's SHA-256. A verified call
-is exempt from lists (and, as they land, bans, counted rules and global
-limits), and its egress address is never counted: with `forwardsClientIp`,
+is exempt from lists, bans, counted rules and limits (the policy's `exempt`
+narrows that; a limit marked `appliesToServices` still applies), and its
+egress address is never counted: with `forwardsClientIp`,
 the end-user address it sends in `x-service-client-ip` becomes the client;
 without one, the call counts against nobody.
 
@@ -287,7 +310,8 @@ bun-common throttle ran. The self-test's request is explained, never
 counted. `installation.remove()` takes the engine back off.
 
 `securityProfile(name, options)` marks a route: the name, for the app
-(`requestSecurity(req).profile`) and for later profiles' counters (PR-S7),
+(`requestSecurity(req).profile`) and for the presets and counters a profile
+selects (the sign-in, code and reset defences, [below](#sensitive-endpoints)),
 and its per-route options (`crossSite: true`, a webhook or OAuth callback
 the CSRF check does not refuse). `securityMiddleware(security, { router })`
 is the route stage alone, for a router the install does not cover: it
@@ -379,8 +403,8 @@ security.bans(); // the bans in force
   is refused only by bans of counted rules with `appliesToServices`.
 - At most `bans.maxActive` (100,000) are held: past it, a new automatic ban of
   an address is widened to its `/24` or `/48` and a `bans.aggregated` warning
-  raised. Manual bans are never dropped. Sharing bans across processes comes
-  with PR-S4.
+  raised. Manual bans are never dropped. Bans are shared across processes
+  through a shared store ([below](#shared-state-across-processes)).
 
 ### The offence score and the ladder
 
@@ -1610,7 +1634,7 @@ analytics page charts:
   its own service (an analyst of one group sees that group's events whole
   on a global page or topic, and the rest as a viewer). A live event never
   carries the request sample.
-- **More to chart** (PR-AN): give `createSecurity` the recorder's
+- **More to chart**: give `createSecurity` the recorder's
   `onSignal: analyticsSignalHook({ recorder })` beside `onDecision`, and
   the recorder counts challenge answers (`challenges`), sign-ins
   (`login`, `login.success-after-failures`, `top.usernames-per-ip`) and

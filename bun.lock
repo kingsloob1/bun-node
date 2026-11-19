@@ -19,7 +19,7 @@
     },
     "packages/bun-cache": {
       "name": "@kingsleyweb/bun-cache",
-      "version": "3.2.0",
+      "version": "3.3.0",
       "dependencies": {
         "@kingsleyweb/bun-common": "workspace:^",
         "@kingsleyweb/bun-sql": "workspace:^",
@@ -45,7 +45,7 @@
     },
     "packages/bun-client": {
       "name": "@kingsleyweb/bun-client",
-      "version": "3.2.0",
+      "version": "3.3.0",
       "bin": {
         "bun-client": "./lib/codegen/cli.ts",
       },
@@ -93,7 +93,7 @@
     },
     "packages/bun-common": {
       "name": "@kingsleyweb/bun-common",
-      "version": "3.2.0",
+      "version": "3.3.0",
       "dependencies": {
         "@kingsleyweb/bun-contract": "workspace:^",
         "@routejs/router": "^3.0.3",
@@ -142,7 +142,7 @@
     },
     "packages/bun-contract": {
       "name": "@kingsleyweb/bun-contract",
-      "version": "3.2.0",
+      "version": "3.3.0",
       "devDependencies": {
         "@types/bun": "catalog:",
         "arktype": "catalog:",
@@ -164,7 +164,7 @@
     },
     "packages/bun-jobs": {
       "name": "@kingsleyweb/bun-jobs",
-      "version": "3.2.0",
+      "version": "3.3.0",
       "dependencies": {
         "@kingsleyweb/bun-common": "workspace:^",
         "@kingsleyweb/bun-sql": "workspace:^",
@@ -195,7 +195,7 @@
     },
     "packages/bun-nest": {
       "name": "@kingsleyweb/bun-nest",
-      "version": "3.2.0",
+      "version": "3.3.0",
       "dependencies": {
         "@kingsleyweb/bun-common": "workspace:^",
       },
@@ -258,7 +258,7 @@
     },
     "packages/bun-security": {
       "name": "@kingsleyweb/bun-security",
-      "version": "3.2.0",
+      "version": "3.3.0",
       "dependencies": {
         "@kingsleyweb/bun-common": "workspace:^",
         "@kingsleyweb/bun-sql": "workspace:^",
@@ -283,7 +283,7 @@
     },
     "packages/bun-sql": {
       "name": "@kingsleyweb/bun-sql",
-      "version": "3.2.0",
+      "version": "3.3.0",
       "dependencies": {
         "@kingsleyweb/bun-common": "workspace:^",
       },
@@ -306,7 +306,7 @@
     },
     "packages/bun-ui": {
       "name": "@kingsleyweb/bun-ui",
-      "version": "3.2.0",
+      "version": "3.3.0",
       "dependencies": {
         "@kingsleyweb/bun-common": "workspace:^",
       },

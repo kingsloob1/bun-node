@@ -4,7 +4,7 @@
  * `manifest` it takes. Do not edit; regenerate it, and run the same command
  * with `--check` in CI.
  *
- * typesHash: 8e68b9e7b4675027
+ * typesHash: 3c4293e0a21717b8
  */
 import type { RouteManifest } from "@kingsleyweb/bun-client";
 
@@ -12,7 +12,7 @@ import type { RouteManifest } from "@kingsleyweb/bun-client";
  * The documents' hash, as the header records it: the `buster` of a
  * persisted query cache (`@kingsleyweb/bun-client/persist`).
  */
-export const typesHash = "8e68b9e7b4675027";
+export const typesHash = "3c4293e0a21717b8";
 
 /** One job of a flow, with the jobs it waits on. A flow holds at most 100 jobs and nests at most 10 levels (the top job is level 1); more is 400 VALIDATION at the first job past the bound. */
 export interface AddFlowNode {

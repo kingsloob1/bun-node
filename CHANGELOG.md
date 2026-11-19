@@ -4,6 +4,142 @@ Every package under `packages/` is released together, at one version.
 Newest first. `bun scripts/changelog.ts <version>` writes an entry from the
 commits since the previous tag; `docs/releasing.md` is the whole flow.
 
+## 3.3.0 (2026-11-19)
+
+<!-- changelog: hand-written; scripts/changelog.ts never replaces it -->
+
+A minor release, and the first publish of two packages:
+**`@kingsleyweb/bun-security`** and **`@kingsleyweb/bun-sql`**.
+
+- bun-security brings a request-defence engine for Bun services (lists, bans,
+  limits, counted rules, sign-in protection, challenges, IP intelligence,
+  verified crawlers, API keys, shared state across processes, dry run and
+  `explain()`), a control plane (`createSecurityApi`: services and groups,
+  signed policy bundles, approvals, an audit log, agents, analytics and
+  alerts) and its management UI in bun-ui (`@kingsleyweb/bun-ui/security`).
+  bun-common and bun-nest gain the hooks and the `./security` integration it
+  runs on.
+- Any bun-ui UI can now be mounted inside a host page, with the `shell` and
+  `sections` options and a mount stylesheet; every input has a placeholder.
+- bun-sql is the SQL layer bun-jobs and bun-cache now share: bun-jobs' SQL
+  driver and bun-cache's SQL drivers run on it with no change to their APIs,
+  and bun-cache's `syncSchema()` is now a real schema sync (a schema the
+  driver created still answers `[]`).
+- Fixes in bun-cache (the file driver's bus, `getOrSet` with a lock, and a
+  MongoDB change-stream subscriber receiving a message from before it
+  subscribed), bun-jobs (the queue summon probe) and bun-security.
+
+Changes since v3.2.0 ([compare](https://github.com/kingsloob1/bun-node/compare/v3.2.0...v3.3.0)).
+
+### Features
+
+- **bun-cache**
+  - distinct counts, pfAdd and pfCount ([#799](https://github.com/kingsloob1/bun-node/pull/799))
+  - cacheBusOf, the bus a cache uses, for libraries built on it ([#804](https://github.com/kingsloob1/bun-node/pull/804))
+- **bun-cache, bun-security**
+  - field encryption and sealed store fields ([#830](https://github.com/kingsloob1/bun-node/pull/830))
+- **bun-common**
+  - before-read and before-write hooks on the adapter ([#794](https://github.com/kingsloob1/bun-node/pull/794))
+  - req.clientAddress, a security view of the client beside req.ip ([#787](https://github.com/kingsloob1/bun-node/pull/787))
+  - count and peek a throttle by key, without a request ([#791](https://github.com/kingsloob1/bun-node/pull/791))
+  - the signed envelope, moved from bun-jobs ([#814](https://github.com/kingsloob1/bun-node/pull/814))
+  - report memoryThrottleStore evictions ([#819](https://github.com/kingsloob1/bun-node/pull/819))
+- **bun-common, bun-nest**
+  - key the throttles on req.clientAddress ([#792](https://github.com/kingsloob1/bun-node/pull/792))
+- **bun-nest**
+  - request defence, ./security ([#802](https://github.com/kingsloob1/bun-node/pull/802))
+  - before-write hooks can change or replace a response ([#801](https://github.com/kingsloob1/bun-node/pull/801))
+  - route-stage challenges answer with the challenge (bun-security) ([#813](https://github.com/kingsloob1/bun-node/pull/813))
+- **bun-security**
+  - the package and its core ([#789](https://github.com/kingsloob1/bun-node/pull/789))
+  - limits, counted rules and concurrency ([#793](https://github.com/kingsloob1/bun-node/pull/793))
+  - bans, request shape and deception ([#796](https://github.com/kingsloob1/bun-node/pull/796))
+  - the bun-common integration, ./http ([#797](https://github.com/kingsloob1/bun-node/pull/797))
+  - request rules and the managed probe set ([#805](https://github.com/kingsloob1/bun-node/pull/805))
+  - shared state across processes ([#808](https://github.com/kingsloob1/bun-node/pull/808))
+  - challenges ([#810](https://github.com/kingsloob1/bun-node/pull/810))
+  - sensitive endpoints and the default presets ([#811](https://github.com/kingsloob1/bun-node/pull/811))
+  - IP intelligence ([#812](https://github.com/kingsloob1/bun-node/pull/812))
+  - verified crawlers ([#815](https://github.com/kingsloob1/bun-node/pull/815))
+  - API keys ([#817](https://github.com/kingsloob1/bun-node/pull/817))
+  - the security store ([#818](https://github.com/kingsloob1/bun-node/pull/818))
+  - attack simulators ([#820](https://github.com/kingsloob1/bun-node/pull/820))
+  - global sign-in failure-rate rule ([#824](https://github.com/kingsloob1/bun-node/pull/824))
+  - count the default throttle store's evictions ([#827](https://github.com/kingsloob1/bun-node/pull/827))
+  - the management API ([#828](https://github.com/kingsloob1/bun-node/pull/828))
+  - the Postgres store ([#829](https://github.com/kingsloob1/bun-node/pull/829))
+  - the audit log and break-glass ([#832](https://github.com/kingsloob1/bun-node/pull/832))
+  - a longer store deadline for distinct counts, and visible fallbacks ([#834](https://github.com/kingsloob1/bun-node/pull/834))
+  - events and analytics ([#837](https://github.com/kingsloob1/bun-node/pull/837))
+  - the agent ([#841](https://github.com/kingsloob1/bun-node/pull/841))
+  - key user ids like API key ids ([#842](https://github.com/kingsloob1/bun-node/pull/842))
+  - live updates and the analytics reads ([#844](https://github.com/kingsloob1/bun-node/pull/844))
+  - alerts ([#850](https://github.com/kingsloob1/bun-node/pull/850))
+  - test a request, and a draft's impact ([#852](https://github.com/kingsloob1/bun-node/pull/852))
+  - the analytics data the security UI's analytics page needs ([#854](https://github.com/kingsloob1/bun-node/pull/854))
+  - agents report automatic bans to the control plane ([#857](https://github.com/kingsloob1/bun-node/pull/857))
+  - the policy screens' data ([#858](https://github.com/kingsloob1/bun-node/pull/858))
+  - a draft's effect per service, spoofed crawlers per claimant ([#862](https://github.com/kingsloob1/bun-node/pull/862))
+- **bun-sql**
+  - the shared SQL module ([#816](https://github.com/kingsloob1/bun-node/pull/816))
+- **bun-ui**
+  - a layout option to place every UI's content on wide screens ([#785](https://github.com/kingsloob1/bun-node/pull/785))
+  - the security analytics page ([#856](https://github.com/kingsloob1/bun-node/pull/856))
+  - the policy screens ([#860](https://github.com/kingsloob1/bun-node/pull/860))
+  - rules, audit, approvals, agents and alerts ([#861](https://github.com/kingsloob1/bun-node/pull/861))
+  - the security UI's end-to-end and accessibility pass ([#864](https://github.com/kingsloob1/bun-node/pull/864))
+  - the shell option, the sections and the mount contract ([#865](https://github.com/kingsloob1/bun-node/pull/865))
+  - a placeholder on every input ([#866](https://github.com/kingsloob1/bun-node/pull/866))
+  - the mount stylesheet ([#867](https://github.com/kingsloob1/bun-node/pull/867))
+  - mount a UI in a host page ([#870](https://github.com/kingsloob1/bun-node/pull/870))
+- **bun-ui, bun-security**
+  - the security UI's entry and shell ([#851](https://github.com/kingsloob1/bun-node/pull/851))
+  - bans, lists and events ([#855](https://github.com/kingsloob1/bun-node/pull/855))
+- **playground**
+  - the security demo ([#863](https://github.com/kingsloob1/bun-node/pull/863))
+
+### Fixes
+
+- **bun-cache**
+  - the file driver's bus delivers each message once ([#833](https://github.com/kingsloob1/bun-node/pull/833))
+  - getOrSet with a lock loads once when the value lands first ([#835](https://github.com/kingsloob1/bun-node/pull/835))
+  - a change-stream subscriber no longer receives a message from before it subscribed ([#873](https://github.com/kingsloob1/bun-node/pull/873))
+- **bun-jobs**
+  - answer the queue summon probe with a state, not a 409 ([#786](https://github.com/kingsloob1/bun-node/pull/786))
+- **bun-security**
+  - refuse a /0 range with a clear message ([#822](https://github.com/kingsloob1/bun-node/pull/822))
+  - key an API-key list entry's default id ([#836](https://github.com/kingsloob1/bun-node/pull/836))
+  - concurrent instances land every change, and stale bundles are repaired (#846, #847) ([#849](https://github.com/kingsloob1/bun-node/pull/849))
+
+### Docs
+
+- **bun-ui**
+  - the plan for embedding a UI in a host app ([#863](https://github.com/kingsloob1/bun-node/pull/863))
+  - the security UI's section, beside the jobs UI's and the docs viewer's ([#875](https://github.com/kingsloob1/bun-node/pull/875))
+- **examples**
+  - bun-security examples ([#823](https://github.com/kingsloob1/bun-node/pull/823))
+  - bun-security's fleet, one host, Postgres store, sealing and login under attack ([#876](https://github.com/kingsloob1/bun-node/pull/876))
+  - bun-security's control plane (bundles, approvals, audit, analytics, alerts) and the security UI beside its API ([#877](https://github.com/kingsloob1/bun-node/pull/877))
+
+### Other
+
+- **bun-cache**
+  - prove seal randomness without racing the 5 s limit ([#800](https://github.com/kingsloob1/bun-node/pull/800))
+  - its SQL layer on bun-sql, with a real schema sync ([#872](https://github.com/kingsloob1/bun-node/pull/872))
+- **bun-jobs**
+  - its SQL layer on bun-sql ([#868](https://github.com/kingsloob1/bun-node/pull/868))
+  - re-record the queue bench baseline on Bun 1.4.5-canary ([#869](https://github.com/kingsloob1/bun-node/pull/869))
+- **bun-security**
+  - prove the request rules' polynomial-time control by growth, not by the budget ([#809](https://github.com/kingsloob1/bun-node/pull/809))
+  - make two tests load-proof ([#825](https://github.com/kingsloob1/bun-node/pull/825))
+  - give the multiprocess API-key tests a load-proof store deadline ([#831](https://github.com/kingsloob1/bun-node/pull/831))
+  - the topology harness ([#848](https://github.com/kingsloob1/bun-node/pull/848))
+  - ajv dev dependency for the policy schema drift tests ([#858](https://github.com/kingsloob1/bun-node/pull/858))
+- **bun-ui**
+  - a UI mounted in a host shell, in Chrome; the playground's embed page ([#874](https://github.com/kingsloob1/bun-node/pull/874))
+- **examples**
+  - make the jobs UI's log-polling example load-proof ([#853](https://github.com/kingsloob1/bun-node/pull/853))
+
 ## 3.2.0 (2026-11-13)
 
 <!-- changelog: hand-written; scripts/changelog.ts never replaces it -->
