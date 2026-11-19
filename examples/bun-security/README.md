@@ -6,8 +6,9 @@ request-defence engine on a plain `Bun.serve`, on bun-common's
 `BunHttpAdapter` and in a NestJS application, from lists, bans and limits to
 sign-in protection, challenges, verified crawlers, API keys, shared state,
 secrets sealed at rest, policies kept in a file or a store, testing a policy
-with simulated attacks, a fleet of agents behind a control plane, and three
-APIs on one host sharing a Redis.
+with simulated attacks, a fleet of agents behind a control plane, three
+APIs on one host sharing a Redis, and the control plane itself: groups and
+signed bundles, approvals and the audit chain, analytics and alerts.
 
 Each file is a script. Its opening comment says what it shows and how to run
 it; its output narrates what happened, and the `✓` lines are assertions (a
@@ -23,8 +24,8 @@ bun run-all.ts 09 10               # only folders 09-* and 10-*
 No install step: the examples use the workspace packages through the repo's
 root `node_modules`. Nothing reaches the network: requests go through an
 adapter's socket-free `fetch()` or a server on `127.0.0.1`, crawlers are
-verified by a fixed resolver, and Turnstile and hCaptcha by an injected
-`fetch`. Where time matters the engine runs on a fake clock (`now`).
+verified by a fixed resolver, Turnstile and hCaptcha by an injected
+`fetch`, and the alerts' webhook goes to a receiver on `127.0.0.1`. Where time matters the engine runs on a fake clock (`now`).
 
 | Folder | What it shows |
 |---|---|
@@ -56,6 +57,10 @@ verified by a fixed resolver, and Turnstile and hCaptcha by an injected
 | `17-testing` | `simulate-attacks.ts` — `./testing`'s `credentialStuffing`, `pathScan` and `spoofedCrawler` run with `runAttack` and `fetchTarget` on a fake clock against an app, each with its negative control (no engine, the attack succeeds) |
 | `18-fleet` | `fleet.ts` — a control plane (`createSecurityApi` behind `secureAdmin`, on a SQLite file) and two agents in processes of their own (`connectAgent`): a group, a service and two agents registered, two publishes and a ban and its lift reaching both by the nudge (the agents poll hourly; without the nudge the second publish never arrives), and, with the control plane gone, an agent restarted on its last known good while a fresh one has nothing to enforce |
 | `19-one-host` | `one-host.ts` — three APIs (`accounts`, `shop`, `partner`), each a `Bun.serve` behind `withSecurity` in its own process, sharing one Redis (`cacheStore`): a ban from accounts refused by all three and its lift; shop calling accounts with its service token, its end users counted by a limit marked `appliesToServices` (six users pass a 3-a-minute limit, one user is refused past its own 3), and without the token counted against shop's address (skips when unset, fails when unreachable; deletes exactly the keys it wrote) |
+| `20-control` | `bundles-and-groups.ts` — `mergePolicies` over global ← a group ← a service: a locked limit keeping global's value while the group's override is dropped and named (`locked`, `locks`), each item's origin, lists unioned; `diffPolicies` matching keyed items by id; `dangerousChanges` naming a dry-run rule enforced and an allow entry widened on a production service; `signBundle` and `verifyBundle`, with a tampered policy, another service's bundle, a replay, an unknown key and a not-yet-valid bundle refused |
+| `20-control` | `approvals-and-audit.ts` — `createSecurityApi` over a temporary SQLite store: publishing refused with `401 step_up_required` and the host's challenge URL until the second factor is fresh, a dangerous publish opening a two-person approval its author may not approve and a second owner does, the audit chain's intent and done entries (and `access.refused`), `verifyAudit()` passing with a checkpoint in a file sink, then naming `hash-mismatch` at an entry edited in the database and alerting `audit.verifyFailed` |
+| `21-analytics` | `analytics.ts` — `analyticsHook` feeding `createAnalyticsRecorder`, `createEventRing` and `createRedactor` on a fake clock: one event per refusal with the bearer token and a query token `[redacted]`, the minute's requests by action once it closes, `top.refused` (top-K), the exact refusals per subject per day, and `analyticsMaintenance` rolling the minutes into an hour after its grace |
+| `22-alerts` | `alerts.ts` — alerting on a fake clock with its queue worked by hand: a webhook channel to a local receiver (its secret shown once), the `ruleTripped` preset raising on reported counters, the receiver checking `x-bun-security-signature` with `signWebhook` (a wrong secret and a changed body refused), and a flood of one kind sent once with the other four held for a digest |
 
 ## Servers
 
