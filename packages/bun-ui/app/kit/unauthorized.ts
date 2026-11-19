@@ -183,6 +183,61 @@ export function createUnauthorizedRedirect(
 }
 
 /**
+ * A mounted UI's {@link UnauthorizedRedirect} when its host passed
+ * `onUnauthorized` (embedding.md §7): the first failure with one of
+ * `statuses` calls `onUnauthorized(status)` instead of navigating (the host
+ * signs the user in), once per mount, as the redirect navigates once per
+ * page; later reports return `true` without calling again. Its probe asks
+ * the UI's `basePath` as the redirect's does.
+ *
+ * @param statuses The statuses that count (`unauthorized.statuses`, `[401]` by default).
+ * @param basePath The UI's `basePath`, which {@link UnauthorizedRedirect.probe} asks.
+ * @param onUnauthorized The host's callback.
+ * @param options The `fetch` the probe calls; tests replace it.
+ */
+export function createUnauthorizedCallback(
+  statuses: readonly number[],
+  basePath: string,
+  onUnauthorized: (status: number) => void,
+  options: Pick<UnauthorizedRedirectOptions, "fetch"> = {},
+): UnauthorizedRedirect {
+  const getFetch = options.fetch ?? (() => globalThis.fetch);
+  const counted = new Set(statuses);
+  let called = false;
+  const report = (status: number): boolean => {
+    if (called) return true;
+    if (!counted.has(status)) return false;
+    called = true;
+    onUnauthorized(status);
+    return true;
+  };
+  return {
+    enabled: true,
+    get redirected() {
+      return called;
+    },
+    report,
+    reportError: (error) => {
+      const status = statusOf(error);
+      return status === undefined ? false : report(status);
+    },
+    probe: async () => {
+      if (called) return true;
+      try {
+        const response = await getFetch()(basePath, {
+          method: "HEAD",
+          credentials: "same-origin",
+          cache: "no-store",
+        });
+        return report(response.status);
+      } catch {
+        return false;
+      }
+    },
+  };
+}
+
+/**
  * Reports every failed query and mutation of `queryClient` to `redirect`:
  * the cache-level hook, so every API call is covered whichever client made it
  * and no screen needs code of its own. Returns the unsubscribe. Subscribes to

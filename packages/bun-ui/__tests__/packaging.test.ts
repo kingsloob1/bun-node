@@ -58,10 +58,37 @@ function directoryEntries(dir = join(ROOT, "lib")): string[] {
   return found;
 }
 
+/**
+ * The mount entries (embedding.md §3): Bun and a host's bundler load the
+ * prebuilt module in `dist/`, built on `prepack` (and by `build:types`);
+ * the types, and the repository's source condition, are the typed facade
+ * in `lib/<ui>/mount.ts`.
+ */
+const MOUNT_KEYS = ["./jobs/mount", "./security/mount", "./docs/mount"];
+
 describe("package.json exports", () => {
   const conditional = Object.entries(manifest.exports).filter(
-    (entry): entry is [string, Conditions] => typeof entry[1] === "object",
+    (entry): entry is [string, Conditions] =>
+      typeof entry[1] === "object" && !MOUNT_KEYS.includes(entry[0]),
   );
+
+  it("points each mount entry at its prebuilt module, typed by its facade", () => {
+    for (const key of MOUNT_KEYS) {
+      const ui = key.split("/")[1];
+      expect(manifest.exports[key]).toEqual({
+        "@kingsleyweb/source": `./lib/${ui}/mount.ts`,
+        types: `./dts/${ui}/mount.d.ts`,
+        default: `./dist/${ui}/mount/index.js`,
+      });
+      expect(Object.keys(manifest.exports[key] as Conditions)).toEqual([
+        "@kingsleyweb/source",
+        "types",
+        "default",
+      ]);
+      expect(existsSync(join(ROOT, "lib", ui, "mount.ts"))).toBe(true);
+      expect(existsSync(join(ROOT, "app", ui, "mount.tsx"))).toBe(true);
+    }
+  });
 
   it("lists the source condition first, then types, then default, in every entry", () => {
     for (const [, conditions] of conditional) {
@@ -259,11 +286,11 @@ describe("this package's peers and the browser bundle", () => {
     for (const entry of checkConfig.entries ?? []) {
       const jobsServer =
         /^@kingsleyweb\/bun-ui\/(?:lib\/)?jobs(?:\/|$)/.test(entry.spelling) &&
-        !/\/browser(?:\/|$)/.test(entry.spelling);
+        !/\/(?:browser|mount)(?:\/|$)/.test(entry.spelling);
       const securityServer =
         /^@kingsleyweb\/bun-ui\/(?:lib\/)?security(?:\/|$)/.test(
           entry.spelling,
-        ) && !/\/browser(?:\/|$)/.test(entry.spelling);
+        ) && !/\/(?:browser|mount)(?:\/|$)/.test(entry.spelling);
       expect({
         spelling: entry.spelling,
         peers: entry.peers ?? [],
@@ -287,8 +314,9 @@ describe("this package's peers and the browser bundle", () => {
       /** Checked as a browser entry (no Bun or Node types in its graph). */
       browser?: boolean;
     }[];
+    // The mount entries are browser modules too (embedding.md §3).
     const browserSafe = (spelling: string) =>
-      /\/browser(?:\/|$)/.test(spelling) ||
+      /\/(?:browser(?:\/|$)|mount$)/.test(spelling) ||
       spelling === "@kingsleyweb/bun-ui" ||
       spelling === "@kingsleyweb/bun-ui/lib/index";
     for (const entry of entries) {
@@ -324,7 +352,7 @@ describe("this package's peers and the browser bundle", () => {
     // `./<ui>/mount.css` exports name first, since the verify step needs
     // every export target to exist (embedding.md §4).
     expect(manifest.scripts["build:types"]).toBe(
-      "bun scripts/build.ts --mount-css && bun scripts/build-declarations.ts",
+      "bun scripts/build.ts --exports && bun scripts/build-declarations.ts",
     );
   });
 

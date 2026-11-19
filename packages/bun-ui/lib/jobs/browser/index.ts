@@ -15,6 +15,7 @@ export type { UiUnauthorized, UiUnauthorizedStatus } from "./unauthorized";
 export type {
   HostColorScheme,
   MountedUi,
+  MountElement,
   MountLayout,
   MountLayoutOptions,
   MountOptions,

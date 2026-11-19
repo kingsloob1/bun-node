@@ -11,10 +11,13 @@ the host installs neither and has no build step.
 |---|---|---|
 | `@kingsleyweb/bun-ui/jobs` | `jobsUi()`: the management UI for the `@kingsleyweb/bun-jobs` management API. [Guide](guides/jobs.md) | `@kingsleyweb/bun-jobs` |
 | `@kingsleyweb/bun-ui/jobs/browser` | the jobs UI's browser-safe config contract (`JobsUiConfig`, `JOBS_UI_CONFIG_ELEMENT_ID`, …) | nothing |
+| `@kingsleyweb/bun-ui/jobs/mount`, `/jobs/mount.css` | `mountJobsUi()`: the jobs UI in your own page's layout, prebuilt with React bundled in ([Mounting a UI in your page](#mounting-a-ui-in-your-page)) | nothing |
 | `@kingsleyweb/bun-ui/security` | `securityUi()`: the management UI for `@kingsleyweb/bun-security`'s control plane. [Guide](guides/security.md) | `@kingsleyweb/bun-security` |
 | `@kingsleyweb/bun-ui/security/browser` | the security UI's browser-safe config contract (`SecurityUiConfig`, `SECURITY_UI_CONFIG_ELEMENT_ID`, …) | nothing |
+| `@kingsleyweb/bun-ui/security/mount`, `/security/mount.css` | `mountSecurityUi()`: the security UI in your own page's layout, prebuilt with React bundled in ([Mounting a UI in your page](#mounting-a-ui-in-your-page)) | nothing |
 | `@kingsleyweb/bun-ui/docs` | `docsUi()`: a self-hosted viewer for one OpenAPI 3.1 or AsyncAPI 3.0 document. [Guide](guides/docs.md) | nothing |
 | `@kingsleyweb/bun-ui/docs/browser` | the docs viewer's browser-safe config contract and the `unauthorized` helpers | nothing |
+| `@kingsleyweb/bun-ui/docs/mount`, `/docs/mount.css` | `mountDocsUi()`: the docs viewer in your own page's layout, prebuilt with React bundled in ([Mounting a UI in your page](#mounting-a-ui-in-your-page)) | nothing |
 | `@kingsleyweb/bun-ui/docs/hosted` | what bun-common's `docsRouter` `"self-hosted"` viewer loads to serve the viewer itself | nothing |
 | `@kingsleyweb/bun-ui/docs/embed`, `/docs/embed/{routing,router,context,permissions,client,errors,unauthorized}` | the viewer's screens as source, for a React app that bundles them into its own UI | the host's `react` and `@tanstack/react-query` |
 | `@kingsleyweb/bun-ui` | what every UI shares, browser-safe: `UiTheme`, the `unauthorized` option's types and defaults, `ASSET_CACHE_CONTROL` | nothing |
@@ -37,6 +40,7 @@ UI never loads another's code or bundle.
 - [Frame and sections](#frame-and-sections)
 - [Forms](#forms)
 - [The mount stylesheet](#the-mount-stylesheet)
+- [Mounting a UI in your page](#mounting-a-ui-in-your-page)
 - [What a UI serves](#what-a-ui-serves)
 - [Tree-shaking](#tree-shaking)
 - [Troubleshooting](#troubleshooting)
@@ -402,8 +406,8 @@ a test reads every app's fields so no raw one goes without.
 ## The mount stylesheet
 
 Each UI also ships its stylesheet **scoped to a mount element**, for a page
-that shows the UI inside its own layout (the mount functions that render it
-there arrive in a later release):
+that shows the UI inside its own layout ([Mounting a UI in your
+page](#mounting-a-ui-in-your-page)):
 
 ```ts
 import "@kingsleyweb/bun-ui/jobs/mount.css";     // a bundling host
@@ -436,6 +440,74 @@ Within a UI's own page nothing changes: the page links its usual
 stylesheet, byte for byte the same, and never the mount one. The router
 serves the mount stylesheet as a hashed asset under `<basePath>/assets/`
 like the rest (a custom theme's colours get a scoped copy too).
+
+## Mounting a UI in your page
+
+A page of your own (an admin app with its own header and side menu) can show
+a UI in its content area instead of linking to the UI's page. One function
+per UI, from its own entry:
+
+```ts
+import { mountJobsUi, type MountedUi } from "@kingsleyweb/bun-ui/jobs/mount";
+import "@kingsleyweb/bun-ui/jobs/mount.css";
+
+const ui: MountedUi = mountJobsUi(document.getElementById("content")!, {
+  apiBase: "/admin/jobs-api",   // the management API
+  basePath: "/admin/jobs",      // where your page routes the UI's paths
+  // optional, all of them:
+  shell: "none",                // "none" (default): your menu is the nav; "tabs"; "full"
+  theme: "inherit",             // (default) your page's; or "system", "light", "dark"
+  themeSource: () => (darkMode() ? "dark" : "light"),
+  layout: { align: "left" },    // default left, no width cap: your area decides
+  headers: () => ({ authorization: `Bearer ${token()}` }), // per request
+  credentials: "include",       // default "same-origin"
+  csrfHeader: "x-jobs-csrf",
+  onNavigate: (path, { replace }) => router.go(path, { replace }), // your router owns history
+  onUnauthorized: (status) => signIn(),
+});
+ui.navigate("/queues/emails");  // when your router moves
+ui.setTheme("dark");
+ui.unmount();                   // nothing is left behind
+```
+
+`mountSecurityUi` (`/security/mount`, with `apiBase`, `basePath`) and
+`mountDocsUi` (`/docs/mount`, with `documentUrl`, `basePath`) take the same
+options. A page that already serves the UI with `jobsUi()` can pass its
+`ui.config` as it is (`mountJobsUi(el, { ...ui.config })`): the fields only
+the UI's own page needs are accepted and ignored.
+
+- **The UI renders in a `<div data-bun-ui="jobs">` it creates** inside your
+  element, which it leaves exactly as you styled it; `unmount()` removes the
+  div, and every timer, listener, socket and request with it.
+- **History**: by default the UI pushes your page's history and follows
+  back and forward. With `onNavigate`, it hands you every navigation (the
+  full path, and whether it replaces the entry) and shows the screen at
+  once; call `navigate()` when your own route changes. A URL outside
+  `basePath` renders nothing: that page is yours.
+- **Its sections** for your menu are `JOBS_SECTIONS` and the rest
+  ([Frame and sections](#frame-and-sections)).
+- **Text size** follows the reader's browser default, whatever your
+  `<html>` font size: the module measures it once.
+- **Keyboard shortcuts** act only when the key is pressed inside the UI.
+- **The live updates** of the security UI read through `headers()`; the jobs
+  UI's are a WebSocket, which cannot carry headers, so it authenticates by
+  cookie.
+- **React is bundled in** (any page, React or not, any React version).
+
+**Without a bundler**, load the module from the UI's router: `jobsUi()`
+serves `<basePath>/mount.js` and `<basePath>/mount.css` (revalidated on
+every load), and `jobsUiMountTags(ui)` (with `securityUiMountTags` and
+`docsUiMountTags`) gives the hashed files with their SRI digests, for your
+page's `<head>`:
+
+```ts
+const tags = await jobsUiMountTags(ui, { nonce });
+// <head>: tags.html, the stylesheet links and a modulepreload of the module
+// your script: const { mountJobsUi } = await import(tags.module.href);
+```
+
+Your page's CSP must allow the module and its chunks (`script-src` your
+origin), the stylesheet (`style-src`) and the API (`connect-src`).
 
 ## What a UI serves
 

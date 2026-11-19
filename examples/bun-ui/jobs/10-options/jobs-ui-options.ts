@@ -147,6 +147,7 @@ checkEqual(
     "DEFAULT_TITLE",
     "JOBS_UI_CONFIG_ELEMENT_ID",
     "jobsUi",
+    "jobsUiMountTags",
   ],
 );
 checkEqual(

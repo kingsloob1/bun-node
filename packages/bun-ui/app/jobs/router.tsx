@@ -1,17 +1,18 @@
 import type { AnchorHTMLAttributes, MouseEvent, ReactNode } from "react";
-import type { NavigateOptions, RouteDef } from "./routing";
+import type { NavigateOptions, RouteDef, RouterHistory } from "./routing";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useUnauthorizedRedirect } from "@kingsleyweb/bun-ui/docs/embed/unauthorized";
 import { ScreenErrorBoundary } from "./components/ScreenErrorBoundary";
 import {
+  locationIn,
   matchPath,
   normalizeBasePath,
   ParamsContext,
-  readLocation,
   RouterContext,
   useLocation,
   useNavigate,
   useRouter,
+  windowHistory,
 } from "./routing";
 
 /**
@@ -25,18 +26,27 @@ export interface RouterProviderProps {
   basePath: string;
   /** The app. */
   children: ReactNode;
+  /**
+   * Where the URL is read and moved. Defaults to the page's own history; a
+   * mounted UI whose host owns history passes one that hands navigations to
+   * it (embedding.md §5).
+   */
+  history?: RouterHistory;
 }
 
-/** Provides routing under `basePath`, following `window.history`. */
-export function RouterProvider({ basePath, children }: RouterProviderProps) {
+/** Provides routing under `basePath`, following `history` (the page's, by default). */
+export function RouterProvider({
+  basePath,
+  children,
+  history = windowHistory,
+}: RouterProviderProps) {
   const base = normalizeBasePath(basePath);
-  const [location, setLocation] = useState(() => readLocation(base));
+  const [location, setLocation] = useState(() => locationIn(history, base));
 
-  useEffect(() => {
-    const onPopState = () => setLocation(readLocation(base));
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
-  }, [base]);
+  useEffect(
+    () => history.listen(() => setLocation(locationIn(history, base))),
+    [base, history],
+  );
 
   const href = useCallback(
     (to: string) => {
@@ -54,15 +64,10 @@ export function RouterProvider({ basePath, children }: RouterProviderProps) {
 
   const navigate = useCallback(
     (to: string, options: NavigateOptions = {}) => {
-      const url = href(to);
-      if (options.replace) {
-        window.history.replaceState(null, "", url);
-      } else {
-        window.history.pushState(null, "", url);
-      }
-      setLocation(readLocation(base));
+      history.go(href(to), options.replace === true);
+      setLocation(locationIn(history, base));
     },
-    [base, href],
+    [base, history, href],
   );
 
   const value = useMemo(

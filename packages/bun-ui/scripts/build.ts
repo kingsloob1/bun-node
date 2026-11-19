@@ -4,10 +4,13 @@
  * (`jobsUi()`, `docsUi()`) serves from memory. Runs on `prepack`, so the
  * published tarball never needs a consumer build step.
  *
- * Each UI also gets its mount stylesheet (embedding.md §4): the entry
- * stylesheet scoped to the mount element, hashed under `assets/` like the
- * rest and copied unhashed to `dist/<ui>/mount.css`, the file
- * `@kingsleyweb/bun-ui/<ui>/mount.css` exports for a bundling host.
+ * Each UI also gets its mount stylesheet and module (embedding.md §3, §4):
+ * the entry stylesheet scoped to the mount element and `app/<ui>/mount.tsx`
+ * bundled, hashed under `assets/` like the rest (the router serves them),
+ * with `dist/<ui>/mount.css` and `dist/<ui>/mount/index.js` (re-exporting
+ * the hashed module) beside them, what
+ * `@kingsleyweb/bun-ui/<ui>/mount.css` and `/<ui>/mount` export for a
+ * bundling host.
  *
  * Each bundle is type-checked first (`Bun.build`'s `check`, the app's
  * `tsconfig.json`), so a type error fails the pack instead of shipping; it
@@ -18,24 +21,25 @@
  * bun scripts/build.ts                       # every UI: app/<ui>/main.tsx → dist/<ui>/
  * bun scripts/build.ts --ui docs             # one UI
  * bun scripts/build.ts --ui jobs --out <dir> # one UI, elsewhere (--entry too)
- * bun scripts/build.ts --mount-css           # only dist/<ui>/mount.css (build:types)
+ * bun scripts/build.ts --exports             # only what exports names (build:types)
  * ```
  *
- * `--mount-css` writes the unhashed mount stylesheets alone, no manifest:
- * what `exports["./<ui>/mount.css"]` names, so `bun run build:types` (whose
- * verify step needs every export target to exist) works on a tree with no
- * `dist/`. With no manifest, a UI's server never mistakes it for a build
- * and keeps building in memory.
+ * `--exports` writes only what the package's `exports` name in `dist/<ui>/`
+ * (`mount.css`, `mount/index.js` and the mount module's files under
+ * `assets/`), no manifest, so
+ * `bun run build:types` (whose verify step needs every export target to
+ * exist) works on a tree with no `dist/`. With no manifest, a UI's server
+ * never mistakes it for a build and keeps building in memory.
  */
-import { join } from "node:path";
 import process from "node:process";
 import { parseArgs } from "node:util";
 import {
   buildAssets,
-  MOUNT_STYLESHEET,
   uiDistDir,
   uiEntry,
+  uiMountEntry,
   writeAssets,
+  writeMountExports,
 } from "../lib/kit/assets";
 
 /**
@@ -50,7 +54,7 @@ const { values } = parseArgs({
     ui: { type: "string", multiple: true },
     entry: { type: "string" },
     out: { type: "string" },
-    "mount-css": { type: "boolean" },
+    exports: { type: "boolean" },
   },
 });
 
@@ -74,23 +78,17 @@ function kib(bytes: number): string {
   return `${(bytes / 1024).toFixed(1)} KiB`;
 }
 
-if (values["mount-css"] === true) {
+if (values.exports === true) {
   for (const name of names) {
     const out = values.out ?? uiDistDir(name);
     const assets = await buildAssets({
       entry: values.entry ?? uiEntry(name),
       sourcemap: "none",
       mount: name,
+      mountEntry: uiMountEntry(name),
     });
-    const mountCss = assets.mount?.css[0];
-    if (mountCss === undefined) {
-      throw new Error(`building ${name} produced no mount stylesheet`);
-    }
-    await Bun.write(
-      join(out, MOUNT_STYLESHEET),
-      assets.files.get(mountCss)!.body,
-    );
-    process.stdout.write(`wrote ${join(out, MOUNT_STYLESHEET)}\n`);
+    await writeMountExports(assets, out, { moduleFiles: true });
+    process.stdout.write(`wrote ${out}/mount.css and ${out}/mount/\n`);
   }
   process.exit(0);
 }
@@ -99,17 +97,17 @@ for (const name of names) {
   const entry = values.entry ?? uiEntry(name);
   const out = values.out ?? uiDistDir(name);
   const started = performance.now();
-  const assets = await buildAssets({ entry, check: true, mount: name });
+  const assets = await buildAssets({
+    entry,
+    check: true,
+    mount: name,
+    mountEntry: values.entry === undefined ? uiMountEntry(name) : undefined,
+  });
   const manifest = await writeAssets(assets, out);
-  // The unhashed copy a bundling host imports (`exports["./<ui>/mount.css"]`).
-  const mountCss = assets.mount?.css[0];
-  if (mountCss === undefined) {
-    throw new Error(`building ${name} produced no mount stylesheet`);
+  // What the package's exports name: mount.css and mount/ (embedding.md §3).
+  if (assets.mount?.js !== undefined) {
+    await writeMountExports(assets, out);
   }
-  await Bun.write(
-    join(out, MOUNT_STYLESHEET),
-    assets.files.get(mountCss)!.body,
-  );
 
   const rows: string[] = [];
   let total = 0;
@@ -127,7 +125,9 @@ for (const name of names) {
           ? " (css)"
           : manifest.mount?.css.includes(file)
             ? " (mount css)"
-            : "";
+            : file === manifest.mount?.js
+              ? " (mount)"
+              : "";
     rows.push(
       `  ${file.padEnd(40)} ${kib(info.size).padStart(11)}  gzip ${kib(gzip).padStart(10)}${role}`,
     );

@@ -46,3 +46,9 @@ export type {
   DocsUiOptions,
   DocsUiUnauthorizedOptions,
 } from "./types";
+export { docsUiMountTags } from "./docsUi";
+export type {
+  UiMountTag,
+  UiMountTags,
+  UiMountTagsOptions,
+} from "../kit/mountTags";

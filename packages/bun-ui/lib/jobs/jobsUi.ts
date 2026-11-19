@@ -9,6 +9,9 @@
  * own. The mount path must equal `basePath`: the injected configuration and
  * every asset URL are built from it.
  */
+import type { UiMountTags, UiMountTagsOptions } from "../kit/mountTags";
+import type { UiAssets } from "../kit/assets";
+import { mountTagsOf } from "../kit/mountTags";
 import type { RouterHandler } from "@kingsleyweb/bun-common";
 import type { JobsApi } from "@kingsleyweb/bun-jobs";
 import type { ConfigFail } from "../kit/options";
@@ -55,6 +58,9 @@ export {
   DEFAULT_RETURN_PARAM,
   DEFAULT_UNAUTHORIZED_STATUSES,
 } from "../kit/browser/unauthorized";
+
+/** Each JobsUi's bundle loader, for {@link jobsUiMountTags}. */
+const mountSources = new WeakMap<object, () => Promise<UiAssets>>();
 
 /** Where the bundle comes from; tests point these at a fixture. */
 export interface JobsUiInternals {
@@ -278,7 +284,9 @@ export function createJobsUi(
     unauthorized: config.unauthorized,
   });
 
-  return Object.freeze({ router, basePath, config });
+  const ui = Object.freeze({ router, basePath, config });
+  mountSources.set(ui, loadAssets);
+  return ui;
 }
 
 /**
@@ -295,4 +303,28 @@ export function createJobsUi(
  */
 export function jobsUi(options: JobsUiOptions): JobsUi {
   return createJobsUi(options);
+}
+
+/**
+ * The tags a host page includes to mount this UI from its router
+ * (embedding.md §3): the mount stylesheets and module by their hashed URLs,
+ * with SRI. Waits for the bundle (an in-memory build on its first use).
+ *
+ * ```ts
+ * const tags = await jobsUiMountTags(ui);
+ * // in the page's <head>: tags.html
+ * // in its script: const { mountJobsUi } = await import(tags.module.href);
+ * ```
+ *
+ * @throws When `ui` was not made by `jobsUi()`, or its bundle has no mount module.
+ */
+export async function jobsUiMountTags(
+  ui: JobsUi,
+  options: UiMountTagsOptions = {},
+): Promise<UiMountTags> {
+  const load = mountSources.get(ui);
+  if (load === undefined) {
+    throw new TypeError("jobsUiMountTags needs a UI made by jobsUi()");
+  }
+  return mountTagsOf(await load(), ui.basePath, options);
 }

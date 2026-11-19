@@ -8,7 +8,7 @@ security, docs) renders either with its own shell, as today, or without it,
 **inside a host app's layout that has its own side menu**. The user decided
 the shape:
 
-1. **Mount into an element**: `mountJobsUi(element, { apiUrl, basePath, … })`,
+1. **Mount into an element**: `mountJobsUi(element, { apiBase, basePath, … })`,
    and likewise for security and docs. No iframe; the host's routing and URL;
    styles scoped under the UI's root so neither side breaks the other; the
    host's CSP must allow the script.
@@ -66,7 +66,7 @@ One function per UI, from a new browser entry per UI, plus the sections:
 import { mountJobsUi, JOBS_SECTIONS } from "@kingsleyweb/bun-ui/jobs/mount";
 
 const ui = mountJobsUi(document.getElementById("jobs")!, {
-  apiUrl: "/admin/jobs-api",      // or the full config a shell would inject
+  apiBase: "/admin/jobs-api",     // or the full config a shell would inject (`ui.config`)
   basePath: "/admin/jobs",        // where the host routes the UI's paths
   shell: "none",                 // "full" (its own header and nav), "tabs", "none"
   theme: "inherit",               // the kit's theme, or "inherit" from the host
@@ -85,7 +85,9 @@ ui.unmount();
   `mountDocsUi`, each from `/<ui>/mount`. `MountedUi` is `{ navigate(path),
   setTheme(theme), unmount() }`.
 - **`options`** is the UI's config (what the shell injects today:
-  `apiBase`/`apiUrl`, `basePath`, `csrfHeader`, the UI's own fields) plus the
+  `apiBase`, `basePath`, `csrfHeader`, the UI's own fields; `apiBase`, the
+  config's own name, rather than the `apiUrl` this plan first wrote: the
+  user's choice, 2026-11-18) plus the
   kit's **`MountOptions`**: `shell`, `theme` (`"inherit"` added), `layout`,
   `headers`, `credentials`, `onNavigate`, `onUnauthorized`.
 - **`shell`** is the kit-level option the user asked for: `"full"` renders
@@ -286,6 +288,7 @@ peer), if a host asks.
 | the root attribute `data-bun-ui="<ui>"` (on an element the UI creates inside the host's, decision 13), the portal container `data-bun-ui-portal` (for later) | the DOM |
 | Added in EM-1 (approved by the user, 2026-11-18): `UI_SHELLS`, `DEFAULT_PAGE_SHELL`, `DEFAULT_MOUNT_SHELL`, `DEFAULT_MOUNT_LAYOUT`; `UiShell`, `MountTheme`, `MountLayout`, `MountLayoutOptions`, `SectionPermission`; `isUiShell`, `resolveMountTheme`, `resolveMountLayout` | the kit (`lib/kit/browser/`), each `/<ui>/browser` |
 | Added in EM-1 (approved by the user, 2026-11-18): `resolveShell` (server), `FrameBar`, `clearLayout(root)`, `useUiRoot()` (app) | `lib/kit/options.ts`, `app/kit/` |
+| Added in EM-3 (approved by the user, 2026-11-18): `JobsMountOptions`, `SecurityMountOptions`, `DocsMountOptions` (each UI's options: its config's fields, `apiBase`/`documentUrl` and `basePath` required, plus `MountOptions`); `MountElement` (the element type, spelled structurally so the declarations need no DOM library); `UiMountTag`, `UiMountTags` (`{ stylesheets, module, html }`), `UiMountTagsOptions` (`{ nonce }`), what `jobsUiMountTags(ui, options)`, `securityUiMountTags` and `docsUiMountTags` return; `onNavigate`'s second argument `{ replace }` | `/<ui>/mount` (the facades `lib/<ui>/mount.ts`), `lib/kit/browser/mount.ts`, `/<ui>` |
 
 The option was built in EM-1 as `chrome` (`UiChrome`, `UI_CHROMES`,
 `isUiChrome`, `resolveChrome`, `DEFAULT_SHELL_CHROME`, `DEFAULT_MOUNT_CHROME`,
@@ -372,6 +375,34 @@ a host's unlayered rules above every layer, measured in Chrome.
     then set its font, colour and background, so nothing it would inherit
     from the host reaches the UI (measured: the host's `* { letter-spacing }`
     did, before).
+
+### Built in EM-3 (its names approved by the user, 2026-11-18)
+
+14. **Shipping the module.** `buildAssets` bundles `app/<ui>/mount.tsx` beside
+    the page (splitting on, as the page), its module and chunks hashed under
+    `assets/` and named in the manifest (`mount.js`, `mount.files`); its own
+    stylesheet is dropped, the scoped one standing for it. `scripts/build.ts`
+    writes `dist/<ui>/mount/index.js`, re-exporting the hashed module in
+    `dist/<ui>/assets/` (so the tarball carries it once), which
+    `exports["./<ui>/mount"]`'s `default` names; its
+    `types` are the facade `lib/<ui>/mount.ts`'s declarations (no React type
+    published). The router's `/mount.js` is `export * from
+    "./assets/mount-<hash>.js"` and `/mount.css` the scoped stylesheets, both
+    `Cache-Control: no-cache` with an ETag; the hashed files keep their
+    immutable caching and SRI, which `xxxUiMountTags()` prints.
+15. **`onNavigate(path, { replace })`**: the second argument says whether the
+    navigation replaces the entry (a filter in the query, a redirect), so a
+    host's router does not stack them; a navigation to where the UI already
+    is (a redirect run twice under StrictMode) is not handed on.
+16. **Shortcuts when mounted** act only on a key pressed inside the mount
+    root, and look for the search box there, so two mounts on a page never
+    both react.
+17. **What the host's options reach.** `headers()` (per request, under the
+    client's own headers, which win) and `credentials` go to every API
+    request and the security UI's live stream (a fetch-based reader); the
+    jobs UI's WebSocket cannot carry headers, so it authenticates by cookie.
+    `onUnauthorized` replaces the redirect: called once per mount, for the
+    statuses the UI's `unauthorized` lists (`[401]` by default).
 
 EM-1 also makes `shell` a kit option like `layout`: `resolveShell` in
 `lib/kit/options.ts`, taken by every `xxxUi()` (default `"full"`) and carried

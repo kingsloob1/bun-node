@@ -30,6 +30,7 @@ describe("lib/index.ts", () => {
       "DOCS_UI_CONFIG_ELEMENT_ID",
       "DOCUMENT_SUBPATH",
       "docsUi",
+      "docsUiMountTags",
     ]);
   });
 });

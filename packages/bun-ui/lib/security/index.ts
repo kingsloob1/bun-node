@@ -35,3 +35,9 @@ export type {
   UiUnauthorized,
   UiUnauthorizedStatus,
 } from "../kit/browser/unauthorized";
+export { securityUiMountTags } from "./securityUi";
+export type {
+  UiMountTag,
+  UiMountTags,
+  UiMountTagsOptions,
+} from "../kit/mountTags";

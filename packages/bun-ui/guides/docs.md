@@ -115,6 +115,15 @@ The WebSocket reference's "try it" links and permission markers of
 the jobs UI's Events console are jobs-specific and are not part
 of this standalone viewer.
 
+## Mounting it in your own page
+
+`mountDocsUi()` from `@kingsleyweb/bun-ui/docs/mount` shows the docs viewer in your
+page's content area (`documentUrl, basePath`, plus the kit's options: `shell`,
+`theme`, `layout`, `headers`, `credentials`, `onNavigate`,
+`onUnauthorized`). See [Mounting a UI in your
+page](../README.md#mounting-a-ui-in-your-page); `docsUiMountTags(ui)` gives
+the tags for a page without a bundler.
+
 ## Styling it when mounted
 
 A page that mounts the UI in its own layout links its mount stylesheet

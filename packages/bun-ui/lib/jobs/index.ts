@@ -50,3 +50,9 @@ export type {
   JobsUiOptions,
   JobsUiUrlOptions,
 } from "./types";
+export { jobsUiMountTags } from "./jobsUi";
+export type {
+  UiMountTag,
+  UiMountTags,
+  UiMountTagsOptions,
+} from "../kit/mountTags";

@@ -55,6 +55,30 @@ const ALLOWED: Record<string, readonly string[]> = {
   "./docs/embed/client": [],
   "./docs/embed/errors": [],
   "./docs/embed/unauthorized": [],
+  // The mount modules (embedding.md §3), walked from their source: what
+  // each app imports, every one browser-safe (bun-jobs' and bun-security's
+  // contract entries, bun-client, the package's own `./docs/embed`).
+  "./jobs/mount": [
+    "@kingsleyweb/bun-client",
+    "@kingsleyweb/bun-jobs",
+    "@kingsleyweb/bun-ui",
+  ],
+  "./security/mount": [
+    "@kingsleyweb/bun-client",
+    "@kingsleyweb/bun-security",
+    "@kingsleyweb/bun-ui",
+  ],
+  "./docs/mount": [],
+};
+
+/**
+ * Where a mount entry's run-time graph starts: its app source. Its `default`
+ * is the prebuilt module in `dist/`, which the repository does not keep.
+ */
+const MOUNT_SOURCES: Record<string, string> = {
+  "./jobs/mount": "app/jobs/mount.tsx",
+  "./security/mount": "app/security/mount.tsx",
+  "./docs/mount": "app/docs/mount.tsx",
 };
 
 /** Entries a browser bundle may import: no Node or Bun built-in either. */
@@ -64,6 +88,7 @@ const BROWSER = new Set(
       key === "." ||
       key === "./lib" ||
       key.endsWith("/browser") ||
+      key.endsWith("/mount") ||
       key.startsWith("./docs/embed"),
   ),
 );
@@ -75,7 +100,7 @@ const manifest = (await Bun.file(join(ROOT, "package.json")).json()) as {
 /** Every literal (pattern-free) `exports` key with its run-time target. */
 const ENTRIES = Object.entries(manifest.exports).flatMap(([key, value]) =>
   typeof value === "object" && !key.includes("*")
-    ? [[key, join(ROOT, value.default)] as const]
+    ? [[key, join(ROOT, MOUNT_SOURCES[key] ?? value.default)] as const]
     : [],
 );
 
@@ -189,6 +214,20 @@ describe("entry isolation", () => {
     expect(found).not.toContain(
       `exports["./jobs"] loads @kingsleyweb/bun-jobs`,
     );
+  });
+
+  it("negative control: names a Node built-in or a server package reached from a mount entry", () => {
+    const mount = join(ROOT, "app", "jobs", "mountApp.tsx");
+    const planted = (path: string) =>
+      readFileSync(path, "utf8") +
+      (path === mount
+        ? `\nimport "node:path";\nimport "@kingsleyweb/bun-common";\n`
+        : "");
+    const file = ENTRIES.find(([key]) => key === "./jobs/mount")![1];
+    expect(problems("./jobs/mount", reach(file, planted))).toEqual([
+      `exports["./jobs/mount"] loads @kingsleyweb/bun-common`,
+      `exports["./jobs/mount"] (browser-safe) loads node:path`,
+    ]);
   });
 
   it("names a Node built-in reached from a browser entry", () => {

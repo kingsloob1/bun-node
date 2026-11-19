@@ -29,6 +29,36 @@ import { redirectsDenial, sendUnauthorizedRedirect } from "./unauthorized";
 /** The path under a UI's `basePath` its bundle is served from. */
 export const ASSETS_SUBPATH = "/assets";
 
+/** The path under a UI's `basePath` of its mount module's alias (embedding.md §3). */
+export const MOUNT_MODULE_SUBPATH = "/mount.js";
+
+/** The path under a UI's `basePath` of its mount stylesheet's alias. */
+export const MOUNT_STYLESHEET_SUBPATH = "/mount.css";
+
+/** `Cache-Control` for the unhashed mount aliases: revalidated every time, since a deploy changes what they name. */
+export const MOUNT_ALIAS_CACHE_CONTROL = "no-cache";
+
+/**
+ * The bodies of a bundle's mount aliases, or `undefined` without a mount
+ * module: `/mount.js` re-exports the hashed module (`export * from
+ * "./assets/mount-<hash>.js"`, resolved against the alias's own URL), and
+ * `/mount.css` is the scoped stylesheets, in order (a custom theme's
+ * after the entry's).
+ */
+export function mountAliases(
+  assets: UiAssets,
+): { js: string; css: string } | undefined {
+  const mount = assets.mount;
+  if (mount?.js === undefined) return undefined;
+  const decoder = new TextDecoder();
+  return {
+    js: `export * from ".${ASSETS_SUBPATH}/${mount.js}";\n`,
+    css: mount.css
+      .map((name) => decoder.decode(assets.files.get(name)!.body))
+      .join("\n"),
+  };
+}
+
 /** Sends an RFC 9457 problem: `(req, res, status, code, title, detail)`. */
 export type ProblemSender = (
   req: BunRequest,
@@ -345,6 +375,58 @@ export function createUiRouter(options: UiRouterOptions): BunRouter {
     res.send(file.body);
   };
 
+  /** Serves one mount alias, `/mount.js` or `/mount.css`, revalidated with a strong ETag. */
+  const serveMountAlias =
+    (kind: "js" | "css"): RouterHandler =>
+    async (req, res) => {
+      const loaded = await readyOrFail(req, res);
+      if (!loaded) {
+        return;
+      }
+      const aliases = mountAliases(loaded.assets);
+      if (aliases === undefined) {
+        problem(
+          req,
+          res,
+          404,
+          "NOT_FOUND",
+          "Not found",
+          `No asset ${req.path}`,
+        );
+        return;
+      }
+      const body = aliases[kind];
+      const etag = `"${new Bun.CryptoHasher("sha256").update(body).digest("hex").slice(0, 32)}"`;
+      res.setHeader(
+        "Content-Type",
+        kind === "js"
+          ? "text/javascript; charset=utf-8"
+          : "text/css; charset=utf-8",
+      );
+      res.setHeader("Cache-Control", MOUNT_ALIAS_CACHE_CONTROL);
+      res.setHeader("ETag", etag);
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      const match = req.get("if-none-match");
+      if (
+        match !== null &&
+        match.split(",").some((tag) => tag.trim().replace(/^W\//, "") === etag)
+      ) {
+        res.status(304);
+        void res.end();
+        return;
+      }
+      res.status(200);
+      if (req.method === "HEAD") {
+        res.setHeader(
+          "Content-Length",
+          String(new TextEncoder().encode(body).byteLength),
+        );
+        void res.end();
+        return;
+      }
+      res.send(body);
+    };
+
   const notFound: RouterHandler = (req, res) => {
     problem(req, res, 404, "NOT_FOUND", "Not found", `No asset ${req.path}`);
   };
@@ -381,6 +463,16 @@ export function createUiRouter(options: UiRouterOptions): BunRouter {
     register(`${ASSETS_SUBPATH}/:file`, ...guards(true, false), serveAsset);
     register(ASSETS_SUBPATH, ...guards(true, false), notFound);
     register(`${ASSETS_SUBPATH}/*`, ...guards(true, false), notFound);
+    register(
+      MOUNT_MODULE_SUBPATH,
+      ...guards(true, false),
+      serveMountAlias("js"),
+    );
+    register(
+      MOUNT_STYLESHEET_SUBPATH,
+      ...guards(true, false),
+      serveMountAlias("css"),
+    );
     for (const route of routes) {
       register(route.path, ...guards(false, false), route.handler);
     }

@@ -10,6 +10,9 @@
  * own. The mount path must equal `basePath`: the injected configuration and
  * every asset URL are built from it.
  */
+import type { UiMountTags, UiMountTagsOptions } from "../kit/mountTags";
+import type { UiAssets } from "../kit/assets";
+import { mountTagsOf } from "../kit/mountTags";
 import type { RouterHandler } from "@kingsleyweb/bun-common";
 import type { ConfigFail } from "../kit/options";
 import type { DocsUiConfig } from "./browser/config";
@@ -32,6 +35,9 @@ import { resolveUnauthorized } from "../kit/unauthorized";
 import { DEFAULT_DIST_DIR, DEFAULT_ENTRY, resolveAssetSource } from "./assets";
 import { DEFAULT_EXTENSION_PREFIXES } from "./browser/config";
 import { createShellRenderer, documentOriginSource } from "./shell";
+
+/** Each DocsUi's bundle loader, for {@link docsUiMountTags}. */
+const mountSources = new WeakMap<object, () => Promise<UiAssets>>();
 
 /** The viewer's default mount path. */
 export const DEFAULT_BASE_PATH = "/docs";
@@ -278,7 +284,9 @@ export function createDocsUi(
     routes: [{ path: DOCUMENT_SUBPATH, handler: serveDocument }],
   });
 
-  return Object.freeze({ router, basePath, config });
+  const ui = Object.freeze({ router, basePath, config });
+  mountSources.set(ui, loadAssets);
+  return ui;
 }
 
 /**
@@ -293,4 +301,28 @@ export function createDocsUi(
  */
 export function docsUi(options: DocsUiOptions): DocsUi {
   return createDocsUi(options);
+}
+
+/**
+ * The tags a host page includes to mount this UI from its router
+ * (embedding.md §3): the mount stylesheets and module by their hashed URLs,
+ * with SRI. Waits for the bundle (an in-memory build on its first use).
+ *
+ * ```ts
+ * const tags = await docsUiMountTags(ui);
+ * // in the page's <head>: tags.html
+ * // in its script: const { mountDocsUi } = await import(tags.module.href);
+ * ```
+ *
+ * @throws When `ui` was not made by `docsUi()`, or its bundle has no mount module.
+ */
+export async function docsUiMountTags(
+  ui: DocsUi,
+  options: UiMountTagsOptions = {},
+): Promise<UiMountTags> {
+  const load = mountSources.get(ui);
+  if (load === undefined) {
+    throw new TypeError("docsUiMountTags needs a UI made by docsUi()");
+  }
+  return mountTagsOf(await load(), ui.basePath, options);
 }
