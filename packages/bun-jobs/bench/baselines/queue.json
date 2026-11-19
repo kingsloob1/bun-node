@@ -1,367 +1,367 @@
 {
-  "recordedAt": "2026-10-21T20:05:05.307Z",
-  "bun": "1.4.4",
+  "recordedAt": "2026-11-19T03:09:44.157Z",
+  "bun": "1.4.5",
   "platform": "linux-x64",
   "jobs": 5000,
   "entries": {
     "enqueue/memory": {
       "scenario": "enqueue",
       "backend": "memory",
-      "ours": 123736.0578231467,
+      "ours": 138959.51506241932,
       "higherIsBetter": true
     },
     "enqueue/file": {
       "scenario": "enqueue",
       "backend": "file",
-      "ours": 14353.546769157574,
+      "ours": 17522.655023156785,
       "higherIsBetter": true
     },
     "enqueue/sqlite": {
       "scenario": "enqueue",
       "backend": "sqlite",
-      "ours": 19388.38020715957,
+      "ours": 23402.19917205453,
       "higherIsBetter": true
     },
     "enqueue/redis": {
       "scenario": "enqueue",
       "backend": "redis",
-      "ours": 14069.055691932073,
+      "ours": 16460.061944348632,
       "higherIsBetter": true,
       "rival": {
-        "contender": "node-resque",
-        "value": 21471.995748613554
+        "contender": "bee-queue",
+        "value": 29352.816825161404
       }
     },
     "enqueue/postgres": {
       "scenario": "enqueue",
       "backend": "postgres",
-      "ours": 1559.141959513381,
+      "ours": 1595.7935703638057,
       "higherIsBetter": true,
       "rival": {
-        "contender": "pg-boss",
-        "value": 622.8413272544592
+        "contender": "agenda-postgres",
+        "value": 1416.8445242224257
       }
     },
     "enqueue/mysql": {
       "scenario": "enqueue",
       "backend": "mysql",
-      "ours": 699.453690855413,
+      "ours": 759.5594109646178,
       "higherIsBetter": true
     },
     "enqueue/mariadb": {
       "scenario": "enqueue",
       "backend": "mariadb",
-      "ours": 1620.4369056597573,
+      "ours": 1865.8822831914233,
       "higherIsBetter": true
     },
     "enqueue/mongodb": {
       "scenario": "enqueue",
       "backend": "mongodb",
-      "ours": 3891.023764359937,
+      "ours": 4825.392878807561,
       "higherIsBetter": true,
       "rival": {
         "contender": "agenda-mongodb",
-        "value": 762.1468832816496
+        "value": 6137.49069669954
       }
     },
     "enqueue-bulk/memory": {
       "scenario": "enqueue-bulk",
       "backend": "memory",
-      "ours": 84912.7861622455,
+      "ours": 197058.13486918848,
       "higherIsBetter": true
     },
     "enqueue-bulk/file": {
       "scenario": "enqueue-bulk",
       "backend": "file",
-      "ours": 25733.318252922614,
+      "ours": 47210.61287023626,
       "higherIsBetter": true
     },
     "enqueue-bulk/sqlite": {
       "scenario": "enqueue-bulk",
       "backend": "sqlite",
-      "ours": 81128.67774144509,
+      "ours": 86285.65750482104,
       "higherIsBetter": true
     },
     "enqueue-bulk/redis": {
       "scenario": "enqueue-bulk",
       "backend": "redis",
-      "ours": 45682.6388704255,
+      "ours": 57222.6667406136,
       "higherIsBetter": true,
       "rival": {
         "contender": "bee-queue",
-        "value": 83025.21155197523
+        "value": 96884.78409158043
       }
     },
     "enqueue-bulk/postgres": {
       "scenario": "enqueue-bulk",
       "backend": "postgres",
-      "ours": 27549.326214558045,
+      "ours": 33989.18802569335,
       "higherIsBetter": true,
       "rival": {
         "contender": "graphile-worker",
-        "value": 35829.904978733706
+        "value": 56226.211814305614
       }
     },
     "enqueue-bulk/mysql": {
       "scenario": "enqueue-bulk",
       "backend": "mysql",
-      "ours": 13617.15886205107,
+      "ours": 19422.395817006385,
       "higherIsBetter": true
     },
     "enqueue-bulk/mariadb": {
       "scenario": "enqueue-bulk",
       "backend": "mariadb",
-      "ours": 21828.083767227254,
+      "ours": 29938.106557265626,
       "higherIsBetter": true
     },
     "enqueue-bulk/mongodb": {
       "scenario": "enqueue-bulk",
       "backend": "mongodb",
-      "ours": 23874.9486724416,
+      "ours": 33029.25107467935,
       "higherIsBetter": true,
       "rival": {
         "contender": "agenda-mongodb",
-        "value": 5070.037456868887
+        "value": 5834.5699004088865
       }
     },
     "throughput/memory": {
       "scenario": "throughput",
       "backend": "memory",
-      "ours": 106019.43807026136,
+      "ours": 127426.2207279034,
       "higherIsBetter": true
     },
     "throughput/file": {
       "scenario": "throughput",
       "backend": "file",
-      "ours": 5098.350666530886,
+      "ours": 5701.419441576206,
       "higherIsBetter": true
     },
     "throughput/sqlite": {
       "scenario": "throughput",
       "backend": "sqlite",
-      "ours": 1471.6779777760974,
+      "ours": 1808.585028016751,
       "higherIsBetter": true
     },
     "throughput/redis": {
       "scenario": "throughput",
       "backend": "redis",
-      "ours": 23416.519128155967,
+      "ours": 29322.594523450698,
       "higherIsBetter": true,
       "rival": {
         "contender": "bee-queue",
-        "value": 19714.570166243
+        "value": 20017.264330001224
       }
     },
     "throughput/postgres": {
       "scenario": "throughput",
       "backend": "postgres",
-      "ours": 6409.266737302085,
+      "ours": 8212.575378589296,
       "higherIsBetter": true,
       "rival": {
         "contender": "pg-boss",
-        "value": 5514.687353408925
+        "value": 4922.546182326545
       }
     },
     "throughput/mysql": {
       "scenario": "throughput",
       "backend": "mysql",
-      "ours": 257.1378765188394,
+      "ours": 390.5017351375249,
       "higherIsBetter": true
     },
     "throughput/mariadb": {
       "scenario": "throughput",
       "backend": "mariadb",
-      "ours": 369.5434510651307,
+      "ours": 625.7540285201152,
       "higherIsBetter": true
     },
     "throughput/mongodb": {
       "scenario": "throughput",
       "backend": "mongodb",
-      "ours": 3959.553794683557,
+      "ours": 4707.144332798983,
       "higherIsBetter": true,
       "rival": {
         "contender": "agenda-mongodb",
-        "value": 319.8594670358672
+        "value": 319.89431189434646
       }
     },
     "roundtrip/memory": {
       "scenario": "roundtrip",
       "backend": "memory",
-      "ours": 0.05332599999999843,
+      "ours": 0.05055500000000279,
       "higherIsBetter": false
     },
     "roundtrip/file": {
       "scenario": "roundtrip",
       "backend": "file",
-      "ours": 0.3051049999999975,
+      "ours": 0.3140640000000019,
       "higherIsBetter": false
     },
     "roundtrip/sqlite": {
       "scenario": "roundtrip",
       "backend": "sqlite",
-      "ours": 0.3556600000000003,
+      "ours": 0.3250549999999919,
       "higherIsBetter": false
     },
     "roundtrip/redis": {
       "scenario": "roundtrip",
       "backend": "redis",
-      "ours": 0.2128020000000106,
+      "ours": 0.2544560000000047,
       "higherIsBetter": false,
       "rival": {
         "contender": "node-resque",
-        "value": 0.2138559999999643
+        "value": 0.1441220000000385
       }
     },
     "roundtrip/postgres": {
       "scenario": "roundtrip",
       "backend": "postgres",
-      "ours": 1.89033900000004,
+      "ours": 1.7657859999999914,
       "higherIsBetter": false,
       "rival": {
-        "contender": "pg-boss",
-        "value": 2.745959999999968
+        "contender": "graphile-worker",
+        "value": 2.1002599999999916
       }
     },
     "roundtrip/mysql": {
       "scenario": "roundtrip",
       "backend": "mysql",
-      "ours": 5.105530999999928,
+      "ours": 4.364902000000029,
       "higherIsBetter": false
     },
     "roundtrip/mariadb": {
       "scenario": "roundtrip",
       "backend": "mariadb",
-      "ours": 1.640299999999968,
+      "ours": 1.4873499999999922,
       "higherIsBetter": false
     },
     "roundtrip/mongodb": {
       "scenario": "roundtrip",
       "backend": "mongodb",
-      "ours": 0.8974729999999909,
+      "ours": 0.6609349999999949,
       "higherIsBetter": false,
       "rival": {
         "contender": "agenda-mongodb",
-        "value": 50.168055000000095
+        "value": 50.143966999999975
       }
     },
     "payload/memory": {
       "scenario": "payload",
       "backend": "memory",
-      "ours": 82918.20472335594,
+      "ours": 131894.86333344426,
       "higherIsBetter": true
     },
     "payload/file": {
       "scenario": "payload",
       "backend": "file",
-      "ours": 4192.2248414004,
+      "ours": 5323.91289803359,
       "higherIsBetter": true
     },
     "payload/sqlite": {
       "scenario": "payload",
       "backend": "sqlite",
-      "ours": 1200.507440857486,
+      "ours": 1444.996354090684,
       "higherIsBetter": true
     },
     "payload/redis": {
       "scenario": "payload",
       "backend": "redis",
-      "ours": 17066.067135273108,
+      "ours": 17748.62182483989,
       "higherIsBetter": true,
       "rival": {
         "contender": "bee-queue",
-        "value": 10591.570096066876
+        "value": 20385.909507241253
       }
     },
     "payload/postgres": {
       "scenario": "payload",
       "backend": "postgres",
-      "ours": 6620.789380880955,
+      "ours": 7207.679449169992,
       "higherIsBetter": true,
       "rival": {
         "contender": "pg-boss",
-        "value": 4950.611545727334
+        "value": 4730.687885171839
       }
     },
     "payload/mysql": {
       "scenario": "payload",
       "backend": "mysql",
-      "ours": 361.804575907657,
+      "ours": 436.8480800173342,
       "higherIsBetter": true
     },
     "payload/mariadb": {
       "scenario": "payload",
       "backend": "mariadb",
-      "ours": 359.45313520641344,
+      "ours": 613.2585428922221,
       "higherIsBetter": true
     },
     "payload/mongodb": {
       "scenario": "payload",
       "backend": "mongodb",
-      "ours": 1863.274619642075,
+      "ours": 4600.912141874316,
       "higherIsBetter": true,
       "rival": {
         "contender": "agenda-mongodb",
-        "value": 358.9885143038546
+        "value": 319.97136312614987
       }
     },
     "contention/memory": {
       "scenario": "contention",
       "backend": "memory",
-      "ours": 96934.78822627738,
+      "ours": 123734.90341377171,
       "higherIsBetter": true
     },
     "contention/file": {
       "scenario": "contention",
       "backend": "file",
-      "ours": 5125.512115799325,
+      "ours": 7337.019983373228,
       "higherIsBetter": true
     },
     "contention/sqlite": {
       "scenario": "contention",
       "backend": "sqlite",
-      "ours": 1526.813234595327,
+      "ours": 1835.8808403857342,
       "higherIsBetter": true
     },
     "contention/redis": {
       "scenario": "contention",
       "backend": "redis",
-      "ours": 27097.981113151574,
+      "ours": 27050.078080050378,
       "higherIsBetter": true,
       "rival": {
         "contender": "bee-queue",
-        "value": 14578.820429096966
+        "value": 21789.77508267313
       }
     },
     "contention/postgres": {
       "scenario": "contention",
       "backend": "postgres",
-      "ours": 11145.819018154236,
+      "ours": 12651.132356427568,
       "higherIsBetter": true,
       "rival": {
         "contender": "pg-boss",
-        "value": 13627.348946819331
+        "value": 14283.574728650574
       }
     },
     "contention/mysql": {
       "scenario": "contention",
       "backend": "mysql",
-      "ours": 832.055691295309,
+      "ours": 1043.7671621872291,
       "higherIsBetter": true
     },
     "contention/mariadb": {
       "scenario": "contention",
       "backend": "mariadb",
-      "ours": 859.7905877605255,
+      "ours": 1289.9591254238012,
       "higherIsBetter": true
     },
     "contention/mongodb": {
       "scenario": "contention",
       "backend": "mongodb",
-      "ours": 2427.1493277308737,
+      "ours": 3358.5587019926156,
       "higherIsBetter": true,
       "rival": {
         "contender": "agenda-mongodb",
-        "value": 702.1399578695523
+        "value": 1228.6898154820992
       }
     }
   }
