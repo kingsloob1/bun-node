@@ -1,5 +1,5 @@
 /**
- * The docs viewer's frame for `chrome: "tabs"` (embedding.md §12 item 8):
+ * The docs viewer's frame for `shell: "tabs"` (embedding.md §12 item 8):
  * the kit's compact bar holding the one section of `DOCS_SECTIONS` that
  * matches the document, read from the location (the viewer's `/` sends an
  * OpenAPI document to `/http` and an AsyncAPI one to `/ws`). `"full"` and

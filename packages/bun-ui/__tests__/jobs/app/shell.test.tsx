@@ -1,5 +1,5 @@
 /**
- * The jobs app's frame under each `chrome` (embedding.md §2; the user's
+ * The jobs app's frame under each `shell` (embedding.md §2; the user's
  * decision 2026-11-18, §12 item 7), its sections as one list (the nav reads
  * the browser contract's `JOBS_SECTIONS`, filtered by the kit's
  * `sectionsFor`, then by what the API serves), and the theme toggle applying
@@ -72,11 +72,11 @@ describe("JOBS_SECTIONS is the nav's list", () => {
   });
 });
 
-describe("chrome", () => {
+describe("shell", () => {
   it('"full" (the default): the header and the side nav', async () => {
     renderApp();
     const ready = await page().findByTestId("app-ready", {}, LOADED);
-    expect(ready.dataset.chrome).toBe("full");
+    expect(ready.dataset.shell).toBe("full");
     expect(page().getByRole("banner")).toBeTruthy();
     expect(page().getByRole("navigation", { name: "Sections" }).className).toBe(
       "app-nav",
@@ -85,7 +85,7 @@ describe("chrome", () => {
   });
 
   it('"tabs": the top-level sections as tabs and the live badge; no brand, chips or theme toggle', async () => {
-    renderApp({ config: { chrome: "tabs" } });
+    renderApp({ config: { shell: "tabs" } });
     const tabs = await page().findByTestId("section-tabs", {}, LOADED);
     expect(
       within(tabs)
@@ -108,7 +108,7 @@ describe("chrome", () => {
       page().queryAllByRole("button", { name: /^Theme:/ }),
       "theme toggles",
     );
-    expect(page().getByTestId("app-ready").dataset.chrome).toBe("tabs");
+    expect(page().getByTestId("app-ready").dataset.shell).toBe("tabs");
     // The current section's tab is current; the screen is under the bar.
     expect(
       within(tabs)
@@ -119,9 +119,9 @@ describe("chrome", () => {
   });
 
   it('"none": the screen alone, no bar, header or nav', async () => {
-    renderApp({ config: { chrome: "none" } });
+    renderApp({ config: { shell: "none" } });
     await page().findByTestId("overview", {}, LOADED);
-    expect(page().getByTestId("app-ready").dataset.chrome).toBe("none");
+    expect(page().getByTestId("app-ready").dataset.shell).toBe("none");
     expectNone(page().queryAllByTestId("app-bar"), "compact bars");
     expectNone(page().queryAllByRole("banner"), "headers");
     expectNone(page().queryAllByRole("navigation"), "navs");
@@ -129,8 +129,8 @@ describe("chrome", () => {
   });
 
   it("keeps the keyboard shortcuts in every mode: ? opens the help", async () => {
-    for (const chrome of ["full", "tabs", "none"] as const) {
-      const { unmount } = renderApp({ config: { chrome } });
+    for (const shell of ["full", "tabs", "none"] as const) {
+      const { unmount } = renderApp({ config: { shell } });
       await page().findByTestId("app-ready", {}, LOADED);
       fireEvent.keyDown(document.body, { key: "?" });
       expect(
@@ -174,13 +174,13 @@ describe("the theme toggle themes the UI's root", () => {
   });
 });
 
-describe("parseUiConfig: chrome", () => {
-  it("takes a missing chrome as full (an older shell), keeps a valid one, refuses a bad one", () => {
-    const { chrome: _chrome, ...without } = uiConfig();
-    expect(parseUiConfig(without).chrome).toBe("full");
-    expect(parseUiConfig(uiConfig({ chrome: "none" })).chrome).toBe("none");
+describe("parseUiConfig: shell", () => {
+  it("takes a missing shell as full (an older shell), keeps a valid one, refuses a bad one", () => {
+    const { shell: _chrome, ...without } = uiConfig();
+    expect(parseUiConfig(without).shell).toBe("full");
+    expect(parseUiConfig(uiConfig({ shell: "none" })).shell).toBe("none");
     for (const bad of [null, "Tabs", 0]) {
-      expect(() => parseUiConfig({ ...uiConfig(), chrome: bad })).toThrow(
+      expect(() => parseUiConfig({ ...uiConfig(), shell: bad })).toThrow(
         UiConfigError,
       );
     }

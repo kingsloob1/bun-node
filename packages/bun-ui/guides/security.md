@@ -51,7 +51,7 @@ is read from the API.
 | `authorize` | none | Guards the shell and the assets, as every bun-ui UI's. The API checks every call itself whatever this says. |
 | `unauthorized` | none | Where the browser goes for a `401` (the kit's option, as the jobs UI's). |
 | `theme`, `layout` | `"system"`, centred 1400px | The kit's: the theme, and where the content sits on a wide screen. |
-| `chrome` | `"full"` | The kit's: `"full"` the header and side nav; `"tabs"` a compact bar of the sections, the scope picker, the break-glass badge and the live badge; `"none"` the screen under a thin bar of the scope picker and the break-glass badge. The sections are `SECURITY_SECTIONS` (`/security/browser`). See [Frame and sections](../README.md#frame-and-sections). |
+| `shell` | `"full"` | The kit's: `"full"` the header and side nav; `"tabs"` a compact bar of the sections, the scope picker, the break-glass badge and the live badge; `"none"` the screen under a thin bar of the scope picker and the break-glass badge. The sections are `SECURITY_SECTIONS` (`/security/browser`). See [Frame and sections](../README.md#frame-and-sections). |
 | `middleware`, `dev`, `logger` | | As every bun-ui UI's. |
 
 The page's CSP is the kit's strict nonce policy. The live updates are

@@ -7,7 +7,7 @@
  * sides import it, and the app side is bundled for the browser.
  */
 
-import type { UiChrome } from "../../kit/browser/mount";
+import type { UiShell } from "../../kit/browser/mount";
 import type { UiLayout, UiTheme } from "../../kit/browser/shared";
 import type { UiUnauthorized } from "./unauthorized";
 
@@ -59,8 +59,8 @@ export interface JobsUiConfig {
   theme: UiTheme;
   /** Where the content sits on a wide screen (the `layout` option, checked). */
   layout: UiLayout;
-  /** How much of its own frame the UI draws (the `chrome` option, checked; `"full"` when unset). */
-  chrome: UiChrome;
+  /** How much of its own frame the UI draws (the `shell` option, checked; `"full"` when unset). */
+  shell: UiShell;
   /**
    * Where an authorization failure sends the browser (`jobsUi()`'s
    * `unauthorized`), or `null` when it is off: the app then shows each

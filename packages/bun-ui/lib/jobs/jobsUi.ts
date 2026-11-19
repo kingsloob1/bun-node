@@ -23,7 +23,7 @@ import {
   requireOptionsObject,
   resolveCommonOptions,
   resolveCsrfHeader,
-  resolveChrome,
+  resolveShell,
   resolveLayout,
 } from "../kit/options";
 import type { ResolvedApiTarget } from "../kit/apiTarget";
@@ -227,7 +227,7 @@ export function createJobsUi(
     sections: resolveSections(options.sections),
     theme: theme.mode,
     layout: resolveLayout(options.layout, fail),
-    chrome: resolveChrome(options.chrome, fail),
+    shell: resolveShell(options.shell, fail),
     unauthorized: resolveUnauthorized(options.unauthorized, basePath, fail),
   });
 

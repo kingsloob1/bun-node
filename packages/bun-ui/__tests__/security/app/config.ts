@@ -20,7 +20,7 @@ export function securityConfig(
     live: { path: "/security/api/live" },
     theme: "system",
     layout: { align: "center", scope: "content", maxWidth: 1400 },
-    chrome: "full",
+    shell: "full",
     unauthorized: null,
     ...overrides,
   };

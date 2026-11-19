@@ -1,8 +1,8 @@
 /**
- * The docs viewer under each `chrome` (embedding.md §12 item 8): `"tabs"`
+ * The docs viewer under each `shell` (embedding.md §12 item 8): `"tabs"`
  * names the one `DOCS_SECTIONS` entry matching the document in the kit's
  * compact bar; `"full"` (as before) and `"none"` draw no frame. And the
- * config check: a missing `chrome` (bun-common's mirrored config, an older
+ * config check: a missing `shell` (bun-common's mirrored config, an older
  * shell) is `"full"`, a bad one is refused.
  */
 import { describe, expect, it } from "bun:test";
@@ -63,44 +63,44 @@ describe("DOCS_SECTIONS", () => {
   });
 });
 
-describe("chrome", () => {
+describe("shell", () => {
   it('"tabs" shows only the HTTP API for an OpenAPI document', async () => {
-    await renderViewer({ document: OPENAPI, config: { chrome: "tabs" } });
+    await renderViewer({ document: OPENAPI, config: { shell: "tabs" } });
     expect(await tabLabels()).toEqual(["HTTP API"]);
   });
 
   it('"tabs" shows only the WebSocket API for an AsyncAPI document', async () => {
-    await renderViewer({ document: ASYNCAPI, config: { chrome: "tabs" } });
+    await renderViewer({ document: ASYNCAPI, config: { shell: "tabs" } });
     expect(await tabLabels()).toEqual(["WebSocket API"]);
   });
 
   it('"full" and "none" draw no bar (the viewer has no header)', async () => {
-    for (const chrome of ["full", "none"] as const) {
+    for (const shell of ["full", "none"] as const) {
       const { unmount } = await renderViewer({
         document: OPENAPI,
-        config: { chrome },
+        config: { shell },
       });
       // Loaded: the landing sent the OpenAPI document to its section.
       await waitFor(
         () => expect(window.location.pathname).toBe("/docs/http"),
         LOADED,
       );
-      expectNone(page().queryAllByTestId("app-bar"), `bars under ${chrome}`);
+      expectNone(page().queryAllByTestId("app-bar"), `bars under ${shell}`);
       unmount();
     }
   });
 });
 
-describe("parseDocsUiConfig: chrome", () => {
-  it("takes a missing chrome as full, keeps a valid one, refuses a bad one", () => {
-    const { chrome: _chrome, ...without } = viewerConfig();
-    expect(parseDocsUiConfig(without).chrome).toBe("full");
-    expect(parseDocsUiConfig(viewerConfig({ chrome: "tabs" })).chrome).toBe(
+describe("parseDocsUiConfig: shell", () => {
+  it("takes a missing shell as full, keeps a valid one, refuses a bad one", () => {
+    const { shell: _chrome, ...without } = viewerConfig();
+    expect(parseDocsUiConfig(without).shell).toBe("full");
+    expect(parseDocsUiConfig(viewerConfig({ shell: "tabs" })).shell).toBe(
       "tabs",
     );
     for (const bad of [null, "header", 1]) {
       expect(() =>
-        parseDocsUiConfig({ ...viewerConfig(), chrome: bad }),
+        parseDocsUiConfig({ ...viewerConfig(), shell: bad }),
       ).toThrow(DocsUiConfigError);
     }
   });

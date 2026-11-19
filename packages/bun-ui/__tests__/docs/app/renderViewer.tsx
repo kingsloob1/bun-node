@@ -52,7 +52,7 @@ export function viewerConfig(
     extensions: DEFAULT_EXTENSION_PREFIXES,
     theme: "system",
     layout: { align: "center", scope: "content", maxWidth: 1400 },
-    chrome: "full",
+    shell: "full",
     unauthorized: null,
     ...overrides,
   };

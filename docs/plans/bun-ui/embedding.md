@@ -68,7 +68,7 @@ import { mountJobsUi, JOBS_SECTIONS } from "@kingsleyweb/bun-ui/jobs/mount";
 const ui = mountJobsUi(document.getElementById("jobs")!, {
   apiUrl: "/admin/jobs-api",      // or the full config a shell would inject
   basePath: "/admin/jobs",        // where the host routes the UI's paths
-  chrome: "none",                 // "full" (its own header and nav), "tabs", "none"
+  shell: "none",                 // "full" (its own header and nav), "tabs", "none"
   theme: "inherit",               // the kit's theme, or "inherit" from the host
   layout: { align: "left", scope: "content", maxWidth: "none" },
   csrfHeader: "x-jobs-csrf",
@@ -86,14 +86,14 @@ ui.unmount();
   setTheme(theme), unmount() }`.
 - **`options`** is the UI's config (what the shell injects today:
   `apiBase`/`apiUrl`, `basePath`, `csrfHeader`, the UI's own fields) plus the
-  kit's **`MountOptions`**: `chrome`, `theme` (`"inherit"` added), `layout`,
+  kit's **`MountOptions`**: `shell`, `theme` (`"inherit"` added), `layout`,
   `headers`, `credentials`, `onNavigate`, `onUnauthorized`.
-- **`chrome`** is the kit-level option the user asked for: `"full"` renders
+- **`shell`** is the kit-level option the user asked for: `"full"` renders
   the UI's header and nav inside the element (a self-contained widget);
   `"tabs"` renders the current section's screen with a compact tab bar of the
   sections; `"none"` renders the current screen only, the host's side menu
   being the nav. The shell keeps `"full"`; its server option
-  (`jobsUi({ chrome })`) exists for symmetry but defaults to `"full"`.
+  (`jobsUi({ shell })`) exists for symmetry but defaults to `"full"`.
 - **Sections**: `JOBS_SECTIONS`, `SECURITY_SECTIONS`, `DOCS_SECTIONS` from
   `/<ui>/browser` (the browser-safe contract entry, no runtime import beyond
   constants): each `{ id, label, path, needs }` (`needs`: the permission, or
@@ -219,7 +219,7 @@ ui.unmount();
 ## 9. Tests
 
 1. **Unit / DOM** (happy-dom, under the existing harness rules): each
-   `mountXxxUi` renders the current screen for `chrome: "none"`, the tab bar
+   `mountXxxUi` renders the current screen for `shell: "none"`, the tab bar
    for `"tabs"`, the full frame for `"full"`; `XXX_SECTIONS` equals what the
    UI's nav renders (one list); `sectionsFor()` filters as the UI does; a
    `401` calls `onUnauthorized`; `onNavigate` replaces `pushState`.
@@ -247,7 +247,7 @@ ui.unmount();
 
 | PR | What | Estimate |
 |---|---|---|
-| EM-1 | kit: `MountOptions`, `chrome`, root-scoped theme and layout, the generalised `HandleLedger`; sections moved to the contract entries with `sectionsFor` | ~2 d |
+| EM-1 | kit: `MountOptions`, `shell`, root-scoped theme and layout, the generalised `HandleLedger`; sections moved to the contract entries with `sectionsFor` | ~2 d |
 | EM-2 | the scoped stylesheet build (prefix, layer), the mount entries' builds (prebuilt and in-memory), `exports`, the router's `/mount.js`; budget, tree-shaking and isolation rows | ~2 d |
 | EM-3 | `mountJobsUi`, `mountSecurityUi`, `mountDocsUi`; DOM and unmount tests | ~2 d |
 | EM-4 | the Chrome host-shell e2e per UI, the guide sections, the playground page | ~1.5 d |
@@ -260,12 +260,16 @@ peer), if a host asks.
 | Name | Where |
 |---|---|
 | `mountJobsUi`, `mountSecurityUi`, `mountDocsUi` → `MountedUi` (`navigate`, `setTheme`, `unmount`) | `/jobs/mount`, `/security/mount`, `/docs/mount` |
-| `MountOptions` (`chrome`, `theme`, `layout`, `headers`, `credentials`, `onNavigate`, `onUnauthorized`, `themeSource`); `chrome: "full" \| "tabs" \| "none"`; `theme: "inherit"` | the kit (`lib/kit/browser/mount.ts`) |
+| `MountOptions` (`shell`, `theme`, `layout`, `headers`, `credentials`, `onNavigate`, `onUnauthorized`, `themeSource`); `shell: "full" \| "tabs" \| "none"`; `theme: "inherit"` | the kit (`lib/kit/browser/mount.ts`) |
 | `JOBS_SECTIONS`, `SECURITY_SECTIONS`, `DOCS_SECTIONS` (`{ id, label, path, needs }`), `UiSection`, `sectionsFor(sections, can)` | `/<ui>/browser`, the kit |
 | the stylesheets `/<ui>/mount.css`; the routers' `/mount.js`, `/mount.css`; `jobsUiMountTags()` (and per UI) | `/<ui>/mount`, each `xxxUi()` router |
 | the root attribute `data-bun-ui="<ui>"`, the layer `bun-ui.<ui>`, the portal container `data-bun-ui-portal` (for later) | the DOM |
-| Added in EM-1 (approved by the user, 2026-11-18): `UI_CHROMES`, `DEFAULT_SHELL_CHROME`, `DEFAULT_MOUNT_CHROME`, `DEFAULT_MOUNT_LAYOUT`; `UiChrome`, `MountTheme`, `MountLayout`, `MountLayoutOptions`, `SectionPermission`; `isUiChrome`, `resolveMountTheme`, `resolveMountLayout` | the kit (`lib/kit/browser/`), each `/<ui>/browser` |
-| Added in EM-1 (approved by the user, 2026-11-18): `resolveChrome` (server), `FrameBar`, `clearLayout(root)`, `useUiRoot()` (app) | `lib/kit/options.ts`, `app/kit/` |
+| Added in EM-1 (approved by the user, 2026-11-18): `UI_SHELLS`, `DEFAULT_PAGE_SHELL`, `DEFAULT_MOUNT_SHELL`, `DEFAULT_MOUNT_LAYOUT`; `UiShell`, `MountTheme`, `MountLayout`, `MountLayoutOptions`, `SectionPermission`; `isUiShell`, `resolveMountTheme`, `resolveMountLayout` | the kit (`lib/kit/browser/`), each `/<ui>/browser` |
+| Added in EM-1 (approved by the user, 2026-11-18): `resolveShell` (server), `FrameBar`, `clearLayout(root)`, `useUiRoot()` (app) | `lib/kit/options.ts`, `app/kit/` |
+
+The option was built in EM-1 as `chrome` (`UiChrome`, `UI_CHROMES`,
+`isUiChrome`, `resolveChrome`, `DEFAULT_SHELL_CHROME`, `DEFAULT_MOUNT_CHROME`,
+`data-chrome`) and renamed before any release (decision 9 below).
 
 ## 12. Decisions (the five recommendations, accepted by the user, 2026-11-18)
 
@@ -278,7 +282,7 @@ peer), if a host asks.
 3. **Scoped CSS with a prefix and a layer, or Shadow DOM?** Recommended: the
    prefix and layer (the host can theme it; the docs' anchors and the
    dialogs work); Shadow DOM rejected for those reasons.
-4. **The default `chrome` when mounted**: recommended `"none"` (the user's
+4. **The default `shell` when mounted**: recommended `"none"` (the user's
    picture: the host's side menu is the nav), with `"tabs"` one option away.
 5. **History**: recommended the UI pushes history by default and `onNavigate`
    hands it to the host when given.
@@ -304,7 +308,14 @@ peer), if a host asks.
    `needs: null`. The viewer shows only the one matching its document;
    `"full"` stays as it is today (the viewer has no header).
 
-EM-1 also makes `chrome` a kit option like `layout`: `resolveChrome` in
+9. **The option is `shell`, not `chrome`** (the user's decision,
+   2026-11-18): "chrome" reads as Google Chrome, and "shell" is the user's own
+   word for a UI's frame. Renamed in EM-2 throughout (`UiShell`, `UI_SHELLS`,
+   `isUiShell`, `resolveShell`, `DEFAULT_PAGE_SHELL`, `DEFAULT_MOUNT_SHELL`,
+   each UI's config field, `.app[data-shell]`). It was never published, so
+   there is no alias for the old name. `FrameBar` keeps its name.
+
+EM-1 also makes `shell` a kit option like `layout`: `resolveShell` in
 `lib/kit/options.ts`, taken by every `xxxUi()` (default `"full"`) and carried
 in each UI's config. The `:root` selectors in the kit's CSS stay until EM-2's
 scoped stylesheet build.

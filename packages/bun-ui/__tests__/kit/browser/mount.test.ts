@@ -1,33 +1,33 @@
 /**
  * The kit's mount contract (`lib/kit/browser/mount.ts`, embedding.md §2, §6):
- * the `chrome` values and defaults, `theme: "inherit"` and `themeSource`,
+ * the `shell` values and defaults, `theme: "inherit"` and `themeSource`,
  * and a mounted `layout`'s defaults and checks. No DOM: these are the pure
  * halves the mount functions build on.
  */
 import { describe, expect, it } from "bun:test";
 import {
-  DEFAULT_MOUNT_CHROME,
+  DEFAULT_MOUNT_SHELL,
   DEFAULT_MOUNT_LAYOUT,
-  DEFAULT_SHELL_CHROME,
-  isUiChrome,
+  DEFAULT_PAGE_SHELL,
+  isUiShell,
   resolveMountLayout,
   resolveMountTheme,
-  UI_CHROMES,
+  UI_SHELLS,
 } from "../../../lib/kit/browser/mount";
 
-describe("chrome", () => {
+describe("shell", () => {
   it("is full, tabs or none; the shell draws full, a mount none", () => {
-    expect(UI_CHROMES).toEqual(["full", "tabs", "none"]);
-    expect(DEFAULT_SHELL_CHROME).toBe("full");
-    expect(DEFAULT_MOUNT_CHROME).toBe("none");
-    for (const chrome of UI_CHROMES) expect(isUiChrome(chrome)).toBe(true);
+    expect(UI_SHELLS).toEqual(["full", "tabs", "none"]);
+    expect(DEFAULT_PAGE_SHELL).toBe("full");
+    expect(DEFAULT_MOUNT_SHELL).toBe("none");
+    for (const shell of UI_SHELLS) expect(isUiShell(shell)).toBe(true);
     for (const value of ["Full", "", null, undefined, 1, "header"]) {
-      expect(isUiChrome(value)).toBe(false);
+      expect(isUiShell(value)).toBe(false);
     }
   });
 
   it("is frozen", () => {
-    expect(Object.isFrozen(UI_CHROMES)).toBe(true);
+    expect(Object.isFrozen(UI_SHELLS)).toBe(true);
   });
 });
 

@@ -14,30 +14,30 @@ import type {
 import { MIN_UI_MAX_WIDTH } from "./shared";
 
 /**
- * How much of its own frame a UI draws (the `chrome` option): `"full"` its
+ * How much of its own frame a UI draws (the `shell` option): `"full"` its
  * header and side nav, as the shell does; `"tabs"` a compact bar of its
  * sections above the screen; `"none"` the screen alone, the host's own menu
  * being the nav.
  */
-export type UiChrome = "full" | "tabs" | "none";
+export type UiShell = "full" | "tabs" | "none";
 
-/** Every {@link UiChrome}, in order of how much they draw. */
-export const UI_CHROMES: readonly UiChrome[] = Object.freeze([
+/** Every {@link UiShell}, in order of how much they draw. */
+export const UI_SHELLS: readonly UiShell[] = Object.freeze([
   "full",
   "tabs",
   "none",
 ]);
 
-/** Whether a value is a {@link UiChrome}: what an app checks before using its config's. */
-export function isUiChrome(value: unknown): value is UiChrome {
-  return UI_CHROMES.includes(value as UiChrome);
+/** Whether a value is a {@link UiShell}: what an app checks before using its config's. */
+export function isUiShell(value: unknown): value is UiShell {
+  return UI_SHELLS.includes(value as UiShell);
 }
 
-/** The `chrome` a shell page draws when the option is unset. */
-export const DEFAULT_SHELL_CHROME: UiChrome = "full";
+/** The `shell` a shell page draws when the option is unset. */
+export const DEFAULT_PAGE_SHELL: UiShell = "full";
 
-/** The `chrome` a mounted UI draws when the option is unset (embedding.md §12, decision 4). */
-export const DEFAULT_MOUNT_CHROME: UiChrome = "none";
+/** The `shell` a mounted UI draws when the option is unset (embedding.md §12, decision 4). */
+export const DEFAULT_MOUNT_SHELL: UiShell = "none";
 
 /**
  * A mounted UI's colour scheme: a {@link UiTheme}, or `"inherit"`, the
@@ -126,8 +126,8 @@ export function resolveMountLayout(options?: MountLayoutOptions): MountLayout {
  * (embedding.md §2, §5 to §7). Every field is optional.
  */
 export interface MountOptions {
-  /** How much of its own frame the UI draws. Default: {@link DEFAULT_MOUNT_CHROME}, `"none"`. */
-  chrome?: UiChrome;
+  /** How much of its own frame the UI draws. Default: {@link DEFAULT_MOUNT_SHELL}, `"none"`. */
+  shell?: UiShell;
   /** The colour scheme, applied to the mount element, never to `<html>`. Default: `"inherit"`. */
   theme?: MountTheme;
   /**

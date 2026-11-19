@@ -43,7 +43,7 @@ standing rule).
 
 ### Sub-plans
 
-- [Embedding a UI in a host app](embedding.md) (2026-11-18, approved; built in PRs EM-1 to EM-4): `mountJobsUi`, `mountSecurityUi`, `mountDocsUi` into a host's element, the sections a host's side menu shows, a kit-level `chrome` option.
+- [Embedding a UI in a host app](embedding.md) (2026-11-18, approved; built in PRs EM-1 to EM-4): `mountJobsUi`, `mountSecurityUi`, `mountDocsUi` into a host's element, the sections a host's side menu shows, a kit-level `shell` option.
 
 ### Contents
 

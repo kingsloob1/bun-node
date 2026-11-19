@@ -1,6 +1,6 @@
 /**
  * The app frame, the kit's (the user's rule: a UI never sets its own page
- * width), as the config's `chrome` asks (embedding.md §2, §12 item 7).
+ * width), as the config's `shell` asks (embedding.md §2, §12 item 7).
  * `"full"`: the header with the title, the scope picker, the live badge, the
  * break-glass session and the theme; the section nav (only the sections
  * the operator may use on the scope); the screen in `<main>`. `"tabs"`: the
@@ -64,17 +64,17 @@ function Main({ children }: { children: ReactNode }) {
 /** See the module's description. */
 export function Layout({ nav, query, children }: LayoutProps) {
   const config = useUiConfig();
-  if (config.chrome === "tabs" || config.chrome === "none") {
+  if (config.shell === "tabs" || config.shell === "none") {
     return (
       <div
         className="app"
-        data-chrome={config.chrome}
+        data-shell={config.shell}
         data-testid="app-ready"
       >
         <SkipLink />
         <FrameBar
           tabs={
-            config.chrome === "tabs"
+            config.shell === "tabs"
               ? nav.map((section) => (
                   <li key={section.id}>
                     <Link
@@ -92,7 +92,7 @@ export function Layout({ nav, query, children }: LayoutProps) {
             <>
               <ScopePicker />
               <BreakGlassBadge />
-              {config.chrome === "tabs" && <LiveStatus />}
+              {config.shell === "tabs" && <LiveStatus />}
             </>
           }
         />
@@ -103,7 +103,7 @@ export function Layout({ nav, query, children }: LayoutProps) {
   return (
     <div
       className="app"
-      data-chrome="full"
+      data-shell="full"
       data-testid="app-ready"
     >
       <SkipLink />

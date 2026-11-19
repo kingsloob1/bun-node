@@ -216,7 +216,7 @@ describe("one export of ./docs/embed in a browser bundle", () => {
  * export of each `/<ui>/browser` entry, which now also carries the kit's
  * mount contract (`lib/kit/browser/mount.ts`). Measured (bytes with
  * `sideEffects`, without): security 956 / 1,136, jobs 599 / 779, docs
- * 154 / 361. Without the field, the mount contract's frozen `UI_CHROMES`
+ * 154 / 361. Without the field, the mount contract's frozen `UI_SHELLS`
  * and the shared default layout stay in.
  */
 const SECTION_ROWS = [
@@ -240,7 +240,7 @@ const SECTION_ROWS = [
   ],
 ] as const;
 
-/** Text from modules a sections-only app does not need: `UI_CHROMES`'s `"tabs"`, the default layout's `"center"`. */
+/** Text from modules a sections-only app does not need: `UI_SHELLS`'s `"tabs"`, the default layout's `"center"`. */
 const UNRELATED_TO_SECTIONS = ['"tabs"', '"center"'];
 
 /** What is wrong with a sections-only app's JavaScript; empty when nothing is. */

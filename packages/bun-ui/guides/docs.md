@@ -56,7 +56,7 @@ router answers with the shell.
 | `title` | `"API docs"` | Page title. |
 | `theme` | `"system"` | Initial colour scheme: `"system"`, `"light"` or `"dark"`; or `{ mode?, light?, dark? }` to also set colours by token (`{ light: { accent: "#0f766e" } }`). See [Colour themes](../README.md#colour-themes). |
 | `layout` | `{ align: "center", scope: "content", maxWidth: 1400 }` | Where the content sits on a screen wider than `maxWidth`: `align` `"center"`, `"left"` or `"right"`; `scope` `"content"` or `"page"` (the same here, the viewer has no side nav); `maxWidth` in CSS pixels, at least 320. See [Layout](../README.md#layout). |
-| `chrome` | `"full"` | `"tabs"` names the document's section (`DOCS_SECTIONS`: HTTP API or WebSocket API) in the kit's compact bar; `"full"` and `"none"` draw no frame, the viewer having no header. See [Frame and sections](../README.md#frame-and-sections). |
+| `shell` | `"full"` | `"tabs"` names the document's section (`DOCS_SECTIONS`: HTTP API or WebSocket API) in the kit's compact bar; `"full"` and `"none"` draw no frame, the viewer having no header. See [Frame and sections](../README.md#frame-and-sections). |
 | `extensions` | `["x-bun-common", "x-bun-jobs"]` | Specification-extension prefixes the viewers read, first hit winning: a `<prefix>-<name>` extension is read from the first prefix carrying it; anything under another prefix is ignored. |
 | `csrfHeader` | none | Header the try-it panel adds on every mutation, or `false`. |
 | `authorize` | none | Guards the shell, the bundle and a thunk's document (not the documented API itself). |

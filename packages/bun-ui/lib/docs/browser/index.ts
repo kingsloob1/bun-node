@@ -34,16 +34,16 @@ export type {
   MountLayoutOptions,
   MountOptions,
   MountTheme,
-  UiChrome,
+  UiShell,
 } from "../../kit/browser/mount";
 export {
-  DEFAULT_MOUNT_CHROME,
+  DEFAULT_MOUNT_SHELL,
   DEFAULT_MOUNT_LAYOUT,
-  DEFAULT_SHELL_CHROME,
-  isUiChrome,
+  DEFAULT_PAGE_SHELL,
+  isUiShell,
   resolveMountLayout,
   resolveMountTheme,
-  UI_CHROMES,
+  UI_SHELLS,
 } from "../../kit/browser/mount";
 export type { UiSection } from "../../kit/browser/sections";
 export { sectionsFor } from "../../kit/browser/sections";
