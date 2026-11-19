@@ -23,62 +23,33 @@
  * checked, and the run's runtime records them here with
  * {@link noteCollationChecked} before the handler builds a driver.
  *
- * Deliberately free of imports: the child runtime loads it before anything
- * else, and keeps its startup cost to what it uses.
+ * The guard is bun-sql's (`createCollationGuard`, PR-D0b), made here under
+ * the same registered name as before, so a copy of an older bun-jobs in the
+ * same process still shares the set. It is imported from bun-sql's guard
+ * module alone, which has no imports: the child runtime loads this before
+ * anything else, and keeps its startup cost to what it uses.
  */
+import { createCollationGuard } from "@kingsleyweb/bun-sql/lib/sync/collation-guard";
 
-/** Where the set lives on `globalThis`, shared by every copy of the package. */
-const CHECKED = Symbol.for("@kingsleyweb/bun-jobs/collation-drift-checked");
-
-/** `globalThis`, with the slot this module keeps its set in. */
-type GuardHost = typeof globalThis & {
-  /** The guard keys already warned about, or checked by a parent. */
-  [CHECKED]?: Set<string>;
-};
-
-/** The process's set of guard keys, created on first use. */
-function checked(): Set<string> {
-  const host = globalThis as GuardHost;
-  host[CHECKED] ??= new Set();
-  return host[CHECKED];
-}
+/** The process's guard, on `globalThis` under bun-jobs' registered name. */
+const GUARD = createCollationGuard(
+  "@kingsleyweb/bun-jobs/collation-drift-checked",
+);
 
 /**
- * Whether the drift found under `key` is this process's to report: `true`
- * the first time it is asked for a key, and `false` from then on — and for a
- * key a parent already checked ({@link noteCollationChecked}).
+ * Claims the warning for `key`: `true` the first time in this process (so the
+ * caller warns), `false` after.
  */
 export function claimCollationWarning(key: string): boolean {
-  const keys = checked();
-  if (keys.has(key)) {
-    return false;
-  }
-
-  keys.add(key);
-  return true;
+  return GUARD.claim(key);
 }
 
-/**
- * Records keys whose collation another process already checked — the runner
- * that started this run — so a driver built here for the same tables does not
- * repeat what that process said, or found nothing to say about.
- */
+/** Records `keys` as checked, as a run's runtime does with the keys its runner handed it. */
 export function noteCollationChecked(keys: Iterable<string>): void {
-  const set = checked();
-  for (const key of keys) {
-    set.add(key);
-  }
+  GUARD.note(keys);
 }
 
-/**
- * Forgets every key, so the next drift found warns again.
- *
- * For tests: the set is process-wide, and `bun test` runs every file in one
- * process, so a file asserting on the warning resets it first rather than
- * depending on which file ran before it.
- *
- * @internal
- */
+/** Forgets every checked key (tests). */
 export function resetCollationWarnings(): void {
-  checked().clear();
+  GUARD.reset();
 }

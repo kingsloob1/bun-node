@@ -1,11 +1,18 @@
 /**
- * Parity with bun-jobs' own dialects (PR-D0a, before bun-jobs moves onto
- * bun-sql in PR-D0b): for each engine, every member bun-sql shares with
+ * Parity with bun-jobs' dialects. Written for PR-D0a, when bun-jobs still
+ * had its own copy: for each engine, every member bun-sql shares with
  * bun-jobs' `SqlDialect` answers the same — every constant, and every
- * statement rendered from the same arguments — so the move cannot change a
- * byte bun-jobs sends. The members bun-jobs has and bun-sql does not are
- * exactly the job queue's claim members, and bun-sql's own additions are
- * exactly the two new column types: a member added to one side alone fails.
+ * statement rendered from the same arguments — so the move could not change
+ * a byte bun-jobs sends.
+ *
+ * Since PR-D0b bun-jobs' dialect is bun-sql's (made through bun-jobs' error
+ * seam) plus the job queue's claim members, so the comparisons now guard the
+ * seam and the composition: bun-jobs' dialect has every bun-sql member,
+ * `documentType` and `inetType` included, and exactly the claim members
+ * beside them, and a refusal is still bun-jobs' `ConfigError`. Byte parity
+ * with bun-jobs' former copy was measured once, before it was deleted (the
+ * PR's evidence); bun-jobs' `__tests__/sql-on-bun-sql.test.ts` checks that
+ * each shared member is bun-sql's own.
  *
  * Reads bun-jobs' source by relative path, which only this repository has:
  * bun-sql takes no dependency on bun-jobs.
@@ -28,7 +35,7 @@ const JOBS_ONLY = [
   "stampType",
 ];
 
-/** bun-sql's members bun-jobs does not have. */
+/** bun-sql's members bun-jobs' claim layer does not use (it has them, since PR-D0b). */
 const SQL_ONLY = ["documentType", "inetType"];
 
 /** A placeholder binder for the keyset predicate, numbering from 1. */
@@ -188,16 +195,17 @@ describe("bun-sql's dialects against bun-jobs'", () => {
       unknown
     >;
 
-    it(`${adapter}: the members differ by exactly the claim members and the two new types`, () => {
+    it(`${adapter}: bun-jobs has every bun-sql member, the two new types included, and exactly the claim members beside them`, () => {
       const mine = Object.keys(ours).sort();
       const jobs = Object.keys(theirs).sort();
       expect(jobs.filter((key) => !mine.includes(key))).toEqual(JOBS_ONLY);
-      expect(mine.filter((key) => !jobs.includes(key))).toEqual(SQL_ONLY);
+      expect(mine.filter((key) => !jobs.includes(key))).toEqual([]);
+      expect(SQL_ONLY.filter((key) => !jobs.includes(key))).toEqual([]);
     });
 
     it(`${adapter}: every shared constant is equal`, () => {
       for (const key of Object.keys(ours)) {
-        if (typeof ours[key] === "function" || SQL_ONLY.includes(key)) {
+        if (typeof ours[key] === "function") {
           continue;
         }
         expect({ key, value: ours[key] }).toEqual({ key, value: theirs[key] });

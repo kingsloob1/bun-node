@@ -13,9 +13,10 @@ whether `CREATE INDEX` takes `IF NOT EXISTS`, which index a sync may drop.
 
 The code comes from bun-jobs' SQL driver and bun-cache's connection helpers
 ([bun-security plan, storage.md §4](../../docs/plans/bun-security/storage.md)).
-bun-jobs and bun-cache still keep their own copies until they move onto
-bun-sql (PR-D0b, PR-D0c); until then `__tests__/parity/` holds the copies to
-the same output, byte for byte.
+bun-jobs runs on bun-sql since PR-D0b: its dialect is bun-sql's plus the job
+queue's claim members, through the `configError` seam. bun-cache keeps its own
+copy until it moves (PR-D0c); until then `__tests__/parity/` holds it to the
+same output, byte for byte, and checks bun-jobs' composition.
 
 ## Contents
 

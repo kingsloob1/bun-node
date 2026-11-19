@@ -178,7 +178,8 @@
     }
   },
   "dependencies": {
-    "@kingsleyweb/bun-common": "workspace:^"
+    "@kingsleyweb/bun-common": "workspace:^",
+    "@kingsleyweb/bun-sql": "workspace:^"
   },
   "devDependencies": {
     "@asyncapi/specs": "catalog:",
