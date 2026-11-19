@@ -1041,6 +1041,57 @@ async function registerMongoSuite(url: string, label: string): Promise<void> {
         await Promise.all([a.close(), b.close(), other.close()]);
       });
 
+      test("a subscriber never receives a message published before it subscribed (#871)", async () => {
+        // The last write before the subscription is the earlier message: a
+        // ping then answers that write's optime, and a stream started at it
+        // (inclusive) replayed it.
+        const before = make(`busbefore_${mode}_`, { busMode: mode });
+        await before.publish({ type: "clear", namespace: "old", at: 0 });
+        await before.close();
+        await Bun.sleep(200);
+        const subscriber = make(`busbefore_${mode}_`, { busMode: mode });
+        const publisher = make(`busbefore_${mode}_`, { busMode: mode });
+        const received: string[] = [];
+        const unsubscribe = await subscriber.subscribe(
+          (message) => {
+            received.push(message.namespace);
+          },
+          () => {},
+        );
+        await publisher.publish({ type: "clear", namespace: "new", at: 1 });
+        await waitFor("the message", () => received.includes("new"));
+        await Bun.sleep(300);
+        expect(received).toEqual(["new"]);
+        await unsubscribe();
+        await Promise.all([subscriber.close(), publisher.close()]);
+      });
+
+      test("a message published the moment subscribe resolves is never lost", async () => {
+        const publisher = make(`busafter_${mode}_`, { busMode: mode });
+        for (let round = 0; round < 10; round++) {
+          const subscriber = make(`busafter_${mode}_`, { busMode: mode });
+          const received: string[] = [];
+          const unsubscribe = await subscriber.subscribe(
+            (message) => {
+              received.push(message.namespace);
+            },
+            () => {},
+          );
+          await publisher.publish({
+            type: "clear",
+            namespace: `round-${round}`,
+            at: round,
+          });
+          await waitFor(`round ${round}`, () =>
+            received.includes(`round-${round}`),
+          );
+          expect(received).toEqual([`round-${round}`]);
+          await unsubscribe();
+          await subscriber.close();
+        }
+        await publisher.close();
+      });
+
       test("a message too big for the bus becomes a clear of its namespace", async () => {
         const bus = make("busbig_", { busMode: mode });
         const received: BusMessage[] = [];
