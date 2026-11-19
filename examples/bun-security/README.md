@@ -5,8 +5,9 @@ Runnable examples for
 request-defence engine on a plain `Bun.serve`, on bun-common's
 `BunHttpAdapter` and in a NestJS application, from lists, bans and limits to
 sign-in protection, challenges, verified crawlers, API keys, shared state,
-policies kept in a file or a store, and testing a policy with simulated
-attacks.
+secrets sealed at rest, policies kept in a file or a store, testing a policy
+with simulated attacks, a fleet of agents behind a control plane, and three
+APIs on one host sharing a Redis.
 
 Each file is a script. Its opening comment says what it shows and how to run
 it; its output narrates what happened, and the `✓` lines are assertions (a
@@ -39,6 +40,7 @@ verified by a fixed resolver, and Turnstile and hCaptcha by an injected
 | `09-sign-in` | `sign-in.ts` — `uniformAuthResponse` (same status, body and minimum time for a missing account and a wrong password), a device cookie, progressive delays and a per-username challenge, the owner's known device signing in without a second factor while a new device is challenged, the `step-up` tag, and `unlock()` |
 | `09-sign-in` | `failure-rate.ts` — the global failure-rate rule (`login.failure-rate`): a password spray from a fresh address per attempt passing every per-key rule; as it ships, every attempt answered, the route tripped and warned of; enforced, the attempts past the 20th failure refused (`429` without a challenge flow) while the owner's known device still signs in |
 | `09-sign-in` | `identifiers.ts` — `security.check()` refusing a disposable email, a reserved and an own domain and a breached password with one generic message, and a match inside a request counting `pattern.hit` into a 7-day ban |
+| `09-sign-in` | `login-under-attack.ts` — the login profile under `./testing`'s `credentialStuffing` (one address, 200 pairs: banned from the 11th) and `distributedGuessing` (200 addresses on one account: challenged from the 11th), each with its negative control (no engine, every attempt answered), while the owner's known device still signs in and a new one is challenged |
 | `10-challenges` | `proof-of-work.ts` — `challenges()` with `powChallenge`: an API client's `challenge_required`, `solvePowChallenge`, the clearance in `x-security-clearance`, a single-use answer, a clearance bound to its network and User-Agent, and a block a clearance does not lift |
 | `10-challenges` | `captcha-providers.ts` — `turnstile()` and `hcaptcha()` verified through an injected fake `fetch`: a good token, a failed one, one for another hostname and a network failure |
 | `11-intel` | `static-ranges.ts` — `ipIntel` with a static `office` class and a Tor exit feed served from localhost, `class` conditions in request rules, a truncated download refused with the last good list kept, and policies the engine cannot answer refused at start |
@@ -46,18 +48,29 @@ verified by a fixed resolver, and Turnstile and hCaptcha by an injected
 | `13-api-keys` | `api-keys.ts` — per-plan limits (`apiKeyPlan`), a list entry naming a key id, a leaked key used from many addresses suspended with `onKeyCompromised` called, a ban keyed by the key's HMAC, and `revokeApiKey()` |
 | `14-shared-store` | `sqlite.ts` — `cacheStore` over one SQLite file (a temporary one): two engines sharing an exact limit, a counted rule's ban and a ban and its lift |
 | `14-shared-store` | `redis.ts` — the same on the Redis server `EXAMPLE_REDIS_URL` names, bans announced on pub/sub (skips when unset, fails when unreachable; deletes exactly the keys it wrote) |
+| `14-shared-store` | `sealing.ts` — `./sealing`'s `sealedFields` codec on a SQLite store: an alert channel's URL and secret absent from the file (the negative control, without the codec, holds them), a wrong key (`auth`) and an unknown key id (`unknown-key`) refused, a sealed value copied to another row refused, and rotation with `resealStore` |
 | `15-policy` | `policy-file.ts` — `policyFile` followed as it is edited, a broken edit refused with the last good policy kept (`policy.refused`), and a restart while the file is broken enforcing the last-known-good copy |
 | `15-policy` | `policy-store.ts` — `sqliteStore` versions: an engine following the head, two writers on one head (the second refused), and a store failing (`faultyStore`) with nothing changed and one `policy.unavailable` warning |
+| `15-policy` | `postgres-store.ts` — `postgresStore` on the server `EXAMPLE_POSTGRES_URL` names: its pushed change feed (`LISTEN/NOTIFY`) bringing a new version to an engine that polls only hourly, and a second writer on the old head refused (skips when unset, fails when unreachable; drops exactly the tables it created) |
 | `16-dry-run` | `dry-run-and-explain.ts` — the whole policy in dry run recording three would-be refusals through `onDecision`, `explain()` naming the entry that refused a request, and `explain()` never counting a limit |
 | `17-testing` | `simulate-attacks.ts` — `./testing`'s `credentialStuffing`, `pathScan` and `spoofedCrawler` run with `runAttack` and `fetchTarget` on a fake clock against an app, each with its negative control (no engine, the attack succeeds) |
+| `18-fleet` | `fleet.ts` — a control plane (`createSecurityApi` behind `secureAdmin`, on a SQLite file) and two agents in processes of their own (`connectAgent`): a group, a service and two agents registered, two publishes and a ban and its lift reaching both by the nudge (the agents poll hourly; without the nudge the second publish never arrives), and, with the control plane gone, an agent restarted on its last known good while a fresh one has nothing to enforce |
+| `19-one-host` | `one-host.ts` — three APIs (`accounts`, `shop`, `partner`), each a `Bun.serve` behind `withSecurity` in its own process, sharing one Redis (`cacheStore`): a ban from accounts refused by all three and its lift; shop calling accounts with its service token, its end users counted by a limit marked `appliesToServices` (six users pass a 3-a-minute limit, one user is refused past its own 3), and without the token counted against shop's address (skips when unset, fails when unreachable; deletes exactly the keys it wrote) |
 
 ## Servers
 
-Only `14-shared-store/redis.ts` needs one. `EXAMPLE_REDIS_URL` names it (a
-database the example may write to; `bun scripts/setup-databases.ts
---print-env` prints a local test server's URL). Unset, it prints `skipped:`;
-set but unreachable, it fails.
+Three examples need one. Each skips (prints `skipped:`) when its variable is
+unset and fails when it is set but the server cannot be reached.
+
+| Example | Variable |
+|---|---|
+| `14-shared-store/redis.ts`, `19-one-host/one-host.ts` | `EXAMPLE_REDIS_URL`: a database the example may write to |
+| `15-policy/postgres-store.ts` | `EXAMPLE_POSTGRES_URL`: a database the example may create tables in |
+
+`bun scripts/setup-databases.ts --print-env` prints a local test server's
+URLs.
 
 ```bash
-EXAMPLE_REDIS_URL=redis://127.0.0.1:6379/15 bun run-all.ts
+EXAMPLE_REDIS_URL=redis://127.0.0.1:6379/15 \
+EXAMPLE_POSTGRES_URL=postgres://user:pass@127.0.0.1:5432/db bun run-all.ts
 ```

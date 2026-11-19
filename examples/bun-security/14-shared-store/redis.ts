@@ -32,7 +32,12 @@ title("a shared store on Redis");
 /** This run's key prefix: it names the process, so a run owns its keys. */
 const prefix = `bun-security-example:${process.pid}`;
 
-const raw = new RedisClient(url);
+// No reconnecting: an unreachable server fails at once, where the default
+// client retries for about 30 s before giving up.
+const raw = new RedisClient(url, {
+  autoReconnect: false,
+  connectionTimeout: 5000,
+});
 try {
   await raw.connect();
   await raw.send("PING", []);
