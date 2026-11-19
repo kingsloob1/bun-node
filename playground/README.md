@@ -26,6 +26,7 @@ bun playground/cache-smoke.ts                            # the cache lab's smoke
 bun playground/typed-client-smoke.ts                     # the typed client's smoke check (see "The typed client")
 cd playground && bun run check:client                    # the typed client's committed route map is fresh (bun run gen:client rewrites it)
 cd playground && bun run test:security                   # the security demo's test (see "The security demo")
+cd playground && bun run test:embed                      # the host-shell demo's test (see "The host-shell demo")
 ```
 
 **Restart it after changing the UI.** The playground passes `dev: true`, so
@@ -61,6 +62,7 @@ can reach it, so never expose it.
 | `/playground/cache` | the bun-cache lab (`cache.ts`, see "The cache lab" below): routes behind `cacheResponse()` showing `X-Cache`, `Age` and timing, stale-while-revalidate and stale-if-error, invalidation by path and by tag, live `cache.stats()`, and one cache switchable between drivers, compression algorithms and an L1 tier. PR-C1's `getOrSet` demo stays on the same cache: `GET /playground/cache/report` (250 ms to build, cached 10 s with a 30 s stale window; its `cache` field says `miss`/`hit`/`stale`; ten at once build once), `GET /playground/cache/stats`, `POST /playground/cache/invalidate` (the `report` tag, or `?tag=`). And the **at-rest** item, `/playground/cache/at-rest`: one value through an encrypted cache with `hashNames` on, as the store holds it beside what the cache answers (see "At rest" below) |
 | `/playground/client` | the typed client (`typed-client.ts`, see "The typed client" below): bun-client against a small API at `/playground/client/api`, its generated route map beside the OpenAPI document it came from, live typed calls (a 200, a narrowed 404, `api.op`, `throwOnError`, an undeclared status, a `Retry-After` retry, a timeout, middleware, server-sent events and their resume, a WebSocket channel: `channel()` on the chat channel below, over a real socket), validation both ways, the query layer (keys, `ETag`/304, `invalidates`, `Cache-Tag` tags, live invalidation over `/__live`), and a regenerate button with its diff. `/playground/client/__bun/types` is its `devTypes()` endpoint, for `bun-client watch` (development only, loopback, token) |
 | `/security`, `/security-api`, `/playground/security` | the security demo (`security.ts`, see "The security demo" below): bun-security's control plane at `/security-api` and bun-ui's security UI at `/security`, over three demo services whose engines run behind agents, with an attacker loop keeping every screen moving; `/playground/security` shows the loop's figures and the alert emails the control plane sent |
+| `/playground/embed` | the host-shell demo (`embed.ts`, see "The host-shell demo" below): a page of its own mounting the jobs UI, the security UI and the docs viewer in its content area, its menu built from their sections |
 | `/playground/throttle` | bun-common's `throttle()` on one route: 5 requests per 30 s per address with the IETF `RateLimit-Policy`/`RateLimit` headers, then a `429` problem+json with `Retry-After` (`curl -i` it in a loop) |
 | `/` | redirects to `/jobs` |
 
@@ -504,6 +506,26 @@ adapter, runs thirty ticks and checks every kind ran, the attacks were
 refused and normal users never were, the control plane saw refused events,
 automatic bans, the crawler conflict and a waiting approval, an alert email
 was sent, and that a stopped demo ticks no more.
+
+## The host-shell demo
+
+`/playground/embed` (`embed.ts`) is a page of the playground's own, the way
+an admin app of yours would be: its header and side menu, built from the
+UIs' sections (`JOBS_SECTIONS`, `SECURITY_SECTIONS`, `DOCS_SECTIONS` through
+`sectionsFor()`), and a content area where it mounts the jobs UI, the
+security UI and the docs viewer (bun-ui's `mountJobsUi`, `mountSecurityUi`,
+`mountDocsUi`) from the modules their routers serve (`*UiMountTags()`), under
+its own strict CSP.
+
+- The menu moves the UI; back and forward follow; a link to another UI
+  unmounts one and mounts the other.
+- **Shell** remounts with `"none"` (the menu is the nav), `"tabs"` or
+  `"full"`; the choice is kept for the tab.
+- **Theme** switches the page's scheme; the UI inherits it.
+- **Unmount** and **Mount** tear the UI down and bring it back.
+
+`bun run test:embed` checks the page and the files it names; the browser's
+side is bun-ui's `__tests__/kit/e2e/embed.e2e.test.ts`.
 
 ## The cache lab
 

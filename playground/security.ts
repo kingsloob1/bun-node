@@ -72,7 +72,10 @@ import {
 } from "@kingsleyweb/bun-security/testing";
 import type { Attack } from "@kingsleyweb/bun-security/testing";
 import { securityUi } from "@kingsleyweb/bun-ui/security";
-import type { SecurityUiOptions } from "@kingsleyweb/bun-ui/security";
+import type {
+  SecurityUi,
+  SecurityUiOptions,
+} from "@kingsleyweb/bun-ui/security";
 
 /** Where the control plane is mounted. */
 export const SECURITY_API_BASE = "/security-api";
@@ -165,6 +168,8 @@ export interface SecurityDemo {
   readonly api: SecurityApi;
   /** The UI's base path. */
   readonly uiBase: string;
+  /** The UI's server: what the host-shell demo (`embed.ts`) mounts from. */
+  readonly ui: SecurityUi;
   /** Each kind of traffic's figures. */
   readonly figures: () => Readonly<Record<LoopKind, KindFigures>>;
   /** The alert emails kept. */
@@ -917,6 +922,7 @@ export async function mountSecurityDemo(
   return {
     api,
     uiBase: ui.basePath,
+    ui,
     figures: () => figures,
     emails: () => emails,
     tick,

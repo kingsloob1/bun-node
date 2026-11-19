@@ -51,6 +51,7 @@ import {
 } from "@kingsleyweb/bun-jobs";
 import { jobsUi } from "@kingsleyweb/bun-ui/jobs";
 import { docsUi } from "@kingsleyweb/bun-ui/docs";
+import { EMBED_BASE, mountEmbedDemo } from "./embed";
 import { playgroundLayout } from "./layout";
 import { playgroundTheme } from "./theme";
 import {
@@ -405,6 +406,9 @@ app.use(
     authorize: (_req, _res, next) => next(),
   }),
 );
+// The host-shell demo (embed.ts, bun-ui EM-4): a page of its own mounting the
+// jobs UI, the security UI and the docs viewer in its content area.
+mountEmbedDemo(app, { jobs: ui, security: securityDemo.ui, docs: apiDocs });
 // The live-events socket, on the same port: `/meta` names its path.
 api.websocket?.attach(app);
 
@@ -440,6 +444,7 @@ bun-node playground (${playgroundBackend()} driver)
   Typed client  ${origin}${CLIENT_BASE}  (bun-client: the generated route map beside its OpenAPI document, live typed calls, validation, the query layer; devTypes() for bun-client watch${typedClient.dev.token === undefined ? " — off under NODE_ENV=production" : ""})
   Throttle      ${origin}/playground/throttle  (throttle(): 5 requests per 30 s, RateLimit headers, then a 429 with Retry-After — try curl -i in a loop)
   Security      ${origin}${securityDemo.uiBase}  (bun-security: the control plane's UI over three demo services and their agents; the attacker loop's figures and the alert emails at ${origin}${SECURITY_DEMO_BASE}; the API at ${origin}${SECURITY_API_BASE}/meta)
+  Host shell    ${origin}${EMBED_BASE}  (bun-ui's mount functions: the jobs UI, the security UI and the docs viewer in a page of its own, its menu built from their sections; pick the shell, switch the theme, unmount and mount again)
   Chat channel  ws://localhost:${server.port}/playground/chat/lobby?name=ada  (V8's defineChannel: {"type":"say","data":{"text":"hi"}}; a bad room is a 400)
 
   A job is added every ${intervalMs > 0 ? `${intervalMs} ms` : "— never (PLAYGROUND_INTERVAL_MS=0)"}. Ctrl+C to stop.
