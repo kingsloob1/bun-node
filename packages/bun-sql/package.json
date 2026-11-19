@@ -1,7 +1,7 @@
 {
   "name": "@kingsleyweb/bun-sql",
   "type": "module",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "private": false,
   "description": "The SQL layer bun-jobs, bun-cache and bun-security share: one dialect per engine (Postgres, MySQL, MariaDB, SQLite) answering what each does its own way, table and index definitions rendered to DDL, a schema sync that adds what is missing and changes only what cannot stall a running service unless asked, a collation guard, connection helpers (MySQL's allowPublicKeyRetrieval passed as the option Bun honours, transient-lock retries), opaque keyset page cursors bound to their walk, and a MongoDB index sync",
   "author": "okafor obinna <kingsloob1@gmail.com>",

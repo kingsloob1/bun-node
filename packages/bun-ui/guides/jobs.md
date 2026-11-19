@@ -155,9 +155,7 @@ status. The API reads that start with the page meet the same failure.
 ## Screens
 
 The app's routes sit under the UI's `basePath`. A path the caller has no
-route for shows a not-found screen. The queue and job screens arrived in M2,
-the runner screens in M3, live updates and the Events console in M4, and the
-API docs in M5.
+route for shows a not-found screen.
 
 The `failed` job state is labelled **Retrying** on every screen (tabs,
 badges, counts, filters and dialogs): in bun-jobs it is a job that failed an

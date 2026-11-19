@@ -1240,7 +1240,7 @@ in the package `.gitignore`, and `./scripts/**/*` in its `tsconfig.json`
   for the whole package: `false`, or the exact modules with an effect at
   load (bun-ui `["**/*.css", "./app/*/main.tsx"]`; bun-common its four
   `lib/contract/` modules that install the logger resolution; bun-jobs and
-  bun-cache their process and thread entries; bun-security and bun-sql `false`; bun-nest `false`, its decorators
+  bun-cache their process and thread entries; bun-security its `./lib/testing/crossprocess-worker.ts` (the store conformance kit's second process, which runs at load); bun-sql `false`; bun-nest `false`, its decorators
   applied by call staying on classes in their own module). A module that only
   re-exports drops its bare imports with it, so the importer of an effect
   module is listed too. The check is each package's
