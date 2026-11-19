@@ -17,6 +17,7 @@ export type {
 export type {
   HostColorScheme,
   MountedUi,
+  MountElement,
   MountLayout,
   MountLayoutOptions,
   MountOptions,

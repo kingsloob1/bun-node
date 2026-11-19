@@ -13,7 +13,7 @@
  */
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
-import { buildAssets, uiEntry } from "../lib/kit/assets";
+import { buildAssets, uiEntry, uiMountEntry } from "../lib/kit/assets";
 
 /** One UI's limits, in bytes. */
 interface BundleBudget {
@@ -163,5 +163,110 @@ describe("the budget rows", () => {
       .sort();
     expect(uis).toEqual(["docs", "jobs", "security"]);
     expect(Object.keys(BUNDLE_BUDGETS).sort()).toEqual(uis);
+  });
+});
+
+/**
+ * The mount modules' limits (embedding.md §3), one row per UI: each UI's
+ * `app/<ui>/mount.tsx` built as `scripts/build.ts` builds it, React bundled
+ * in. Set 2026-11-19 (EM-3, Bun 1.4.5-canary.1), about 10% above what was
+ * measured, with the same rule for raising one as the page rows:
+ *
+ * - **jobs**: entry 236.3 KiB (75.9 KiB gzipped), smaller than the page's
+ *   since React went to a shared chunk, the largest at 97.7 KiB (33.1 KiB
+ *   gzipped); 48 chunks.
+ * - **security**: entry 248.0 KiB (80.5 KiB gzipped), the largest chunk
+ *   73.8 KiB (24.1 KiB gzipped); 86 chunks.
+ * - **docs**: one module, 344.2 KiB (107.9 KiB gzipped), as the page's.
+ */
+const MOUNT_BUDGETS: Readonly<Record<string, BundleBudget>> = {
+  jobs: {
+    entryBytes: 260 * 1024,
+    entryGzipBytes: 84 * 1024,
+    chunkBytes: 108 * 1024,
+    chunkGzipBytes: 37 * 1024,
+    lazy: true,
+  },
+  security: {
+    entryBytes: 273 * 1024,
+    entryGzipBytes: 89 * 1024,
+    chunkBytes: 82 * 1024,
+    chunkGzipBytes: 27 * 1024,
+    lazy: true,
+  },
+  docs: {
+    entryBytes: 379 * 1024,
+    entryGzipBytes: 119 * 1024,
+    chunkBytes: 120 * 1024,
+    chunkGzipBytes: 40 * 1024,
+    lazy: false,
+  },
+};
+
+/** What in a build is over `budget`: its entry, then every other chunk, named with both sizes. */
+function overBudget(
+  assets: Awaited<ReturnType<typeof buildAssets>>,
+  budget: BundleBudget,
+): string[] {
+  const over: string[] = [];
+  for (const file of assets.files.values()) {
+    if (!file.name.endsWith(".js")) continue;
+    const gzip = Bun.gzipSync(file.body).byteLength;
+    const entry = file.name === assets.entry.js;
+    const [bytes, gzipBytes] = entry
+      ? [budget.entryBytes, budget.entryGzipBytes]
+      : [budget.chunkBytes, budget.chunkGzipBytes];
+    if (file.size > bytes || gzip > gzipBytes) {
+      over.push(
+        `${entry ? "entry " : ""}${file.name}: ${kib(file.size)}, gzip ${kib(gzip)}`,
+      );
+    }
+  }
+  return over;
+}
+
+for (const [ui, budget] of Object.entries(MOUNT_BUDGETS)) {
+  const assets = await buildAssets({ entry: uiMountEntry(ui) });
+  const chunks = [...assets.files.values()].filter(
+    (file) => file.name.endsWith(".js") && file.name !== assets.entry.js,
+  );
+
+  describe(`the ${ui} mount module budget`, () => {
+    it(`keeps the module within ${kib(budget.entryBytes)} and every chunk within ${kib(budget.chunkBytes)}`, () => {
+      expect(assets.entry.js).toStartWith("mount-");
+      if (budget.lazy) expect(chunks.length).toBeGreaterThan(0);
+      expect(overBudget(assets, budget)).toEqual([]);
+    });
+
+    it("negative control: a row 1 KiB wide names the module and its chunks", () => {
+      const tight = {
+        entryBytes: 1024,
+        entryGzipBytes: 1024,
+        chunkBytes: 1024,
+        chunkGzipBytes: 1024,
+        lazy: budget.lazy,
+      };
+      const over = overBudget(assets, tight);
+      expect(over.filter((line) => line.startsWith("entry "))).toEqual([
+        expect.stringMatching(new RegExp(`^entry ${assets.entry.js}: `)),
+      ]);
+      expect(over.length).toBeGreaterThan(budget.lazy ? 1 : 0);
+    });
+  });
+}
+
+describe("the mount budget rows", () => {
+  it("name every UI with a mount entry (`app/<ui>/mount.tsx`)", () => {
+    const uis = [
+      ...new Bun.Glob("*/mount.tsx").scanSync({
+        cwd: join(import.meta.dir, "..", "app"),
+      }),
+    ]
+      .map((path) => path.split("/")[0])
+      // The kit's `mount.tsx` is what every UI's builds on, not a UI.
+      .filter((ui) => ui !== "kit")
+      .sort();
+    expect(uis).toEqual(["docs", "jobs", "security"]);
+    expect(Object.keys(MOUNT_BUDGETS).sort()).toEqual(uis);
   });
 });

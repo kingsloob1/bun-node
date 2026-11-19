@@ -143,18 +143,32 @@ export interface MountOptions {
   /** The API requests' and live streams' `credentials`. Default: `"same-origin"`. */
   credentials?: NonNullable<RequestInit["credentials"]>;
   /**
-   * Called with the full path (under `basePath`) instead of `pushState`, for
-   * a host whose router owns history; the host then calls the mounted UI's
-   * `navigate()` when its route changes. Default: the UI pushes history
-   * itself.
+   * Called with the full path (under `basePath`, with its query) instead of
+   * `pushState`, for a host whose router owns history; `replace` is set for a
+   * navigation that should replace the current entry (a filter typed into
+   * the query, a redirect). The UI shows the new screen at once; the host
+   * calls the mounted UI's `navigate()` when its own route changes (back,
+   * forward, its menu). Default: the UI pushes history itself.
    */
-  onNavigate?: (path: string) => void;
+  onNavigate?: (path: string, options: { replace: boolean }) => void;
   /**
    * Called with the status of an API answer the UI's `unauthorized` rule
    * lists (401 by default), instead of the redirect. Default: the kit's
    * `unauthorized` behaviour.
    */
   onUnauthorized?: (status: number) => void;
+}
+
+/**
+ * The element a UI mounts into: any DOM `Element`, spelled structurally so
+ * these declarations need no DOM library (a server program importing them
+ * stays DOM-free). The mount functions check it is a real element.
+ */
+export interface MountElement {
+  /** The document it belongs to. */
+  readonly ownerDocument: unknown;
+  /** Appends children: where the UI's root goes. */
+  append: (...nodes: never[]) => void;
 }
 
 /** What a mount function returns: the handle a host drives the UI with. */

@@ -1,5 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
+import type { UnauthorizedRedirect } from "@kingsleyweb/bun-ui/docs/embed/unauthorized";
+import type { RouterHistory } from "../kit/routing";
 import type { JobsUiConfig } from "../../lib/jobs/browser/config.ts";
 import type { ApiClient } from "./api/client";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -24,6 +26,13 @@ export interface AppProvidersProps {
   queryClient: QueryClient;
   /** The app. */
   children: ReactNode;
+  /** Where the router reads and moves the URL (a mount's); the page's own history when absent. */
+  history?: RouterHistory;
+  /**
+   * What an authorization failure does (a mount's, from its host's
+   * `onUnauthorized`); the config's `unauthorized` redirect when absent.
+   */
+  unauthorized?: UnauthorizedRedirect;
 }
 
 /**
@@ -39,10 +48,13 @@ export function AppProviders({
   client,
   queryClient,
   children,
+  history,
+  unauthorized: given,
 }: AppProvidersProps) {
   const unauthorized = useMemo(
-    () => createUnauthorizedRedirect(config.unauthorized, config.basePath),
-    [config.unauthorized, config.basePath],
+    () =>
+      given ?? createUnauthorizedRedirect(config.unauthorized, config.basePath),
+    [given, config.unauthorized, config.basePath],
   );
   useEffect(
     () => watchAuthFailures(queryClient, unauthorized),
@@ -54,7 +66,10 @@ export function AppProviders({
         <UnauthorizedRedirectContext value={unauthorized}>
           <ApiClientContext value={client}>
             <ToastProvider>
-              <RouterProvider basePath={config.basePath}>
+              <RouterProvider
+                basePath={config.basePath}
+                history={history}
+              >
                 <MetaProvider>{children}</MetaProvider>
               </RouterProvider>
             </ToastProvider>

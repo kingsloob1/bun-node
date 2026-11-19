@@ -281,6 +281,18 @@ export class HandleLedger {
     this.#installObservers();
   }
 
+  /**
+   * Records the listeners added to `target` too, as it does the window's and
+   * the document's: a mount's host element (embedding.md §8). Restored with
+   * the rest on {@link uninstall}. Throws when not installed.
+   */
+  trackListeners(target: EventTarget, name: string): void {
+    if (!this.#installed) {
+      throw new Error("install the ledger before tracking a target");
+    }
+    this.#installListeners(target, name);
+  }
+
   /** Restores every global it wrapped, exactly as it was. */
   uninstall(): void {
     for (const restore of this.#restore.splice(0).reverse()) {

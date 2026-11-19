@@ -12,6 +12,9 @@
  * admin.use(ui.basePath, ui.router);
  * ```
  */
+import type { UiMountTags, UiMountTagsOptions } from "../kit/mountTags";
+import type { UiAssets } from "../kit/assets";
+import { mountTagsOf } from "../kit/mountTags";
 import type { RouterHandler } from "@kingsleyweb/bun-common";
 import type { ConfigFail } from "../kit/options";
 import type { ResolvedApiTarget } from "../kit/apiTarget";
@@ -34,6 +37,9 @@ import { resolveThemeInput, themedAssets } from "../kit/theme";
 import { resolveUnauthorized } from "../kit/unauthorized";
 import { DEFAULT_DIST_DIR, DEFAULT_ENTRY, resolveAssetSource } from "./assets";
 import { createShellRenderer } from "./shell";
+
+/** Each SecurityUi's bundle loader, for {@link securityUiMountTags}. */
+const mountSources = new WeakMap<object, () => Promise<UiAssets>>();
 
 /** The UI's default mount path. */
 export const DEFAULT_BASE_PATH = "/security";
@@ -176,7 +182,9 @@ export function createSecurityUi(
     authorize: options.authorize,
     unauthorized: config.unauthorized,
   });
-  return Object.freeze({ router, basePath, config });
+  const ui = Object.freeze({ router, basePath, config });
+  mountSources.set(ui, loadAssets);
+  return ui;
 }
 
 /**
@@ -185,4 +193,28 @@ export function createSecurityUi(
  */
 export function securityUi(options: SecurityUiOptions): SecurityUi {
   return createSecurityUi(options);
+}
+
+/**
+ * The tags a host page includes to mount this UI from its router
+ * (embedding.md §3): the mount stylesheets and module by their hashed URLs,
+ * with SRI. Waits for the bundle (an in-memory build on its first use).
+ *
+ * ```ts
+ * const tags = await securityUiMountTags(ui);
+ * // in the page's <head>: tags.html
+ * // in its script: const { mountSecurityUi } = await import(tags.module.href);
+ * ```
+ *
+ * @throws When `ui` was not made by `securityUi()`, or its bundle has no mount module.
+ */
+export async function securityUiMountTags(
+  ui: SecurityUi,
+  options: UiMountTagsOptions = {},
+): Promise<UiMountTags> {
+  const load = mountSources.get(ui);
+  if (load === undefined) {
+    throw new TypeError("securityUiMountTags needs a UI made by securityUi()");
+  }
+  return mountTagsOf(await load(), ui.basePath, options);
 }

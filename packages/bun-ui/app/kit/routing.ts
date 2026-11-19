@@ -120,6 +120,49 @@ export function readLocation(basePath: string): AppLocation {
   };
 }
 
+/**
+ * Where the router reads and moves the URL. The default,
+ * {@link windowHistory}, is the page's own history; a mounted UI whose host
+ * owns history (`onNavigate`, embedding.md §5) passes one that hands each
+ * navigation to the host instead (`app/kit/mount.tsx`).
+ */
+export interface RouterHistory {
+  /** The current URL's path and query. */
+  read: () => { pathname: string; search: string };
+  /** Moves to `url` (a full path, may carry a query): a new entry, or the current one replaced. */
+  go: (url: string, replace: boolean) => void;
+  /** Calls `onChange` when the URL changes from outside the router (back, forward, a host's navigation); returns the unsubscribe. */
+  listen: (onChange: () => void) => () => void;
+}
+
+/** The page's own history: `window.location`, `pushState`/`replaceState` and `popstate`. */
+export const windowHistory: RouterHistory = {
+  read: () => ({
+    pathname: window.location.pathname,
+    search: window.location.search,
+  }),
+  go: (url, replace) => {
+    if (replace) {
+      window.history.replaceState(null, "", url);
+    } else {
+      window.history.pushState(null, "", url);
+    }
+  },
+  listen: (onChange) => {
+    window.addEventListener("popstate", onChange);
+    return () => window.removeEventListener("popstate", onChange);
+  },
+};
+
+/** The location under `basePath` that `history` reads now. */
+export function locationIn(
+  history: RouterHistory,
+  basePath: string,
+): AppLocation {
+  const { pathname, search } = history.read();
+  return { path: stripBasePath(pathname, basePath), search };
+}
+
 /** The router, or a clear error outside a {@link RouterProvider}. */
 export function useRouter(): RouterContextValue {
   const router = use(RouterContext);

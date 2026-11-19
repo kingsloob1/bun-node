@@ -21,7 +21,7 @@
  */
 import type { Logger } from "@kingsleyweb/bun-common";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { scopeStylesheet } from "./scopeCss";
 
 /** The package root (`packages/bun-ui`, or `node_modules/@kingsleyweb/bun-ui`). */
@@ -30,6 +30,21 @@ export const PACKAGE_DIR = resolve(import.meta.dir, "..", "..");
 /** A UI's React app entry point, `app/<ui>/main.tsx`, bundled by {@link buildAssets}. */
 export function uiEntry(ui: string): string {
   return join(PACKAGE_DIR, "app", ui, "main.tsx");
+}
+
+/**
+ * A UI's mount entry, `app/<ui>/mount.tsx` (embedding.md §3): the module a
+ * host page imports to mount the UI in its own layout, bundled beside the
+ * page's by {@link buildAssets}.
+ */
+export function uiMountEntry(ui: string): string {
+  return join(PACKAGE_DIR, "app", ui, "mount.tsx");
+}
+
+/** The mount entry beside a UI's page entry (`mount.tsx` next to `main.tsx`), when there is one. */
+export function siblingMountEntry(entry: string): string | undefined {
+  const mount = join(dirname(entry), "mount.tsx");
+  return existsSync(mount) ? mount : undefined;
 }
 
 /** Where `scripts/build.ts` writes a UI's bundle and where its server looks for it: `dist/<ui>`. */
@@ -60,6 +75,58 @@ export const ASSETS_DIR = "assets";
 
 /** The unhashed copy of a UI's mount stylesheet in its dist directory (`dist/<ui>/mount.css`), for `exports["./<ui>/mount.css"]`. */
 export const MOUNT_STYLESHEET = "mount.css";
+
+/** The directory of a UI's mount entry point in its dist directory (`dist/<ui>/mount/index.js`), for `exports["./<ui>/mount"]`. */
+export const MOUNT_MODULE_DIR = "mount";
+
+/** Options of {@link writeMountExports}. */
+export interface WriteMountExportsOptions {
+  /**
+   * Write the mount module's files into `<dir>/assets/` too, for a dist
+   * directory {@link writeAssets} did not write (`scripts/build.ts --exports`,
+   * which `build:types` runs). Defaults to `false`: the full build's
+   * `assets/` holds them already.
+   */
+  moduleFiles?: boolean;
+}
+
+/**
+ * Writes what a UI's `exports` name in its dist directory (embedding.md
+ * §3): `mount.css`, the scoped stylesheet, and `mount/index.js`,
+ * re-exporting the hashed module in `assets/` (`export * from
+ * "../assets/mount-<hash>.js"`), so the tarball carries the module once and
+ * a host's bundler follows it there. No manifest is written: a server never
+ * mistakes these for a build. Throws for a bundle built without a mount
+ * entry.
+ */
+export async function writeMountExports(
+  assets: UiAssets,
+  dir: string,
+  options: WriteMountExportsOptions = {},
+): Promise<void> {
+  const css = assets.mount?.css[0];
+  const js = assets.mount?.js;
+  if (css === undefined || js === undefined) {
+    throw new Error("bun-ui: the bundle has no mount module or stylesheet");
+  }
+  await Bun.write(join(dir, MOUNT_STYLESHEET), assets.files.get(css)!.body);
+  if (options.moduleFiles === true) {
+    mkdirSync(join(dir, ASSETS_DIR), { recursive: true });
+    for (const name of assets.mount!.files ?? []) {
+      await Bun.write(
+        join(dir, ASSETS_DIR, name),
+        assets.files.get(name)!.body,
+      );
+    }
+  }
+  const moduleDir = join(dir, MOUNT_MODULE_DIR);
+  rmSync(moduleDir, { recursive: true, force: true });
+  mkdirSync(moduleDir, { recursive: true });
+  await Bun.write(
+    join(moduleDir, "index.js"),
+    `export * from "../${ASSETS_DIR}/${js}";\n`,
+  );
+}
 
 /** One file of the bundle, as `dist/manifest.json` records it. */
 export interface UiManifestFile {
@@ -94,6 +161,14 @@ export interface UiManifest {
     ui: string;
     /** File names of the scoped stylesheets, in the order to link them: the entry's, then any the server adds (a custom theme's). */
     css: string[];
+    /**
+     * File name of the mount module (`app/<ui>/mount.tsx` bundled:
+     * `mount-<hash>.js`, its chunks beside it), or absent for a bundle
+     * built without a mount entry ({@link BuildAssetsOptions.mountEntry}).
+     */
+    js?: string;
+    /** Every file of the mount module: {@link js}, its chunks and their source maps (absent without {@link js}). */
+    files?: string[];
   };
 }
 
@@ -146,6 +221,12 @@ export interface BuildAssetsOptions {
    * Defaults to none (a test fixture's bundle).
    */
   mount?: string;
+  /**
+   * The UI's mount entry (`app/<ui>/mount.tsx`, {@link uiMountEntry}):
+   * bundled too, its module and chunks added to the files and named in
+   * {@link UiAssets.mount}'s `js`. Needs {@link mount}. Defaults to none.
+   */
+  mountEntry?: string;
 }
 
 /** Content types by extension, so both sources agree whatever Bun reports. */
@@ -220,6 +301,38 @@ export async function buildAssets(
       { entry },
     );
   }
+  const page = await bundle(entry, options);
+  const stylesheets = entryStylesheets(page.js, page.css);
+  let assets: UiAssets = {
+    entry: { js: page.js, css: stylesheets },
+    files: page.files,
+    source: "memory",
+  };
+  if (options.mount === undefined) return assets;
+  assets = withMountStylesheet(assets, options.mount, stylesheets);
+  if (options.mountEntry === undefined) return assets;
+  const mount = await bundle(options.mountEntry, options);
+  const files = new Map(assets.files);
+  const own: string[] = [];
+  // Its stylesheet is the page's rules unscoped: the scoped one stands for it.
+  for (const [name, file] of mount.files) {
+    if (!name.endsWith(".css") && !name.endsWith(".css.map")) {
+      files.set(name, file);
+      own.push(name);
+    }
+  }
+  return {
+    ...assets,
+    files,
+    mount: { ...assets.mount!, js: mount.js, files: own.sort() },
+  };
+}
+
+/** One entry bundled, as {@link buildAssets} bundles it: its files, its module and its stylesheets. */
+async function bundle(
+  entry: string,
+  options: BuildAssetsOptions,
+): Promise<{ files: Map<string, UiAsset>; js: string; css: string[] }> {
   const sourcemap = options.sourcemap ?? "linked";
   const result = await Bun.build({
     entrypoints: [entry],
@@ -268,15 +381,7 @@ export async function buildAssets(
   if (js === undefined) {
     throw new Error(`bun-ui: building ${entry} produced no entry module`);
   }
-  const stylesheets = entryStylesheets(js, css);
-  const assets: UiAssets = {
-    entry: { js, css: stylesheets },
-    files,
-    source: "memory",
-  };
-  return options.mount === undefined
-    ? assets
-    : withMountStylesheet(assets, options.mount, stylesheets);
+  return { files, js, css };
 }
 
 /** A file's hashed name, `<stem>-<hash>.css`, after its content. */
@@ -338,7 +443,7 @@ export function withStylesheet(
     ) as Uint8Array<ArrayBuffer>;
     const scopedName = hashedName(`${stem}-mount`, scoped);
     files.set(scopedName, toAsset(scopedName, scoped, CONTENT_TYPES.css));
-    mount = { ui: mount.ui, css: [...mount.css, scopedName] };
+    mount = { ...mount, css: [...mount.css, scopedName] };
   }
   return {
     ...assets,
@@ -382,7 +487,15 @@ export function manifestOf(assets: UiAssets): UiManifest {
     files,
     ...(assets.mount === undefined
       ? {}
-      : { mount: { ui: assets.mount.ui, css: [...assets.mount.css] } }),
+      : {
+          mount: {
+            ...assets.mount,
+            css: [...assets.mount.css],
+            ...(assets.mount.files === undefined
+              ? {}
+              : { files: [...assets.mount.files] }),
+          },
+        }),
   };
 }
 
@@ -504,7 +617,30 @@ export function loadDistAssets(
     ) {
       throw corrupt("a bad mount entry");
     }
-    mount = { ui, css: mountCss };
+    const { js: mountJs, files: mountFiles } = record.mount as {
+      js?: unknown;
+      files?: unknown;
+    };
+    if (
+      (mountJs === undefined) !== (mountFiles === undefined) ||
+      (mountJs !== undefined &&
+        (typeof mountJs !== "string" ||
+          !Array.isArray(mountFiles) ||
+          !mountFiles.includes(mountJs) ||
+          !mountFiles.every(
+            (name): name is string =>
+              typeof name === "string" && files.has(name),
+          )))
+    ) {
+      throw corrupt("a bad mount entry");
+    }
+    mount = {
+      ui,
+      css: mountCss,
+      ...(typeof mountJs === "string"
+        ? { js: mountJs, files: mountFiles as string[] }
+        : {}),
+    };
   }
   return {
     entry: { js, css: cssList },
@@ -535,7 +671,11 @@ export function buildAssetsOnce(
       `bun-ui: no dist/${ui} build, bundling the app in memory (run \`bun scripts/build.ts\` to prebuild)`,
       { entry: key },
     );
-    build = buildAssets({ entry: key, mount: ui });
+    build = buildAssets({
+      entry: key,
+      mount: ui,
+      mountEntry: siblingMountEntry(key),
+    });
     memoryBuilds.set(key, build);
     build.catch(() => {
       if (memoryBuilds.get(key) === build) {

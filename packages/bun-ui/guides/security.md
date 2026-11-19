@@ -411,6 +411,15 @@ draft changed meanwhile, bans, lists, rules and testing a request, a second
 operator's approval, agents, alert channels and rules, paging events while
 they arrive) run end to end in `flows.e2e.test.ts`.
 
+## Mounting it in your own page
+
+`mountSecurityUi()` from `@kingsleyweb/bun-ui/security/mount` shows the security UI in your
+page's content area (`apiBase, basePath`, plus the kit's options: `shell`,
+`theme`, `layout`, `headers`, `credentials`, `onNavigate`,
+`onUnauthorized`). See [Mounting a UI in your
+page](../README.md#mounting-a-ui-in-your-page); `securityUiMountTags(ui)` gives
+the tags for a page without a bundler.
+
 ## Styling it when mounted
 
 A page that mounts the UI in its own layout links its mount stylesheet

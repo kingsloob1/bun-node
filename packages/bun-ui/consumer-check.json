@@ -1,5 +1,5 @@
 {
-  "$comment": "Import spellings a consumer of @kingsleyweb/bun-ui writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-ui` from the repo root. Every spelling here worked at some point; removing one hides a regression. An entry's `peers` names the optional peers it legitimately needs: it is checked in a consumer that has exactly them, and every entry without `peers` in one that has none, so the root and every `/<ui>/browser` entry are proved to need no domain package. `/jobs` needs bun-jobs (its types name `JobsApi`, and it throws bun-jobs' `ConfigError`); `/security` needs bun-security (its types name `SecurityApi`, and it reads the contract's CSRF header default); `/docs` and `/docs/hosted` need none. The `./docs/embed*` entries (the viewer's screens, for a host app that bundles them) are NOT here: TSX with CSS side-effect imports and React types, shipped as source, a bundler-only surface covered in-repo by the jobs app importing them by name (`app/jobs`), and by `__tests__/entryIsolation.test.ts`.",
+  "$comment": "Import spellings a consumer of @kingsleyweb/bun-ui writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-ui` from the repo root. Every spelling here worked at some point; removing one hides a regression. An entry's `peers` names the optional peers it legitimately needs: it is checked in a consumer that has exactly them, and every entry without `peers` in one that has none, so the root and every `/<ui>/browser` entry are proved to need no domain package. `/jobs` needs bun-jobs (its types name `JobsApi`, and it throws bun-jobs' `ConfigError`); `/security` needs bun-security (its types name `SecurityApi`, and it reads the contract's CSRF header default); `/docs` and `/docs/hosted` need none. The `/<ui>/mount` entries are browser modules (React bundled in, prebuilt in `dist/<ui>/mount/` on pack) typed by their facades in `lib/<ui>/mount.ts`, checked as `browser` entries and imported under Bun, which must run nothing at load. The `./docs/embed*` entries (the viewer's screens, for a host app that bundles them) are NOT here: TSX with CSS side-effect imports and React types, shipped as source, a bundler-only surface covered in-repo by the jobs app importing them by name (`app/jobs`), and by `__tests__/entryIsolation.test.ts`.",
   "workspaceDependencies": [
     "packages/bun-contract",
     "packages/bun-common",
@@ -49,7 +49,8 @@
         "ASSET_CACHE_CONTROL",
         "DEFAULT_BASE_PATH",
         "DEFAULT_TITLE",
-        "JOBS_UI_CONFIG_ELEMENT_ID"
+        "JOBS_UI_CONFIG_ELEMENT_ID",
+        "jobsUiMountTags"
       ],
       "types": [
         "JobsUi",
@@ -73,7 +74,10 @@
         "UiAlign",
         "UiLayout",
         "UiLayoutOptions",
-        "UiLayoutScope"
+        "UiLayoutScope",
+        "UiMountTag",
+        "UiMountTags",
+        "UiMountTagsOptions"
       ],
       "snippet": "const ui = m.jobsUi({ apiUrl: \"/jobs-api\", basePath: \"/jobs\" });\nexport type _ui = Expect<IsAny<typeof ui>>;\nexport type _router = Expect<IsAny<typeof ui.router>>;\nconst _basePath: Equal<typeof ui.basePath, string> = true;\nexport type _api = Expect<IsAny<t.JobsUiApiOptions[\"api\"]>>;"
     },
@@ -112,7 +116,18 @@
     },
     {
       "spelling": "@kingsleyweb/bun-ui/jobs/browser",
-      "values": ["JOBS_UI_CONFIG_ELEMENT_ID"],
+      "values": [
+        "JOBS_UI_CONFIG_ELEMENT_ID",
+        "JOBS_SECTIONS",
+        "sectionsFor",
+        "isUiShell",
+        "resolveMountLayout",
+        "resolveMountTheme",
+        "UI_SHELLS",
+        "DEFAULT_MOUNT_SHELL",
+        "DEFAULT_PAGE_SHELL",
+        "DEFAULT_MOUNT_LAYOUT"
+      ],
       "types": [
         "JobsUiConfig",
         "JobsUiSections",
@@ -121,8 +136,31 @@
         "UiUnauthorizedStatus",
         "UiAlign",
         "UiLayout",
-        "UiLayoutScope"
+        "UiLayoutScope",
+        "JobsSection",
+        "JobsSectionId",
+        "UiSection",
+        "UiShell",
+        "MountOptions",
+        "MountedUi",
+        "MountElement",
+        "MountTheme",
+        "MountLayout",
+        "MountLayoutOptions",
+        "HostColorScheme"
       ],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/jobs/mount",
+      "values": ["mountJobsUi"],
+      "types": [
+        "JobsMountOptions",
+        "MountOptions",
+        "MountedUi",
+        "MountElement"
+      ],
+      "snippet": "declare const element: t.MountElement;\nconst ui = m.mountJobsUi(element, { apiBase: \"/jobs-api\", basePath: \"/jobs\" });\nconst _navigate: Equal<typeof ui.navigate, (path: string) => void> = true;\nconst _options: Equal<t.JobsMountOptions[\"basePath\"], string> = true;",
       "browser": true
     },
     {
@@ -145,7 +183,8 @@
         "DEFAULT_TITLE",
         "DOCUMENT_SUBPATH",
         "DEFAULT_EXTENSION_PREFIXES",
-        "DOCS_UI_CONFIG_ELEMENT_ID"
+        "DOCS_UI_CONFIG_ELEMENT_ID",
+        "docsUiMountTags"
       ],
       "types": [
         "DocsUi",
@@ -166,7 +205,10 @@
         "UiAlign",
         "UiLayout",
         "UiLayoutOptions",
-        "UiLayoutScope"
+        "UiLayoutScope",
+        "UiMountTag",
+        "UiMountTags",
+        "UiMountTagsOptions"
       ],
       "snippet": "const ui = m.docsUi({ document: \"/jobs-api/openapi.json\", basePath: \"/docs\" });\nexport type _ui = Expect<IsAny<typeof ui>>;\nexport type _router = Expect<IsAny<typeof ui.router>>;\nconst _basePath: Equal<typeof ui.basePath, string> = true;"
     },
@@ -201,7 +243,16 @@
         "DEFAULT_UNAUTHORIZED_STATUSES",
         "isUiUnauthorized",
         "unauthorizedRedirectUrl",
-        "relativeReturnPath"
+        "relativeReturnPath",
+        "DOCS_SECTIONS",
+        "sectionsFor",
+        "isUiShell",
+        "resolveMountLayout",
+        "resolveMountTheme",
+        "UI_SHELLS",
+        "DEFAULT_MOUNT_SHELL",
+        "DEFAULT_PAGE_SHELL",
+        "DEFAULT_MOUNT_LAYOUT"
       ],
       "types": [
         "DocsUiConfig",
@@ -212,8 +263,30 @@
         "UiTheme",
         "UiAlign",
         "UiLayout",
-        "UiLayoutScope"
+        "UiLayoutScope",
+        "DocsSection",
+        "UiSection",
+        "UiShell",
+        "MountOptions",
+        "MountedUi",
+        "MountElement",
+        "MountTheme",
+        "MountLayout",
+        "MountLayoutOptions",
+        "HostColorScheme"
       ],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/docs/mount",
+      "values": ["mountDocsUi"],
+      "types": [
+        "DocsMountOptions",
+        "MountOptions",
+        "MountedUi",
+        "MountElement"
+      ],
+      "snippet": "declare const element: t.MountElement;\nconst ui = m.mountDocsUi(element, { documentUrl: \"/docs/document.json\", basePath: \"/docs\" });\nconst _navigate: Equal<typeof ui.navigate, (path: string) => void> = true;\nconst _options: Equal<t.DocsMountOptions[\"basePath\"], string> = true;",
       "browser": true
     },
     {
@@ -275,7 +348,8 @@
         "createSecurityUi",
         "DEFAULT_BASE_PATH",
         "DEFAULT_TITLE",
-        "SECURITY_UI_CONFIG_ELEMENT_ID"
+        "SECURITY_UI_CONFIG_ELEMENT_ID",
+        "securityUiMountTags"
       ],
       "types": [
         "SecurityUi",
@@ -296,7 +370,10 @@
         "UiAlign",
         "UiLayout",
         "UiLayoutOptions",
-        "UiLayoutScope"
+        "UiLayoutScope",
+        "UiMountTag",
+        "UiMountTags",
+        "UiMountTagsOptions"
       ],
       "snippet": "const ui = m.securityUi({ apiUrl: \"/security-api\", basePath: \"/security\" });\nexport type _ui = Expect<IsAny<typeof ui>>;\nexport type _router = Expect<IsAny<typeof ui.router>>;\nconst _basePath: Equal<typeof ui.basePath, string> = true;\nconst _breakGlass: Equal<typeof ui.config.breakGlass, boolean> = true;\nexport type _api = Expect<IsAny<t.SecurityUiApiOptions[\"api\"]>>;"
     },
@@ -329,7 +406,18 @@
     },
     {
       "spelling": "@kingsleyweb/bun-ui/security/browser",
-      "values": ["SECURITY_UI_CONFIG_ELEMENT_ID"],
+      "values": [
+        "SECURITY_UI_CONFIG_ELEMENT_ID",
+        "SECURITY_SECTIONS",
+        "sectionsFor",
+        "isUiShell",
+        "resolveMountLayout",
+        "resolveMountTheme",
+        "UI_SHELLS",
+        "DEFAULT_MOUNT_SHELL",
+        "DEFAULT_PAGE_SHELL",
+        "DEFAULT_MOUNT_LAYOUT"
+      ],
       "types": [
         "SecurityUiConfig",
         "UiTheme",
@@ -337,8 +425,31 @@
         "UiUnauthorizedStatus",
         "UiAlign",
         "UiLayout",
-        "UiLayoutScope"
+        "UiLayoutScope",
+        "SecuritySection",
+        "SecuritySectionPermission",
+        "UiSection",
+        "UiShell",
+        "MountOptions",
+        "MountedUi",
+        "MountElement",
+        "MountTheme",
+        "MountLayout",
+        "MountLayoutOptions",
+        "HostColorScheme"
       ],
+      "browser": true
+    },
+    {
+      "spelling": "@kingsleyweb/bun-ui/security/mount",
+      "values": ["mountSecurityUi"],
+      "types": [
+        "SecurityMountOptions",
+        "MountOptions",
+        "MountedUi",
+        "MountElement"
+      ],
+      "snippet": "declare const element: t.MountElement;\nconst ui = m.mountSecurityUi(element, { apiBase: \"/security/api\", basePath: \"/security\" });\nconst _navigate: Equal<typeof ui.navigate, (path: string) => void> = true;\nconst _options: Equal<t.SecurityMountOptions[\"basePath\"], string> = true;",
       "browser": true
     },
     {

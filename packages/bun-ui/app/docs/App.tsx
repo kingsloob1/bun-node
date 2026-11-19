@@ -1,8 +1,12 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
+import type { ComponentType, ReactNode } from "react";
 import type { FetchLike } from "./api/client";
 import type { DocsUiConfig } from "../../lib/docs/browser/config.ts";
+import type { UnauthorizedRedirect } from "../kit/unauthorized";
+import type { RouterHistory } from "./routing";
 import { useEffect, useMemo } from "react";
+import { isUiEvent, useMountRoot } from "../kit/frame";
 import { DocsFetchContext, DocsUiConfigContext } from "./context";
 import { RouterProvider } from "./router";
 import {
@@ -21,14 +25,27 @@ export interface AppProps {
   queryClient: QueryClient;
   /** The `fetch` every request goes through (tests inject one). Defaults to `globalThis.fetch`. */
   fetch?: FetchLike;
+  /** Where the router reads and moves the URL (a mount's); the page's own history when absent. */
+  history?: RouterHistory;
+  /** What an authorization failure does (a mount's); the config's `unauthorized` redirect when absent. */
+  unauthorized?: UnauthorizedRedirect;
+  /** Wraps the routed viewer (a mount's renders nothing outside `basePath`). Defaults to none. */
+  guard?: ComponentType<{ children: ReactNode }>;
+}
+
+/** No guard: the viewer as it is. */
+function NoGuard({ children }: { children: ReactNode }) {
+  return children;
 }
 
 /** The `/` shortcut: focus the screen's search box. */
 function useSearchShortcut() {
+  const root = useMountRoot();
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (shortcutFor(event) === "focus-search") {
-        const box = findSearchBox(document);
+      // Mounted, only a key pressed inside the mount element counts.
+      if (shortcutFor(event) === "focus-search" && isUiEvent(root, event)) {
+        const box = findSearchBox(root ?? document);
         if (box) {
           event.preventDefault();
           box.focus();
@@ -37,7 +54,7 @@ function useSearchShortcut() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [root]);
 }
 
 /**
@@ -49,11 +66,19 @@ function useSearchShortcut() {
  * `shell: "tabs"`, the kit's compact bar names the document's section
  * above it ({@link DocsTabs}).
  */
-export function App({ config, queryClient, fetch }: AppProps) {
+export function App({
+  config,
+  queryClient,
+  fetch,
+  history,
+  unauthorized: given,
+  guard: Guard = NoGuard,
+}: AppProps) {
   useSearchShortcut();
   const unauthorized = useMemo(
-    () => createUnauthorizedRedirect(config.unauthorized, config.basePath),
-    [config.unauthorized, config.basePath],
+    () =>
+      given ?? createUnauthorizedRedirect(config.unauthorized, config.basePath),
+    [given, config.unauthorized, config.basePath],
   );
   useEffect(
     () => watchAuthFailures(queryClient, unauthorized),
@@ -63,14 +88,19 @@ export function App({ config, queryClient, fetch }: AppProps) {
     <DocsUiConfigContext value={config}>
       <DocsFetchContext value={fetch ?? null}>
         <QueryClientProvider client={queryClient}>
-          <RouterProvider basePath={config.basePath}>
-            {config.shell === "tabs" && <DocsTabs />}
-            <div
-              className="docs-viewer"
-              data-shell={config.shell ?? "full"}
-            >
-              <DocsViewer />
-            </div>
+          <RouterProvider
+            basePath={config.basePath}
+            history={history}
+          >
+            <Guard>
+              {config.shell === "tabs" && <DocsTabs />}
+              <div
+                className="docs-viewer"
+                data-shell={config.shell ?? "full"}
+              >
+                <DocsViewer />
+              </div>
+            </Guard>
           </RouterProvider>
         </QueryClientProvider>
       </DocsFetchContext>

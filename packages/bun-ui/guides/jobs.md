@@ -1102,6 +1102,15 @@ each file's SRI digest). `jobsUi()` serves it as it is: there is nothing to
 build. Leave the `dev` option unset: it builds the app from source, which the
 package does not ship.
 
+### Mounting it in your own page
+
+`mountJobsUi()` from `@kingsleyweb/bun-ui/jobs/mount` shows the jobs UI in your
+page's content area (`apiBase, basePath`, plus the kit's options: `shell`,
+`theme`, `layout`, `headers`, `credentials`, `onNavigate`,
+`onUnauthorized`). See [Mounting a UI in your
+page](../README.md#mounting-a-ui-in-your-page); `jobsUiMountTags(ui)` gives
+the tags for a page without a bundler.
+
 ### Styling it when mounted
 
 A page that mounts the UI in its own layout links its mount stylesheet

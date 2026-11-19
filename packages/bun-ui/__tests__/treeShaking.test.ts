@@ -276,6 +276,62 @@ describe("one UI's sections in a browser bundle (a host's side menu)", () => {
   }
 });
 
+/**
+ * The mount modules (embedding.md §3): importing one for nothing runs
+ * nothing (measured: 0 bytes of JavaScript for each UI), and importing its
+ * function brings that UI's app and not another's. Built from the source
+ * (`app/<ui>/mount.tsx`), the package's `sideEffects` applying as to any
+ * file under it; the negative control builds a copy with the field removed.
+ */
+const MOUNT_ROWS = [
+  ["jobs", "mountJobsUi", "Summoning", "bun-security-ui:break-glass"],
+  ["security", "mountSecurityUi", "bun-security-ui:break-glass", "Summoning"],
+  ["docs", "mountDocsUi", "WebSocket API", "Summoning"],
+] as const;
+
+/** A copy of the package's `app/` and `lib/` with its manifest's `sideEffects` set to `sideEffects` (absent for `undefined`); its root. */
+function copySources(sideEffects: unknown): string {
+  const app = appDir(mkdtempSync(join(WORK, "sources-")));
+  const copy = join(app, "node_modules", ...MANIFEST.name.split("/"));
+  mkdirSync(copy, { recursive: true });
+  for (const entry of ["app", "lib"]) {
+    cpSync(join(ROOT, entry), join(copy, entry), { recursive: true });
+  }
+  const manifest: Record<string, unknown> = { ...MANIFEST, sideEffects };
+  if (sideEffects === undefined) delete manifest.sideEffects;
+  writeFileSync(join(copy, "package.json"), JSON.stringify(manifest));
+  return copy;
+}
+
+describe("a mount module in a browser bundle", () => {
+  for (const [ui, fn, own, other] of MOUNT_ROWS) {
+    const source = join(ROOT, "app", ui, "mount.tsx");
+
+    it(`${ui}: importing it for nothing runs nothing`, async () => {
+      const { js } = await bundle(WORK, `import "${source}";\n`);
+      expect(js).toBe("");
+    });
+
+    it(`${ui}: its function brings its own app, not another UI's`, async () => {
+      const { js } = await bundle(
+        WORK,
+        `import { ${fn} } from "${source}";\nexport const mount = ${fn};\n`,
+      );
+      expect(js).toContain(own);
+      expect(js).not.toContain(other);
+    });
+  }
+
+  it("negative control: without sideEffects, importing one for nothing keeps its app", async () => {
+    const copy = copySources(undefined);
+    const { js } = await bundle(
+      WORK,
+      `import "${join(copy, "app", "jobs", "mount.tsx")}";\n`,
+    );
+    expect(js.length).toBeGreaterThan(10_000);
+  });
+});
+
 describe("the listed effects survive tree shaking", () => {
   it("a screen brings its stylesheets", async () => {
     const http = await bundle(
