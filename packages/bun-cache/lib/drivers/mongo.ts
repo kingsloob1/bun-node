@@ -1676,10 +1676,20 @@ export class MongoCacheDriver implements CacheDriver {
 
   /**
    * Opens a change stream on the bus collection: from `from` (where a lost
-   * stream had got to, its {@link BusSource.resumeFrom}), or else at the
-   * server's operation time now — so a message published once `subscribe`
-   * has resolved is in it, however long the stream takes to establish. The
-   * client itself resumes across the errors it labels resumable.
+   * stream had got to, its {@link BusSource.resumeFrom}), or else just after
+   * the server's operation time now — so a message published once
+   * `subscribe` has resolved is in it, however long the stream takes to
+   * establish, and none published before it is. The client itself resumes
+   * across the errors it labels resumable.
+   *
+   * Just after, not at: `startAtOperationTime` is inclusive, and a ping's
+   * `operationTime` is the optime of the server's last write when nothing
+   * has been written since. Started at it, the stream replayed that write,
+   * the last message published before the subscription (#871, measured on a
+   * single-node replica set: the ping's time equalled the earlier insert's,
+   * and the stream returned it). The next timestamp is the first a later
+   * write can have, so the start stays exact, and a resume from it (before
+   * any change has answered) means the same.
    */
   async #openStream(
     bus: CollectionLike<BusDoc>,
@@ -1691,7 +1701,7 @@ export class MongoCacheDriver implements CacheDriver {
       start =
         operationTime === undefined
           ? {}
-          : { startAtOperationTime: operationTime };
+          : { startAtOperationTime: nextTimestamp(operationTime) };
     }
     const stream = bus.watch(
       [
@@ -1881,10 +1891,42 @@ interface BusSource {
   /**
    * Where a change stream resumes from: `{ resumeAfter }` with the token of
    * the last change or batch it answered, else the `startAtOperationTime` it
-   * opened at. `undefined` for a tailing cursor, or a stream opened with
+   * opened at (the timestamp just after the subscribe point). `undefined` for a tailing cursor, or a stream opened with
    * neither.
    */
   resumeFrom: () => DocLike | undefined;
+}
+
+/** A BSON `Timestamp` as far as {@link nextTimestamp} reads one: its seconds and its increment. */
+interface TimestampLike {
+  /** The seconds since the epoch. */
+  readonly t: number;
+  /** The ordinal of the operation within that second. */
+  readonly i: number;
+  /** Its class, which makes the next one. */
+  readonly constructor: new (value: { t: number; i: number }) => unknown;
+}
+
+/**
+ * The first timestamp after `time`, a BSON `Timestamp` (an operation time):
+ * the next increment within its second, or the next second's first once the
+ * increment is spent. Built with `time`'s own class, so the driver imports
+ * no BSON library (`mongodb` is an optional peer, loaded on first use).
+ */
+function nextTimestamp(time: unknown): unknown {
+  const { t, i, constructor: Timestamp } = time as TimestampLike;
+  if (
+    typeof t !== "number" ||
+    typeof i !== "number" ||
+    typeof Timestamp !== "function"
+  ) {
+    throw new TypeError(
+      "the MongoDB server answered an operationTime that is not a BSON Timestamp",
+    );
+  }
+  return i >= 0xff_ff_ff_ff
+    ? new Timestamp({ t: t + 1, i: 0 })
+    : new Timestamp({ t, i: i + 1 });
 }
 
 /**
