@@ -56,8 +56,11 @@ published packages under `packages/`:
   PR-D0a): the four engines' dialects, table definitions rendered to DDL,
   the schema sync and collation guard, connection helpers, keyset cursors and
   a MongoDB index sync, one subpath per area. Extracted from bun-jobs and
-  bun-cache, which still keep their own copies until PR-D0b and PR-D0c move
-  them onto it (`__tests__/parity/` compares the copies). Bun only;
+  bun-cache. bun-jobs runs on it since PR-D0b: its `SqlDialect` is bun-sql's
+  plus the claim members, its schema renderers, sync, cursors and collation
+  guard are bun-sql's re-exported, and its refusals go through the
+  `configError` seam (`lib/drivers/sql/seam.ts`). bun-cache keeps its own
+  copy until PR-D0c (`__tests__/parity/` compares it). Bun only;
   bun-common is its one runtime dependency, `mongodb` an optional peer.
 
 Each package: `lib/` source, `__tests__/` (bun:test), a `bun check`

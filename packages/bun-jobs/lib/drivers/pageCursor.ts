@@ -1,6 +1,3 @@
-import { Buffer } from "node:buffer";
-import { ConfigError } from "../shared/errors";
-
 /**
  * The shared encoding behind every **keyset** page cursor the API hands out.
  *
@@ -36,65 +33,28 @@ import { ConfigError } from "../shared/errors";
  * `encodeRewriteCursor` (`"jd1."`) and `sealWalkCursor` (`"ja1."`), which came
  * first. Each cursor-bearing route picks its own versioned prefix, so a cursor
  * names its format and its route in its first four characters.
+ *
+ * The encoding is bun-sql's (`@kingsleyweb/bun-sql/cursor`, PR-D0b): this
+ * module re-exports it, and decodes through bun-jobs' error seam so a bad
+ * cursor is still bun-jobs' `ConfigError`.
  */
 
-/** A part of a cursor's walk binding or ordering key: both JSON scalars. */
-export type CursorPart = string | number;
+import type { CursorPart, CursorPartType } from "@kingsleyweb/bun-sql/cursor";
+import {
+  decodePageCursor as decodeSharedPageCursor,
+  encodePageCursor,
+} from "@kingsleyweb/bun-sql/cursor";
+import { JOBS_SQL } from "./sql/seam";
 
-/** What a {@link decodePageCursor} caller says each key part must be. */
-export type CursorPartType = "string" | "number";
-
-/** The envelope a page cursor holds, before it is encoded. */
-interface CursorEnvelope {
-  /** Format version of the envelope itself. */
-  v: 1;
-  /** Which listing minted it, so one route's cursor is not another's. */
-  k: string;
-  /** Everything that decides what the walk visits, and in what order. */
-  w: CursorPart[];
-  /** The ordering key of the last item the previous page returned. */
-  p: CursorPart[];
-}
+export type { CursorPart, CursorPartType };
+export { encodePageCursor };
 
 /**
- * Mints an opaque cursor continuing `walk` after the item whose ordering key
- * is `key`.
- *
- * The caller owns both halves: `walk` must name every parameter that changes
- * what the walk visits (the namespace, the thing being listed, the order), and
- * `key` must be a **total** ordering key for that walk — one whose last part
- * is unique — or the seek can repeat or skip an item where two keys tie.
- */
-export function encodePageCursor(
-  /** The route's versioned prefix, ending in a dot, e.g. `"rh1."`. */
-  prefix: string,
-  /** Which listing this is, so another route's cursor is refused. */
-  kind: string,
-  /** Everything that decides what the walk visits, and in what order. */
-  walk: readonly CursorPart[],
-  /** The ordering key of the last item the page returned. */
-  key: readonly CursorPart[],
-): string {
-  const envelope: CursorEnvelope = {
-    v: 1,
-    k: kind,
-    w: [...walk],
-    p: [...key],
-  };
-  return `${prefix}${Buffer.from(JSON.stringify(envelope)).toString("base64url")}`;
-}
-
-/**
- * The ordering key inside a cursor from {@link encodePageCursor} — or a
- * `ConfigError` (the API answers `400 INVALID_ARGUMENT`) when it is not one of
- * this route's cursors, or belongs to another walk.
- *
- * Two distinct refusals, with different messages, because they are different
- * client mistakes: a cursor that is malformed, truncated, from another route
- * or of another version was never usable, while one that is well formed but
- * names another walk is usually a real cursor sent to the wrong place — a
- * runner's cursor replayed against a different runner, or the same page
- * re-requested after the order was flipped.
+ * Reads a cursor {@link encodePageCursor} minted, refusing one not minted
+ * for this walk. Two failures, both bun-jobs' `ConfigError` (a `400`): a
+ * cursor that is not one this walk issued (wrong prefix, not JSON, the wrong
+ * shape or version, a key part of the wrong type) and one that belongs to
+ * another walk.
  */
 export function decodePageCursor(
   /** The cursor as the client sent it. */
@@ -108,64 +68,5 @@ export function decodePageCursor(
   /** What each ordering-key part must be; a `"number"` must be finite. */
   keyTypes: readonly CursorPartType[],
 ): CursorPart[] {
-  const malformed = () =>
-    new ConfigError("cursor is not one this walk issued", { cursor });
-
-  if (typeof cursor !== "string" || !cursor.startsWith(prefix)) {
-    throw malformed();
-  }
-
-  let parsed: unknown;
-
-  try {
-    parsed = JSON.parse(
-      Buffer.from(cursor.slice(prefix.length), "base64url").toString("utf8"),
-    );
-  } catch {
-    throw malformed();
-  }
-
-  const envelope = parsed as Partial<CursorEnvelope> | null;
-
-  if (
-    typeof envelope !== "object" ||
-    envelope === null ||
-    envelope.v !== 1 ||
-    envelope.k !== kind ||
-    !Array.isArray(envelope.w) ||
-    !Array.isArray(envelope.p)
-  ) {
-    throw malformed();
-  }
-
-  // The walk is compared **before** the key's shape, because a walk can decide
-  // that shape: the jobs list keys `waiting` on two numbers and `completed` on
-  // one, so a real `waiting` cursor replayed against `completed` fails both
-  // checks, and "this belongs to another walk" is the one that tells the
-  // client what it actually did. Where the shape is fixed — the runner
-  // history — the order cannot matter, since only one of the two can fail.
-  if (
-    envelope.w.length !== walk.length ||
-    envelope.w.some((part, index) => part !== walk[index])
-  ) {
-    throw new ConfigError("this cursor belongs to another walk", {
-      cursor,
-      walk: [...walk],
-      cursorWalk: envelope.w,
-    });
-  }
-
-  if (
-    envelope.p.length !== keyTypes.length ||
-    keyTypes.some((type, index) => {
-      const part: unknown = envelope.p?.[index];
-      return type === "number"
-        ? typeof part !== "number" || !Number.isFinite(part)
-        : typeof part !== "string";
-    })
-  ) {
-    throw malformed();
-  }
-
-  return envelope.p;
+  return decodeSharedPageCursor(cursor, prefix, kind, walk, keyTypes, JOBS_SQL);
 }

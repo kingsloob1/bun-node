@@ -1,13 +1,36 @@
+import type {
+  ColumnDefinition,
+  IndexDefinition,
+  TableDefinition,
+} from "@kingsleyweb/bun-sql/schema";
 import type { SqlDialect } from "./dialect";
+import { createSchema as createSharedSchema } from "@kingsleyweb/bun-sql/schema";
 import { ConfigError } from "../../shared/errors";
+import { JOBS_SQL } from "./seam";
 import {
   DURATION_HISTOGRAM_SIZE,
   JOB_COUNTERS,
   RUNNER_RUN_COUNTERS,
 } from "../metrics";
 
+export {
+  renderColumn,
+  renderIndex,
+  renderIndexColumn,
+} from "@kingsleyweb/bun-sql/schema";
+export type {
+  CollatedIndexColumn,
+  ColumnDefinition,
+  IndexDefinition,
+  TableDefinition,
+} from "@kingsleyweb/bun-sql/schema";
+
 /**
  * The tables, and the indexes that make the hot paths cheap.
+ *
+ * The definitions are bun-jobs'; the types they are written in, and the
+ * renderers that turn them into DDL, are bun-sql's
+ * (`@kingsleyweb/bun-sql/schema`, PR-D0b), re-exported here.
  *
  * Eleven tables rather than one per concern: `jobs`, `locks`, `kv` (runner
  * state, queue metadata and repeat definitions), `events`, `logs` (each
@@ -270,50 +293,6 @@ export const BUSYNESS_COLUMNS = [
   "active_max",
 ] as const;
 
-/** One column of a table the driver owns. */
-export interface ColumnDefinition {
-  /** The column's name. */
-  name: string;
-  /** Its type, in this dialect's spelling. */
-  type: string;
-  /** Everything after the type — `NOT NULL`, a default, a serial's keywords. */
-  suffix?: string;
-  /**
-   * Whether a sync may propose changing this column's type. Defaults to true.
-   *
-   * False for a column whose declared type is not what the engine reports
-   * back. A serial is the case: Postgres takes `BIGSERIAL PRIMARY KEY` and
-   * reports `bigint`, because `bigserial` is shorthand for a column plus a
-   * sequence plus a default rather than a type. Comparing the two strings says
-   * "different" every time, forever, and the statement it would generate is
-   * nonsense.
-   */
-  retype?: boolean;
-}
-
-/** A column of an index that is ordered in a collation other than its own. */
-export interface CollatedIndexColumn {
-  /** The column's name. */
-  name: string;
-  /** The collation, exactly as written after `COLLATE`: `"C"`, quotes included. */
-  collation: string;
-}
-
-/** One index the driver maintains. */
-export interface IndexDefinition {
-  /** The index's name, unique within the schema. */
-  name: string;
-  /** The table it is on. */
-  table: string;
-  /**
-   * The columns it covers, in order: a name, or a name with the collation the
-   * index orders it in when that is not the column's own.
-   */
-  columns: (string | CollatedIndexColumn)[];
-  /** A partial-index predicate, where the engine has them. */
-  predicate?: string;
-}
-
 /**
  * The table names a schema is rendered or compared against.
  *
@@ -345,16 +324,6 @@ export interface SchemaTableNames {
   worker_metrics?: string;
   /** A runner's analytics buckets, and the namespace's runs roll-up. */
   runner_metrics?: string;
-}
-
-/** One table the driver owns, as data rather than as a DDL string. */
-export interface TableDefinition {
-  /** The table's name, already prefixed. */
-  name: string;
-  /** Its columns, in declaration order. */
-  columns: ColumnDefinition[];
-  /** The columns of its primary key, or none for a table without one. */
-  primaryKey: string[];
 }
 
 /**
@@ -1032,36 +1001,9 @@ function buildDefinition(
   };
 }
 
-/** One column, as it appears inside a `CREATE TABLE`. */
-export function renderColumn(column: ColumnDefinition): string {
-  return `${column.name} ${column.type}${column.suffix ? ` ${column.suffix}` : ""}`;
-}
-
-/** One index column as it appears in a `CREATE INDEX`. */
-export function renderIndexColumn(
-  column: string | CollatedIndexColumn,
-): string {
-  return typeof column === "string"
-    ? column
-    : `${column.name} COLLATE ${column.collation}`;
-}
-
-/** The `CREATE INDEX` for one index definition. */
-export function renderIndex(
-  index: IndexDefinition,
-  dialect: SqlDialect,
-  concurrently = false,
-): string {
-  const where = index.predicate ? dialect.partialIndex(index.predicate) : "";
-  const how = concurrently ? dialect.concurrentIndex : "";
-
-  const ifNotExists = dialect.indexIfNotExists ? "IF NOT EXISTS " : "";
-
-  return `CREATE INDEX ${how}${ifNotExists}${index.name} ON ${index.table} (${index.columns.map(renderIndexColumn).join(", ")})${where}`;
-}
-
 /**
- * Statements creating everything, each safe to run repeatedly.
+ * Statements creating everything, each safe to run repeatedly: bun-sql's
+ * `createSchema` over bun-jobs' {@link schemaDefinition}.
  *
  * `existing` names tables that were already there, whose indexes are left
  * out. An index the driver defines on a table it did not just create is a new
@@ -1076,21 +1018,8 @@ export function createSchema(
   dialect: SqlDialect,
   existing: ReadonlySet<string> = new Set(),
 ): string[] {
-  const { tables: definitions, indexes } = schemaDefinition(tables, dialect);
-
-  return [
-    ...definitions.map((table) => {
-      const body = [
-        ...table.columns.map(renderColumn),
-        ...(table.primaryKey.length > 0
-          ? [`PRIMARY KEY (${table.primaryKey.join(", ")})`]
-          : []),
-      ].join(",\n      ");
-
-      return `CREATE TABLE IF NOT EXISTS ${table.name} (\n      ${body}\n    )`;
-    }),
-    ...indexes
-      .filter((index) => !existing.has(index.table))
-      .map((index) => renderIndex(index, dialect)),
-  ];
+  return createSharedSchema(schemaDefinition(tables, dialect), dialect, {
+    ...JOBS_SQL,
+    existing,
+  });
 }

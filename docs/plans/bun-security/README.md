@@ -2222,6 +2222,21 @@ Decisions taken here:
 
 How it is built: a real control plane on an in-memory store (agents, alerts to an email channel the demo keeps, two-person approvals, a step-up that always says yes) and the security UI from the source, on the playground's adapter; three demo services (`shop` with two instances, `accounts`, `partner-api`), each instance an engine behind `installSecurity` on an adapter that never listens, connected by `connectAgent` through the playground adapter's `fetch()` (no network); a seed at every scope (published through the approvals it needs) and one dangerous change left waiting; an attacker loop of `./testing`'s simulators and hand-made requests on fixed cadences, each kind from its own addresses. The plan's §11.6 put the engine in front of the playground's own routes; the demo services stand in for them instead, so the jobs demo's routes stay unguarded and the attacks reach the security screens only. Measured in Chrome on every screen: live data, no console error, no CSP violation (PR-X2's report).
 
+### 17.46 Added with PR-D0b, bun-jobs onto bun-sql (approved by the user, 2026-11-18)
+
+| Names | Where |
+|---|---|
+| `JOBS_SQL`, the `SqlErrorOptions` bun-jobs hands every bun-sql function that can refuse (its `configError` makes bun-jobs' `ConfigError`); reachable only through the `./lib/*` subpath | bun-jobs `lib/drivers/sql/seam.ts` |
+| bun-jobs' `SqlDialect` (exported from `.` and `./lib/drivers`) is now bun-sql's `SqlDialect` plus the claim members, so it gains bun-sql's two members `documentType` and `inetType` (§17.16); no member is removed or changed | bun-jobs `lib/drivers/sql/dialect.ts` |
+
+Decided here, within the PR's brief ("no public change"):
+
+1. Every name bun-jobs' moved modules exported stays exported from the same module (`pageCursor.ts`, `schemaSync.ts`, `sql/dialect.ts`, `sql/schema.ts`, `sql/sync.ts`, `sql/collation-guard.ts`), with the same signature: re-exported from bun-sql where bun-sql's is the same, or a thin wrapper where bun-sql's takes more (`decodePageCursor` and `detectAdapter` pass the seam, `createSchema` keeps `(tables, dialect, existing)`, `collationDriftWarning` names "the jobs tables").
+2. The collation guard keeps bun-jobs' registered slot, `@kingsleyweb/bun-jobs/collation-drift-checked`, so an older bun-jobs in the same process still shares the set.
+3. The SQLite write lock is bun-sql's single module-level one: bun-jobs' SQLite drivers share it with any other bun-sql user in the process, as they shared bun-jobs' own before.
+4. bun-sql's `__tests__/parity/` stays: its member test now asserts bun-jobs' dialect has every bun-sql member and exactly the claim members beside them. Byte parity with bun-jobs' former copy was measured once against develop's files before they were deleted (every member, claims included, every engine; schema DDL, the drift warning, page cursors and every refusal's class and message).
+5. Not moved here, left as they are: bun-jobs' own SQL connection handling (`sql-driver.ts`) and its MongoDB index sync, which bun-sql's `./connection` and `./mongo` could replace; the plan's D0b row names neither.
+
 ## 18. Findings outside this plan
 
 Found while surveying; each is reported, none fixed here.

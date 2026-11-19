@@ -166,6 +166,7 @@
       "version": "3.2.0",
       "dependencies": {
         "@kingsleyweb/bun-common": "workspace:^",
+        "@kingsleyweb/bun-sql": "workspace:^",
       },
       "devDependencies": {
         "@asyncapi/specs": "catalog:",
