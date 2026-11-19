@@ -1,5 +1,5 @@
 /**
- * The option checks every UI's server function (`jobsUi()`, `docsUi()`)
+ * The option checks every UI's server function (`jobsUi()`, `securityUi()`, `docsUi()`)
  * shares: the mount path, the theme, the layout, the CSRF header name, and the options
  * every UI takes (`title`, `middleware`, `authorize`, `dev`). Each throws the
  * caller's error ({@link ConfigFail}), so `jobsUi()` keeps throwing bun-jobs'

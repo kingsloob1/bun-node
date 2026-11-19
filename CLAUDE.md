@@ -28,7 +28,10 @@ published packages under `packages/`:
   `/jobs` is a React management UI and API docs viewer for bun-jobs'
   management API (`createJobsApi`), prebuilt into `dist/jobs/` and served by
   a `jobsUi()` router; bun-jobs is an optional peer only `/jobs` needs.
-  `/docs` is a self-hosted viewer for one OpenAPI 3.1 or AsyncAPI 3.0
+  `/security` is the management UI of bun-security's control plane
+  (`createSecurityApi`), prebuilt into `dist/security/` and served by a
+  `securityUi()` router; bun-security is an optional peer only `/security`
+  needs. `/docs` is a self-hosted viewer for one OpenAPI 3.1 or AsyncAPI 3.0
   document (`docsUi()`, under a strict self-only CSP), whose screens the jobs
   UI's docs section renders (`/docs/embed`) and whose bundle bun-common's
   `docsRouter` `"self-hosted"` viewer serves (`/docs/hosted`; bun-ui is an
@@ -1124,6 +1127,62 @@ it; `__tests__/docs/e2e/smoke.e2e.test.ts` loads it in headless Chrome, opens
 an operation and asserts no CSP violation. The `unauthorized` option's code
 is the kit's (`lib/kit/unauthorized.ts`, `lib/kit/browser/unauthorized.ts`,
 `app/kit/unauthorized.ts`), shared with `jobsUi()`.
+
+### The security UI (`/security`)
+
+**Mounting.** Beside `createSecurityApi`, each at its own `basePath`; the
+UI's must not equal or sit under the API's (`securityUi()` throws
+bun-common's `ConfigError`), while the API's may sit under the UI's (the
+UI's router leaves the API's paths to it):
+
+```ts
+import { createSecurityApi } from "@kingsleyweb/bun-security/control";
+import { securityUi } from "@kingsleyweb/bun-ui/security";
+const api = createSecurityApi({ store, authenticate, owners, stepUp, signing, audit, bans, basePath: "/admin/security-api" });
+const ui = securityUi({ api, basePath: "/admin/security" });   // or apiUrl: "...", breakGlass
+app.use(api.basePath, api.router);
+app.use(ui.basePath, ui.router);
+```
+
+**Browser safety.** `app/security/**` imports bun-security **only** from
+`@kingsleyweb/bun-security/control/contract` (types and constants, no
+runtime import). `__tests__/security/server/bundle-safety.test.ts` builds
+the real app unminified and fails on any server marker (`node:`/`bun:`
+specifiers, `Bun.serve`, `createSecurityApi`, `memoryStore`, …), with a
+negative control.
+
+**Its DOM tests**, beyond the rules above: `__tests__/security/app/dom.ts`
+binds the harness at `/security` and preloads every on-demand screen and
+analytics panel (`app/security/screens/lazy.tsx`); `renderApp.tsx` renders
+the real app over `mockApi.ts`, a fake API typed by the generated route map
+(`Routes`), whose `defaultRoutes()` grant everything unless a permission
+table is given. `mount.test.tsx` covers `mountSecurityUi` and its teardown
+under the `HandleLedger`.
+
+**E2E (PR-U6).** `__tests__/security/e2e/harness.ts` (`startHost`) serves
+the real app beside a real `createSecurityApi()` on port 0: operators from
+an `op` cookie (`alice`, `bob` for the second approver), a step-up page
+that posts back to the opener, two-person approvals, agents, and alerts to a
+loopback webhook. `a11yChecks.ts` holds the page-side checks (landmarks and
+one `h1`, names, placeholders, contrast in both themes, visible focus, no
+sideways scroll), which `a11y.e2e.test.ts` runs on every screen at 375 and
+1440 px with a planted negative control (`PLANT`); `flows.e2e.test.ts`,
+`screens.e2e.test.ts` and `smoke.e2e.test.ts` drive the flows. They skip
+visibly without Chrome.
+
+**The guide is parsed.** `guides/security.md`'s `### What each element
+needs` table is read by `examples/bun-ui/security/01-screens/permissions.ts`,
+which checks every row's gate against the API's permissions and the nav,
+with negative controls for each kind of drift. A change to a row is a
+change to that example.
+
+**The typed client.** `app/security/api/client.ts` calls the API through
+`@kingsleyweb/bun-client`, typed by `app/security/api/routes.gen.ts`:
+generated from the document a real `createSecurityApi()` serves
+(`scripts/security/routes-openapi.ts`) and committed. A bun-security change
+to a route, a schema or an error code makes it stale: `bun run gen:client`
+in bun-ui rewrites it (with the jobs UI's), and that change lands with the
+bun-security one. `bun run check:client` fails while it is stale.
 
 ## Dependency policy
 

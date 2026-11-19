@@ -2,12 +2,14 @@
 
 `securityUi()` serves the management UI of `@kingsleyweb/bun-security`'s
 control plane (`createSecurityApi()`): a React app on bun-ui's kit, mounted
-beside the API on the same adapter. Built so far: the frame, the scope
-picker, the API reference, the live updates, step-up and the break-glass
-sign-in (PR-U1 of the bun-security plan); the bans, the allow and deny
-lists and the events (PR-U3); the analytics page (PR-U2), the landing
-screen in place of U1's Overview. The screens of later parts (policy,
-approvals, audit) join the nav as they are built.
+beside the API on the same adapter, or in a page of your own
+(`mountSecurityUi`, [Mounting a UI in your
+page](../README.md#mounting-a-ui-in-your-page)). Its screens: the analytics
+page (the landing screen), services and groups, policies and their
+versions, rules and the request tester, lists, bans, events, the audit
+log, approvals, agents, alerts and the API reference (PR-U1 to PR-U6 of the
+bun-security plan), with the scope picker, the live updates, step-up and
+the break-glass sign-in.
 
 ## Install
 

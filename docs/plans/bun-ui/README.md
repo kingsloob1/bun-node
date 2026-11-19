@@ -2,8 +2,9 @@
 
 Plan for **`@kingsleyweb/bun-ui`**, one package holding every browser UI the
 repository ships, each behind its own subpath: the bun-jobs management UI at
-`/jobs`, the API-docs viewer at `/docs`, and later the bun-security management
-UI at `/security` and other UI recipes (`/auth`, `/blog`, …). It replaces
+`/jobs`, the API-docs viewer at `/docs`, the bun-security management UI at
+`/security` (built since, in the bun-security plan's U1 to U6), and later
+other UI recipes (`/auth`, `/blog`, …). It replaces
 `@kingsleyweb/bun-jobs-ui` and `@kingsleyweb/bun-api-docs-ui`. The user
 decided, on 2026-11-08:
 
@@ -39,6 +40,7 @@ standing rule).
 | This plan | **approved** by the user on 2026-11-08: Q1–Q12 (§12) answered as recommended, the names of §13 with them |
 | The two decisions above | **made by the user** (2026-11-08) |
 | [bun-security](../bun-security/README.md) | approved 2026-11-07 with a separate `@kingsleyweb/bun-security-ui`; **§7's edits applied** with this plan's approval: its UI is now bun-ui's `/security` entry |
+| Since (2026-11-19) | **BU-4** (the kit) landed; **`/security`** was built on it by the bun-security plan's U1 to U6 (its screens, e2e and accessibility pass), and every UI mounts in a host's page ([embedding.md](embedding.md), EM-1 to EM-4) |
 | Building | **BU-1 merged** (#666); **BU-2, BU-3 and BU-5 merged** (#708, #709, #710; the old packages' leftover names cleaned up in #713); released in **3.0.0-rc.1** (#712), the old two deprecated on npm. **BU-4** (the shared kit) **built** 2026-11-10, awaiting landing (§5.1) |
 
 ### Sub-plans

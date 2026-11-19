@@ -1,6 +1,6 @@
 /**
  * Custom colour themes (#779): the `theme` option's object form, shared by
- * every UI (`jobsUi()`, `docsUi()`, and bun-common's `docsRouter`
+ * every UI (`jobsUi()`, `securityUi()`, `docsUi()`, and bun-common's `docsRouter`
  * `"self-hosted"` viewer through `/docs/hosted`).
  *
  * ```ts
