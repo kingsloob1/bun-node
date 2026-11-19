@@ -140,16 +140,36 @@ ui.unmount();
 
 ## 4. Style scoping
 
-- **Every rule under the UI's root.** The mount build's stylesheet is the
-  shell's with each selector prefixed by `[data-bun-ui="jobs"]` (and `:root`
-  tokens moved onto that element): a small build step over the CSS
-  (`scripts/scope-css.ts`, Bun's CSS parser via `Bun.build`'s CSS loader, or
-  a hand-written selector rewrite over the three kit files, which use no
-  nesting beyond what the rewrite handles). `base.css`'s `html`/`body` rules
-  become rules on the root; `*` becomes `[data-bun-ui] *`.
-- **Cascade layers.** The scoped stylesheet sits in
-  `@layer bun-ui.<ui>`, so a host's unlayered rules win where they target the
-  UI on purpose, and the UI's rules never reach outside its root.
+- **Every rule under the UI's root.** The mount stylesheet is the page's own
+  built entry stylesheet (which holds every rule, lazy screens' included)
+  rewritten by the kit (`lib/kit/scopeCss.ts`, internal): each selector
+  prefixed by `[data-bun-ui="jobs"]`; `:root`, `html` and `body` become the
+  root itself; `*` becomes the root and `[data-bun-ui="jobs"] *`. Made from
+  the very file the page links, so the two cannot drift, and the page's
+  build is untouched (EM-2).
+- **A guard, not a cascade layer** (decision 3, revised): the stylesheet
+  opens with `[data-bun-ui="<ui>"]{all:initial;display:block}` (the root
+  inherits nothing from the host) and `[data-bun-ui="<ui>"]
+  *:where(:not(svg,svg *))` with `::before`/`::after` `{all:revert}` (every
+  element inside back to the browser's styles), then the UI's rules,
+  unlayered. A host's universal and element rules do not reach in; a host
+  rule more specific than the guard (`.card p` around the root) still does.
+  A host overrides on purpose with a selector at least as specific as ours
+  (`[data-bun-ui="jobs"] .btn`) linked after the mount stylesheet, or with
+  the theme's custom properties on the root. SVG is left out of the guard,
+  which would drop its presentation attributes.
+- **Keyframes are renamed** `bun-ui-<ui>-<name>`, with the `animation` and
+  `animation-name` declarations using them: a keyframes name is global, the
+  last stylesheet defining it winning, so a host's `spin` would replace the
+  UI's.
+- **`rem` is the reader's size** (decision 12): every `Nrem` in a declaration
+  becomes `calc(N*var(--bun-ui-rem,16px))`, so a host's `<html>` font size
+  (`62.5%`) does not scale the UI; EM-3's mount sets `--bun-ui-rem` on the
+  root from a probe at `font-size: medium`. Media queries keep `rem`.
+- **The root is the UI's own element** (decision 13): the mount functions
+  create `<div data-bun-ui="<ui>">` inside the host's element and render into
+  it, so the root guard's `all: initial` never touches an element the host
+  styles.
 - **No portals today**: the kit's dialogs are the native `<dialog>`
   (`showModal()`, `app/kit/components/Dialog.tsx:62`, the top layer, but in
   the root's DOM, so the scoped styles reach them) and nothing calls
@@ -248,8 +268,8 @@ ui.unmount();
 | PR | What | Estimate |
 |---|---|---|
 | EM-1 | kit: `MountOptions`, `shell`, root-scoped theme and layout, the generalised `HandleLedger`; sections moved to the contract entries with `sectionsFor` | ~2 d |
-| EM-2 | the scoped stylesheet build (prefix, layer), the mount entries' builds (prebuilt and in-memory), `exports`, the router's `/mount.js`; budget, tree-shaking and isolation rows | ~2 d |
-| EM-3 | `mountJobsUi`, `mountSecurityUi`, `mountDocsUi`; DOM and unmount tests | ~2 d |
+| EM-2 | the `chrome` → `shell` rename (decision 9); the mount stylesheet: the kit's scoping (prefix, guard, keyframes), emitted beside the page's in `dist/` and in memory, `exports["./<ui>/mount.css"]`, the escape checker and the Chrome measurement | ~2 d |
+| EM-3 | `mountJobsUi`, `mountSecurityUi`, `mountDocsUi`; the mount entries' builds (prebuilt and in-memory), `exports["./<ui>/mount"]`, the routers' `/mount.js` and `/mount.css`, `xxxUiMountTags()`; budget, tree-shaking and isolation rows; DOM and unmount tests | ~2 d |
 | EM-4 | the Chrome host-shell e2e per UI, the guide sections, the playground page | ~1.5 d |
 
 Later: a shared-React variant of the mount entries (the host's React as a
@@ -263,13 +283,15 @@ peer), if a host asks.
 | `MountOptions` (`shell`, `theme`, `layout`, `headers`, `credentials`, `onNavigate`, `onUnauthorized`, `themeSource`); `shell: "full" \| "tabs" \| "none"`; `theme: "inherit"` | the kit (`lib/kit/browser/mount.ts`) |
 | `JOBS_SECTIONS`, `SECURITY_SECTIONS`, `DOCS_SECTIONS` (`{ id, label, path, needs }`), `UiSection`, `sectionsFor(sections, can)` | `/<ui>/browser`, the kit |
 | the stylesheets `/<ui>/mount.css`; the routers' `/mount.js`, `/mount.css`; `jobsUiMountTags()` (and per UI) | `/<ui>/mount`, each `xxxUi()` router |
-| the root attribute `data-bun-ui="<ui>"`, the layer `bun-ui.<ui>`, the portal container `data-bun-ui-portal` (for later) | the DOM |
+| the root attribute `data-bun-ui="<ui>"` (on an element the UI creates inside the host's, decision 13), the portal container `data-bun-ui-portal` (for later) | the DOM |
 | Added in EM-1 (approved by the user, 2026-11-18): `UI_SHELLS`, `DEFAULT_PAGE_SHELL`, `DEFAULT_MOUNT_SHELL`, `DEFAULT_MOUNT_LAYOUT`; `UiShell`, `MountTheme`, `MountLayout`, `MountLayoutOptions`, `SectionPermission`; `isUiShell`, `resolveMountTheme`, `resolveMountLayout` | the kit (`lib/kit/browser/`), each `/<ui>/browser` |
 | Added in EM-1 (approved by the user, 2026-11-18): `resolveShell` (server), `FrameBar`, `clearLayout(root)`, `useUiRoot()` (app) | `lib/kit/options.ts`, `app/kit/` |
 
 The option was built in EM-1 as `chrome` (`UiChrome`, `UI_CHROMES`,
 `isUiChrome`, `resolveChrome`, `DEFAULT_SHELL_CHROME`, `DEFAULT_MOUNT_CHROME`,
-`data-chrome`) and renamed before any release (decision 9 below).
+`data-chrome`) and renamed before any release (decision 9 below). The layer
+name `bun-ui.<ui>` was dropped with decision 3's revision: the CSS spec ranks
+a host's unlayered rules above every layer, measured in Chrome.
 
 ## 12. Decisions (the five recommendations, accepted by the user, 2026-11-18)
 
@@ -279,9 +301,19 @@ The option was built in EM-1 as `chrome` (`UiChrome`, `UI_CHROMES`,
 2. **Bundle React in the mount build, or take the host's?** Recommended:
    bundle it first (no version coupling, works for a non-React host); a
    shared-React variant later on request.
-3. **Scoped CSS with a prefix and a layer, or Shadow DOM?** Recommended: the
-   prefix and layer (the host can theme it; the docs' anchors and the
-   dialogs work); Shadow DOM rejected for those reasons.
+3. **Scoped CSS with a prefix and a guard, not a layer, and not Shadow DOM**
+   (the user's decision, 2026-11-18, replacing the accepted "prefix and
+   layer"). Measured in headless Chrome against a host with `*{font:20px
+   serif} button{background:red}`: in `@layer bun-ui.<ui>` the UI lost every
+   property to the host (the spec ranks unlayered rules above every layer,
+   whatever their specificity); unlayered with the prefix alone, its own
+   rules won but inherited ones leaked; unlayered after an `all: revert`
+   guard, nothing leaked. So the rules are unlayered, prefixed, after the
+   guard (§4). A host overrides on purpose with a selector at least as
+   specific as the UI's, or the theme's custom properties on the root; a
+   host rule more specific than the guard around the root still reaches in.
+   Shadow DOM stays rejected (the host could not theme it; the docs'
+   anchors).
 4. **The default `shell` when mounted**: recommended `"none"` (the user's
    picture: the host's side menu is the nav), with `"tabs"` one option away.
 5. **History**: recommended the UI pushes history by default and `onNavigate`
@@ -314,6 +346,32 @@ The option was built in EM-1 as `chrome` (`UiChrome`, `UI_CHROMES`,
    `isUiShell`, `resolveShell`, `DEFAULT_PAGE_SHELL`, `DEFAULT_MOUNT_SHELL`,
    each UI's config field, `.app[data-shell]`). It was never published, so
    there is no alias for the old name. `FrameBar` keeps its name.
+
+### Decided while building EM-2
+
+10. **The scope moved** (the coordinator's decision, 2026-11-18): EM-2 ships
+    the mount stylesheet, EM-3 the JavaScript (the mount functions, their
+    builds, `exports["./<ui>/mount"]`, the routers' `/mount.js` and
+    `/mount.css`, the tags helpers), so nothing ships as a stub (§10).
+11. **Keyframes are prefixed** `bun-ui-<ui>-<name>` in the mount stylesheet,
+    `animation` and `animation-name` rewritten with them (the
+    coordinator's decision, 2026-11-18; §4).
+
+12. **`rem` follows the reader** (the user's decision, 2026-11-18, option
+    (iii) of three). Measured in Chrome: under a host with `* { font: 20px
+    serif }`, 15px text became 18.75px, since the kit sizes in `rem`. Keeping
+    `rem` (the UI scales with the host's root) and rewriting it to a fixed
+    16px (immune, but deaf to the reader's default size) were the other two.
+    The mount stylesheet rewrites `Nrem` to `calc(N*var(--bun-ui-rem,16px))`;
+    EM-3's mount sets `--bun-ui-rem` once from a probe at `font-size: medium`,
+    so a reader's larger default size is honoured.
+13. **The mount functions create the root** (the user's decision,
+    2026-11-18): `<div data-bun-ui="<ui>">` inside the host's element, which
+    stays exactly as the host styled it; `unmount()` removes the div. The
+    root starts from `all: initial` (as a block), and the page's `body` rules
+    then set its font, colour and background, so nothing it would inherit
+    from the host reaches the UI (measured: the host's `* { letter-spacing }`
+    did, before).
 
 EM-1 also makes `shell` a kit option like `layout`: `resolveShell` in
 `lib/kit/options.ts`, taken by every `xxxUi()` (default `"full"`) and carried

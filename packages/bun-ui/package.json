@@ -31,6 +31,7 @@
       "types": "./dts/jobs/browser/index.d.ts",
       "default": "./lib/jobs/browser/index.ts"
     },
+    "./jobs/mount.css": "./dist/jobs/mount.css",
     "./security": {
       "@kingsleyweb/source": "./lib/security/index.ts",
       "types": "./dts/security/index.d.ts",
@@ -41,6 +42,7 @@
       "types": "./dts/security/browser/index.d.ts",
       "default": "./lib/security/browser/index.ts"
     },
+    "./security/mount.css": "./dist/security/mount.css",
     "./docs": {
       "@kingsleyweb/source": "./lib/docs/index.ts",
       "types": "./dts/docs/index.d.ts",
@@ -51,6 +53,7 @@
       "types": "./dts/docs/browser/index.d.ts",
       "default": "./lib/docs/browser/index.ts"
     },
+    "./docs/mount.css": "./dist/docs/mount.css",
     "./docs/hosted": {
       "@kingsleyweb/source": "./lib/docs/hosted.ts",
       "types": "./dts/docs/hosted.d.ts",
@@ -171,7 +174,7 @@
   },
   "scripts": {
     "build": "bun scripts/build.ts",
-    "build:types": "bun scripts/build-declarations.ts",
+    "build:types": "bun scripts/build.ts --mount-css && bun scripts/build-declarations.ts",
     "prepack": "bun scripts/build.ts && bun scripts/build-declarations.ts",
     "test": "bun test --check --parallel --timings=bun-timings.json",
     "test:serial": "bun test --check",

@@ -116,6 +116,15 @@ describe("package.json exports", () => {
     }
   });
 
+  it("exports each UI's mount stylesheet from its dist/ (embedding.md §4)", () => {
+    for (const ui of ["jobs", "security", "docs"]) {
+      expect(manifest.exports[`./${ui}/mount.css`]).toBe(
+        `./dist/${ui}/mount.css`,
+      );
+    }
+    expect(manifest.files).toContain("dist");
+  });
+
   it("keeps main on the source and types on the declarations, both published", () => {
     expect(manifest.main).toBe("lib/index.ts");
     expect(manifest.types).toBe("dts/index.d.ts");
@@ -311,8 +320,11 @@ describe("this package's peers and the browser bundle", () => {
     );
     expect(manifest.scripts.prepack).toContain("scripts/build.ts");
     expect(manifest.scripts.prepack).toContain("scripts/build-declarations.ts");
+    // `build:types` stands alone: it writes the mount stylesheets the
+    // `./<ui>/mount.css` exports name first, since the verify step needs
+    // every export target to exist (embedding.md §4).
     expect(manifest.scripts["build:types"]).toBe(
-      "bun scripts/build-declarations.ts",
+      "bun scripts/build.ts --mount-css && bun scripts/build-declarations.ts",
     );
   });
 

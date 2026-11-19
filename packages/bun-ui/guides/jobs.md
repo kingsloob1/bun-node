@@ -1101,3 +1101,12 @@ The published package includes the prebuilt, content-hashed bundle in
 each file's SRI digest). `jobsUi()` serves it as it is: there is nothing to
 build. Leave the `dev` option unset: it builds the app from source, which the
 package does not ship.
+
+### Styling it when mounted
+
+A page that mounts the UI in its own layout links its mount stylesheet
+(`@kingsleyweb/bun-ui/jobs/mount.css`). It keeps the host's global rules
+out and its own rules in; to restyle it on purpose, set the theme's custom
+properties on `[data-bun-ui="jobs"]`, or write a selector at least as
+specific as the UI's (`[data-bun-ui="jobs"] .btn`) in a stylesheet linked
+after it. See [The mount stylesheet](../README.md#the-mount-stylesheet).

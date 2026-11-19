@@ -411,6 +411,15 @@ draft changed meanwhile, bans, lists, rules and testing a request, a second
 operator's approval, agents, alert channels and rules, paging events while
 they arrive) run end to end in `flows.e2e.test.ts`.
 
+## Styling it when mounted
+
+A page that mounts the UI in its own layout links its mount stylesheet
+(`@kingsleyweb/bun-ui/security/mount.css`). It keeps the host's global rules
+out and its own rules in; to restyle it on purpose, set the theme's custom
+properties on `[data-bun-ui="security"]`, or write a selector at least as
+specific as the UI's (`[data-bun-ui="security"] .btn`) in a stylesheet linked
+after it. See [The mount stylesheet](../README.md#the-mount-stylesheet).
+
 ## Testing without a socket
 
 `ui.router.fetch("/")` serves the shell, as every bun-ui router does.

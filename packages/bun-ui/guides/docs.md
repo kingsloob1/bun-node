@@ -115,6 +115,15 @@ The WebSocket reference's "try it" links and permission markers of
 the jobs UI's Events console are jobs-specific and are not part
 of this standalone viewer.
 
+## Styling it when mounted
+
+A page that mounts the UI in its own layout links its mount stylesheet
+(`@kingsleyweb/bun-ui/docs/mount.css`). It keeps the host's global rules
+out and its own rules in; to restyle it on purpose, set the theme's custom
+properties on `[data-bun-ui="docs"]`, or write a selector at least as
+specific as the UI's (`[data-bun-ui="docs"] .btn`) in a stylesheet linked
+after it. See [The mount stylesheet](../README.md#the-mount-stylesheet).
+
 ## Embedding the screens (`./docs/embed`)
 
 `docsUi()` needs nothing beyond this package: React and TanStack Query are
