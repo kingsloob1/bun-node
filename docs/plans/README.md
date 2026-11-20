@@ -52,6 +52,7 @@ plan you are about to work on.
 | [`bun-ui/`](bun-ui/README.md) | BU-1 #666, BU-2 #708, BU-3 #709 and BU-5 #710 merged (the old names cleaned up in #713), released in 3.0.0-rc.1 (#712); BU-4 (the shared kit) built 2026-11-10, awaiting landing | landing BU-4; bun-security's PR-U1 builds on it | its Status |
 | [`bun-security/`](bun-security/README.md) | approved 2026-11-07; its foundations merged: trustProxy #653, the throttle T1 to T3 #654 to #656; verified crawlers (layers.md L3.2, PR-S12) added 2026-11-10, Q29 to Q31 answered; M1 started 2026-11-15, PR-S1 (package and core) built on `feat/bun-security-s1`, not merged | M1: landing PR-S1, then P2, P3, P4, D0 beside it, S2 after it | its Status |
 | [`opentelemetry/`](opentelemetry/README.md) | plan only | **held** (the user's decision) | the plan |
+| [`bun-auth/`](bun-auth/README.md) | plan approved 2026-11-20 (names §15, all fourteen recommendations §16); nothing built | PR-A0 (bun-common `req.webRequest()`), then A1 | the plan, §14 |
 
 **Held** means the user has not scheduled it, not that it is blocked. The
 user's order (2026-10-17): Nest 12 parity, then BunValidate complete and
@@ -250,6 +251,24 @@ blindly.
     normalises request targets on raw sockets and which limits it enforces
     below the handler, a duplicate-`Host` reproduction, and the signing
     primitives (Ed25519, HMAC).
+- **[`bun-auth/`](bun-auth/README.md)** — `@kingsleyweb/bun-auth` (plan
+  only, written 2026-11-20; names and open questions await the user): a
+  wrapper around better-auth, a peer the app configures itself. It covers
+  mounting on `Bun.serve`, bun-common and bun-nest (the body hand-over and the
+  resolved client address), a typed session on the request, bun-nest's
+  `./auth`, a typed client from better-auth's OpenAPI document, bun-security
+  (sessions as operators, step-up, the sign-in profiles, one limiter),
+  `authorize` for the jobs and security APIs and UIs, an opt-in
+  `Bun.password`, and a version matrix.
+  - [`sql-adapter.md`](bun-auth/sql-adapter.md) — a better-auth database
+    adapter on bun-sql, across Postgres, MySQL, MariaDB and SQLite.
+  - Evidence: [`bun-auth/evidence/`](bun-auth/evidence/README.md) — on Bun
+    1.4.5-canary.1+862278db7, better-auth 1.6.35, 1.7.27 and 1.8.0-beta.10:
+    install size and dependency tree, telemetry read and run, the handler
+    on `Bun.serve`, bun-common and bun-nest, internal errors, its rate
+    limiter's defaults and keying, the password hook, the adapter API, the
+    plugins and the `open-api` document through `bun-client generate`, and
+    version drift.
 - **[`bun-ui/`](bun-ui/README.md)** — `@kingsleyweb/bun-ui` (approved
   2026-11-08, all open questions answered as recommended; BU-1, BU-2, BU-3 and BU-5
   merged, #666 and #708 to #710, and released in 3.0.0-rc.1; BU-4, the
