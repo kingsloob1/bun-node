@@ -1,6 +1,6 @@
 # bun-auth: better-auth on bun-node — plan
 
-Status: **approved by the user (2026-11-20)**: the names in §15 and the recommendations of all fourteen questions in §16. Nothing built yet. Written 2026-11-20 against `develop` at
+Status: **approved by the user (2026-11-20)**: the names in §15 and the recommendations of all fourteen questions in §16. PR-A0 (`req.webRequest()`) is built; nothing else yet. Written 2026-11-20 against `develop` at
 `52082313`, Bun 1.4.5-canary.1+862278db7 on linux-x64, with better-auth
 1.7.27 (`latest`), 1.6.35 (`release-1.6`) and 1.8.0-beta.10 (`beta`).
 
@@ -12,7 +12,7 @@ re-exports it.
 
 Everything below marked **measured** was run on this machine for this plan.
 The spikes and their numbers are in [`evidence/`](evidence/README.md) (E1 to
-E13). Everything marked **assumed** was not run. A sub-plan,
+E14). Everything marked **assumed** was not run. A sub-plan,
 [`sql-adapter.md`](sql-adapter.md), covers the bun-sql database adapter.
 
 ## Contents
@@ -246,11 +246,41 @@ its adapter. The plan (Q2) is a small bun-common addition, `req.webRequest()`
 
 bun-auth uses it, and bun-security's route stage can then read a sign-in
 body without stealing it ([§8.3](#83-sign-in-protection-on-better-auths-routes)).
-`mountAuth` turns on `retainBuffer` for its own prefix with
-`requestParsing`, so the bytes are exact there. Measured: a `use` middleware
-under `deferBody` runs before the read. That `requestParsing` with
-`retainBuffer` keeps the bytes for the prefix is **assumed**; PR-A0 measures
-it.
+Measured: a `use` middleware under `deferBody` runs before the read.
+
+**Built in PR-A0 (measured, E14).** `req.webRequest()` answers:
+- an unread body (`deferBody`, `parseBody: false`) as a `clone()` of
+  `req.request`, so the original stays readable for `req.body`;
+- a body read with its bytes as a request rebuilt from them (`req.buffer`);
+  a `Content-Encoding` body as its decoded bytes, the header dropped;
+- a body read without them as a request rebuilt from the value parsed then,
+  in its content type;
+- no body (`GET`, `HEAD`, none sent) as the original itself, or a copy
+  without one.
+
+The marker is `webRequestSource(request)`: `"original"`, `"retained"`,
+`"decoded"`, `"parsed"` or `"none"`, kept in a `WeakMap`, so the `Request`
+is not changed, and a copy of it reads `undefined`. Each call answers a new
+unread `Request` and reads nothing. It throws a `TypeError` when the body was
+consumed with nothing kept (through `req.request` directly, or while a read
+is still in progress).
+
+**The prefix assumption held only in part (E14).** `requestParsing({
+retainBuffer: true })` keeps the bytes for its prefix only when the body is
+still unread when it runs, which needs `deferBody`. An adapter with
+`retainBuffer: false` and no `deferBody` has read a JSON, form, text or XML
+body without its bytes before any middleware, so the middleware is too late
+and `webRequest()` answers `"parsed"`. The adapter's default keeps every
+body's bytes, so `"retained"` is the usual answer. Proposed for PR-A1 (not
+yet decided):
+- `mountAuth` still installs `requestParsing({ retainBuffer: true })` on its
+  prefix: it makes the bytes exact under `deferBody`, and costs nothing
+  otherwise;
+- better-auth reads a `"parsed"` JSON or form body correctly (E14: the
+  stand-in handler passed), so `mountAuth` accepts it, and warns once at start
+  when the adapter has `retainBuffer: false` without `deferBody`;
+- a caller that needs the exact bytes (a signature over the body) refuses
+  `"parsed"` itself.
 
 ### 4.2 The client address
 
@@ -539,6 +569,7 @@ A2 to A8 can run side by side once A1 lands.
 | `bunPassword({ algorithm?, onLegacyHash? })` | `./password` |
 | `createAuthClient({ baseUrl, fetch? })`; type `AuthRoutes` | `./client` |
 | `req.webRequest()` | bun-common `BunRequest` |
+| `webRequestSource(request)`; type `WebRequestSource` (`"original" \| "retained" \| "decoded" \| "parsed" \| "none"`): added in PR-A0, approved by the user (2026-11-26) | bun-common `.` |
 | `AuthModule.forRoot({ auth, global? })`, `AuthGuard`, `@Session()`, `@CurrentUser()`, `@AllowAnonymous()`, `@RequireRoles(...)`, `@InjectAuth()`, the `AUTH` token | bun-nest `./auth` |
 | `scripts/better-auth-matrix.ts` (`--prepare`, `--run`, `--list`, `--dir`) | repository |
 | `examples/bun-auth/` | repository |

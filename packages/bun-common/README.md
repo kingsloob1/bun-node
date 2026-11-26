@@ -1689,6 +1689,40 @@ What such a read does not give back is the bytes:
 Keep the bytes to verify a signature over the raw body; bun-nest turns
 `retainBuffer` on when the app is created with `rawBody: true`.
 
+**Handing the body to a Fetch API handler (`req.webRequest()`).** A handler
+written against the Fetch API, `(request: Request) => Promise<Response>`
+(better-auth's, a Hono app's), reads the body itself, and `req.request` has
+usually been read already (`Body already used`). `req.webRequest()` answers a
+`Request` carrying the body as received, and never reads it:
+
+```ts
+import { webRequestSource } from "@kingsleyweb/bun-common";
+
+app.use("/api/auth", async (req, res) => {
+  const request = req.webRequest();
+  res.send(await auth.handler(request));
+});
+```
+
+| What is left of the body | `webRequest()` answers | `webRequestSource()` |
+|---|---|---|
+| unread (`deferBody`, `parseBody: false`) | a `clone()` of `req.request`, which stays readable | `"original"` |
+| read with its bytes (the default) | a request rebuilt from `req.buffer` | `"retained"` |
+| the same, with a `Content-Encoding` | rebuilt from the decoded bytes, the header dropped | `"decoded"` |
+| read without them (`retainBuffer: false`) | rebuilt from the value parsed then, in its content type, not byte for byte | `"parsed"` |
+| none (`GET`, `HEAD`, none sent) | `req.request` itself, or a copy without a body | `"none"` |
+
+A rebuilt request keeps the URL, the method, the headers (with
+`Content-Length` set to the body sent) and the abort signal. Every call
+answers a new request, so `req.body` and a later deferred read work as before.
+`webRequestSource()` reads `undefined` for any other `Request`, a copy of one
+included. A caller that needs the exact bytes, such as a signature check,
+refuses `"parsed"`. `requestParsing({ retainBuffer: true })` on a prefix makes
+the bytes exact there only for a body still unread, so only with the adapter's
+`deferBody`. `webRequest()` throws a `TypeError` when the body was consumed
+with nothing kept: read through `req.request` directly, or still being read
+(await `req.ready()` first).
+
 **How the body is read.** When nothing has to be enforced while the body
 streams — no cap, or a `Content-Length` within it and no `Transfer-Encoding` —
 the request reads it in one native `arrayBuffer()` call and parses it
