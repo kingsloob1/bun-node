@@ -176,6 +176,8 @@ identifier in the wrong collation), so a dry run is a plan.
 
 **It only drops indexes it named**: names starting `ix_`, the convention a
 driver names its own indexes by. An index added by hand is never touched.
+Every table the definition lists is read, so a table whose last `ix_` index
+left the definition still has it dropped.
 
 On MySQL and MariaDB an identifier column in a case-insensitive collation is
 a correctness problem, not a storage one. `collationDrift` lists such columns
