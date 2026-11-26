@@ -221,6 +221,10 @@ await withLockRetry(() => sql.unsafe("UPDATE …"));
 
 - A connection is a URL or fields (`{ connection: { host, port, user,
   password, database, tls, params, hosts } }`); a URL wins when both are given.
+- **SQLite** takes every form `detectAdapter` calls SQLite: a bare path
+  (`/data/app.sqlite`, `./app.sqlite`), `sqlite://`, `file:` and
+  `:memory:`. `sqlClientOptions` names the adapter for it (`{ adapter:
+  "sqlite", url }`), since Bun reads a URL with no scheme as Postgres.
 - **MySQL's `allowPublicKeyRetrieval`**: Bun ignores it in a URL and honours
   it only as a client option, so `sqlClientOptions` takes the URL parameter
   out and passes it as the option. Nothing authenticates the key the server

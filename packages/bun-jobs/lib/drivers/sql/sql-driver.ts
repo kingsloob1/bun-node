@@ -1274,7 +1274,8 @@ const DEFAULT_PORTS: Record<SqlAdapter, number> = {
  * wins, as it does for everything else. Bun's client ignores the parameter
  * in a URL, so it is taken out and passed as the client option it has to be.
  * Every other parameter, `ssl`/`tls`/`sslmode` included, stays in the URL for
- * the client to read.
+ * the client to read. On SQLite the adapter is passed as well, so a bare
+ * file path is not read as a Postgres URL.
  */
 function openSqlClient(
   adapter: SqlAdapter,
@@ -1296,6 +1297,12 @@ function openSqlClient(
     "The SQL driver",
   );
 
+  // SQLite names its adapter: Bun reads a URL with no scheme as Postgres,
+  // so a bare path (`/data/jobs.sqlite`, `./jobs.sqlite`), which
+  // `detectAdapter` calls SQLite, opened a Postgres client (#886).
+  if (adapter === "sqlite") {
+    return new BunSQL({ adapter, filename: resolved, ...limits });
+  }
   if (adapter !== "mysql" && adapter !== "mariadb") {
     return new BunSQL({ url: resolved, ...limits });
   }

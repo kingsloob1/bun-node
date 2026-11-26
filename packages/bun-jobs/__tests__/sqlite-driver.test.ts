@@ -63,6 +63,30 @@ describe("SQL driver: dialect", () => {
     expect(() => detectAdapter(undefined)).toThrow(/needs a url/);
   });
 
+  it("connects to a bare file path, which it calls SQLite (#886)", async () => {
+    const tmp = await makeTmpDir("bun-jobs-sqlite");
+    cleanups.push(tmp.cleanup);
+    // Bun alone reads a URL with no scheme as Postgres.
+    const path = join(tmp.path, "bare.db");
+    const driver = new SqlDriver({ url: path });
+    expect(driver.adapter).toBe("sqlite");
+    await driver.connect();
+    await driver.close();
+    const db = new Database(path, { readonly: true });
+    try {
+      // The driver's schema is in the file named.
+      expect(
+        db
+          .query(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'bun_jobs_jobs'",
+          )
+          .all(),
+      ).toEqual([{ name: "bun_jobs_jobs" }]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("describes what SQLite can and cannot do", async () => {
     const driver = await makeDriver();
 

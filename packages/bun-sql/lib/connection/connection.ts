@@ -236,9 +236,16 @@ const DEFAULT_PORTS: Record<SqlAdapter, number | undefined> = {
 };
 
 /**
- * What `new SQL(...)` receives for a connection: the URL, and on MySQL and
- * MariaDB the `allowPublicKeyRetrieval` option taken out of it. Pure, so the
- * drift test can compare it with bun-jobs' handling without a server.
+ * What `new SQL(...)` receives for a connection: the URL, on SQLite the
+ * adapter, and on MySQL and MariaDB the `allowPublicKeyRetrieval` option
+ * taken out of it. Pure, so the drift test can compare it with bun-jobs'
+ * handling without a server.
+ *
+ * SQLite names its adapter because Bun reads a URL with no scheme as
+ * Postgres: a bare path (`/data/app.sqlite`, `./app.sqlite`), which
+ * `detectAdapter` calls SQLite, opened a Postgres client (#886). With the
+ * adapter named, Bun reads a bare path, `sqlite://`, `file:` and `:memory:`
+ * alike. The server engines' URLs name their engine, and are left to it.
  *
  * On MySQL and MariaDB, `allowPublicKeyRetrieval` comes from the URL's query
  * parameter or, for a connection given as fields, from that field — the URL
@@ -255,7 +262,14 @@ export function sqlClientOptions(
   input: ConnectionInput,
   what: string,
   options?: SqlErrorOptions,
-): { url: string; allowPublicKeyRetrieval?: boolean } {
+): {
+  /** `"sqlite"` for SQLite, so the client does not infer Postgres from a bare path; absent for the server engines, whose URL names them. */
+  adapter?: "sqlite";
+  /** The connection URL, or a SQLite file path or `:memory:`, as resolved. */
+  url: string;
+  /** MySQL and MariaDB only: taken out of the URL (Bun ignores it there) or from the connection fields. */
+  allowPublicKeyRetrieval?: boolean;
+} {
   const resolved = resolveConnectionUrl(
     input,
     { scheme: adapter, host: "127.0.0.1", port: DEFAULT_PORTS[adapter] },
@@ -263,6 +277,9 @@ export function sqlClientOptions(
     options,
   );
 
+  if (adapter === "sqlite") {
+    return { adapter, url: resolved };
+  }
   if (adapter !== "mysql" && adapter !== "mariadb") {
     return { url: resolved };
   }
