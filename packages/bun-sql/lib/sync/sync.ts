@@ -12,7 +12,12 @@ import type {
   SyncBackend,
 } from "./types";
 import { declaredCollation } from "../dialect/dialect";
-import { renderColumn, renderIndex, renderIndexColumn } from "../schema/schema";
+import {
+  identifierQuoter,
+  renderColumn,
+  renderIndex,
+  renderIndexColumn,
+} from "../schema/schema";
 
 /** An index as the SQL dialects describe it: the shared row plus its columns. */
 interface IndexRow extends BaseIndexRow {
@@ -21,6 +26,13 @@ interface IndexRow extends BaseIndexRow {
    * renders no definition (MySQL, MariaDB); `null` elsewhere.
    */
   columns: string | null;
+  /** Whether it is a unique index: a boolean, or `1`/`0` as the engine returns one. */
+  uniq: boolean | number | string | null;
+}
+
+/** Whether the database reports an index as unique, which a sync never drops (#889). */
+function isUniqueRow(row: IndexRow): boolean {
+  return row.uniq === true || Number(row.uniq) === 1;
 }
 
 /**
@@ -100,7 +112,9 @@ function hasPredicate(definition: string): boolean {
  * sides are spelled alike.
  */
 function collatedPhrases(definition: string): string[] {
-  return [...definition.matchAll(/(\w+)\s+COLLATE\s+("[^"]+"|[\w.-]+)/gi)]
+  return [
+    ...definition.matchAll(/["`]?(\w+)["`]?\s+COLLATE\s+("[^"]+"|[\w.-]+)/gi),
+  ]
     .map((match) => `${match[1]} collate ${match[2].replace(/"/g, "")}`)
     .map((phrase) => phrase.toLowerCase())
     .sort();
@@ -130,6 +144,9 @@ export async function syncSqlSchema(
   // them: a change's `statement` stays the one-column form, which is what a
   // dry run reports and what a caller can run by hand.
   const alterations = new Map<SchemaChange, AlterColumn>();
+  // Names in statements: quoted under `quoteIdentifiers`. The catalog is
+  // asked about, and matched by, the names as given.
+  const quote = identifierQuoter(dialect, options.quoteIdentifiers);
 
   const columnsByTable = await readColumns(
     backend,
@@ -156,7 +173,10 @@ export async function syncSqlSchema(
           kind: "add-column",
           table: table.name,
           target: column.name,
-          statement: dialect.addColumn(table.name, renderColumn(column)),
+          statement: dialect.addColumn(
+            quote(table.name),
+            renderColumn(column, { quote }),
+          ),
           reason: "the driver defines it and the table does not have it",
           blocking: false,
           applied: false,
@@ -174,8 +194,8 @@ export async function syncSqlSchema(
       }
 
       const statement = dialect.alterColumnType(
-        table.name,
-        column.name,
+        quote(table.name),
+        quote(column.name),
         column.type,
         column.suffix,
       );
@@ -195,7 +215,7 @@ export async function syncSqlSchema(
         };
         changes.push(change);
         alterations.set(change, {
-          column: column.name,
+          column: quote(column.name),
           type: column.type,
           suffix: column.suffix,
         });
@@ -230,7 +250,7 @@ export async function syncSqlSchema(
           kind: "create-index",
           table,
           target: index.name,
-          statement: renderIndex(index, dialect, true),
+          statement: renderIndex(index, dialect, true, { quote }),
           reason: "the driver defines it and the table does not have it",
           blocking: indexBuildBlocks(dialect),
           applied: false,
@@ -259,23 +279,34 @@ export async function syncSqlSchema(
       const collationDrift =
         definitionText !== "" &&
         collatedPhrases(definitionText).join(",") !==
-          collatedPhrases(index.columns.map(renderIndexColumn).join(", ")).join(
-            ",",
-          );
+          collatedPhrases(
+            index.columns.map((column) => renderIndexColumn(column)).join(", "),
+          ).join(",");
 
-      if (predicateDrift || collationDrift || columnDrift) {
+      // A unique index is never dropped by a sync: rebuilding one is a
+      // deliberate migration (#889). One the driver now defines unique and
+      // the table has plain is rebuilt unique: the plain one may go.
+      const foundUnique = isUniqueRow(found);
+      const uniqueDrift = index.unique === true && !foundUnique;
+
+      if (
+        !foundUnique &&
+        (predicateDrift || collationDrift || columnDrift || uniqueDrift)
+      ) {
         changes.push({
           kind: "drop-index",
           table,
           target: index.name,
-          statement: dialect.dropIndex(index.name, table),
-          reason: predicateDrift
-            ? wantsPredicate
-              ? "indexes every row where the driver would index only the relevant ones"
-              : "is partial where the driver would index every row"
-            : columnDrift
-              ? `covers (${String(found.columns)}) where the driver defines (${wantedColumns})`
-              : "orders its columns in a collation the driver does not define",
+          statement: dialect.dropIndex(index.name, quote(table)),
+          reason: uniqueDrift
+            ? "is not unique where the driver defines it unique"
+            : predicateDrift
+              ? wantsPredicate
+                ? "indexes every row where the driver would index only the relevant ones"
+                : "is partial where the driver would index every row"
+              : columnDrift
+                ? `covers (${String(found.columns)}) where the driver defines (${wantedColumns})`
+                : "orders its columns in a collation the driver does not define",
           blocking: false,
           applied: false,
         });
@@ -283,12 +314,14 @@ export async function syncSqlSchema(
           kind: "create-index",
           table,
           target: index.name,
-          statement: renderIndex(index, dialect, true),
-          reason: predicateDrift
-            ? "rebuilt with the predicate the driver defines"
-            : columnDrift
-              ? "rebuilt with the columns the driver defines"
-              : "rebuilt with the collation the driver defines",
+          statement: renderIndex(index, dialect, true, { quote }),
+          reason: uniqueDrift
+            ? "rebuilt unique, as the driver defines it"
+            : predicateDrift
+              ? "rebuilt with the predicate the driver defines"
+              : columnDrift
+                ? "rebuilt with the columns the driver defines"
+                : "rebuilt with the collation the driver defines",
           blocking: indexBuildBlocks(dialect),
           applied: false,
         });
@@ -303,12 +336,13 @@ export async function syncSqlSchema(
     for (const row of existing) {
       const name = String(row.name);
 
-      if (ours.test(name) && !names.has(name)) {
+      // Never a unique one, which a sync leaves alone (#889).
+      if (ours.test(name) && !names.has(name) && !isUniqueRow(row)) {
         changes.push({
           kind: "drop-index",
           table,
           target: name,
-          statement: dialect.dropIndex(name, table),
+          statement: dialect.dropIndex(name, quote(table)),
           reason:
             "the driver no longer defines it, and it costs a write per row",
           blocking: false,
@@ -348,7 +382,7 @@ export async function syncSqlSchema(
       const statement =
         group.length > 1
           ? dialect.alterColumnTypes(
-              change.table,
+              quote(change.table),
               group.map((other) => alterations.get(other)!),
             )
           : change.statement;

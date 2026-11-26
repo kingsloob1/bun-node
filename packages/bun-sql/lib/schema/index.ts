@@ -23,6 +23,7 @@ export type {
   ColumnDefinition,
   CreateSchemaOptions,
   IndexDefinition,
+  RenderNameOptions,
   SchemaDefinition,
   TableDefinition,
 } from "./schema";

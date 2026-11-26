@@ -91,6 +91,7 @@ const CALLS: Record<string, (dialect: SqlDialect) => unknown> = {
   isDuplicateIndex: (d) => ERRORS.map((error) => d.isDuplicateIndex(error)),
   isConcurrentCreate: (d) => ERRORS.map((error) => d.isConcurrentCreate(error)),
   dropIndex: (d) => d.dropIndex("ix_t_a", "t"),
+  quote: (d) => [d.quote("user"), d.quote('we"ird`name')],
   normalizeType: (d) =>
     [
       "VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin",
