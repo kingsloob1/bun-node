@@ -541,6 +541,25 @@ the servers' ceilings. `--help` prints the value for the host it runs on. Postgr
 the script prints the restart command and restarts only with
 `--restart-postgres`.
 
+**A container keeps the settings it was created with.** Its server arguments
+(`--max-connections`, Postgres's `-c max_connections`) and `--ulimit nofile`
+are fixed by `docker run`, so a container made before one of them existed
+lacks it; a live raise (`SET PERSIST` on MySQL, `SET GLOBAL` on MariaDB, lost
+on a restart) only papers over that. The script reports such a container, and
+**`--recreate`** fixes it for good, keeping the data: `docker stop`, `docker
+rename <name> <name>-prev`, `docker run` the spec under the old name with
+`--volumes-from <name>-prev`, wait for the credentials, check the setting
+(`SELECT @@GLOBAL.max_connections`) and that every database that connected
+before still does, and only then `docker rm <name>-prev` (never `-v`). Any
+failure rolls back: the new container is removed (by id, never the old one),
+`-prev` is renamed back and started. It never pins less than the server has
+now, refuses while a `<name>-prev` exists, and does not recreate `azure-oauth`
+(its certificate is not on a volume) or a container on another image. It
+restarts the server, so run it when no suite is using it, `--dry-run` first:
+`bun scripts/setup-databases.ts --only=mysql --recreate --dry-run`. A
+Postgres container with no pin is not behind (`ALTER SYSTEM` persists); one
+pinned below the target is.
+
 After changing bun-common, also run bun-nest's and bun-jobs' checks (both
 depend on bun-common). There may be a
 couple of intentional `no-console` *warnings* (error logging in catch

@@ -1,7 +1,9 @@
 import type {
+  InspectedContainer,
   PostgresLimitContext,
   PostgresLimitIo,
   PostgresLimitState,
+  RecreateIo,
   Runner,
 } from "../setup-databases";
 import { Buffer } from "node:buffer";
@@ -66,6 +68,14 @@ import {
   azureTestUrl,
   parseAzureTestUrl,
   signAzure,
+  containerDrift,
+  INSPECT_FORMAT,
+  parseInspected,
+  RECREATE_STOP_SECONDS,
+  RECREATE_SUFFIX,
+  recreateArgv,
+  recreateBlocker,
+  recreateContainer,
 } from "../setup-databases";
 
 // Importing the script must not provision anything: it runs `main` only under
@@ -1385,5 +1395,446 @@ describe("bun-cache's benchmark database", () => {
       "export BUN_CACHE_BENCH_MYSQL_URL=mysql://bunjobs:bunjobs@127.0.0.1:3307/bun_cache_bench?allowPublicKeyRetrieval=true",
       "export BUN_CACHE_BENCH_MONGODB_URL=mongodb://127.0.0.1:27017/bun_cache_bench",
     ]);
+  });
+});
+
+describe("--recreate", () => {
+  /** The options a run with `argv` would use. */
+  const options = (...argv: string[]) =>
+    parseArgs([
+      "--max-connections=1000",
+      "--postgres-max-connections=700",
+      ...argv,
+    ]);
+  const mysql = PLANS.mysql.container(options());
+  /** The open-file limit every container is created with. */
+  const nofile = [{ Name: "nofile", Soft: 65_536, Hard: 65_536 }];
+
+  it("is off by default, and the flag turns it on", () => {
+    expect(parseArgs([]).recreate).toBe(false);
+    expect(parseArgs(["--recreate"]).recreate).toBe(true);
+  });
+
+  describe("drift: a spec against an inspected container", () => {
+    it("finds MySQL created without --max-connections (this machine's bun-jobs-mysql)", () => {
+      const drift = containerDrift(mysql, { cmd: ["mysqld"], ulimits: nofile });
+      expect(drift.map((item) => item.setting)).toEqual(["max-connections"]);
+      expect(drift[0]?.message).toContain("without --max-connections");
+      expect(drift[0]?.message).toContain("--max-connections=1000");
+    });
+
+    it("negative control: a container created with the spec's arguments has none", () => {
+      expect(
+        containerDrift(mysql, {
+          cmd: ["--max-connections=1000"],
+          ulimits: nofile,
+        }),
+      ).toEqual([]);
+    });
+
+    it("counts a pin below the target, never one at or above it", () => {
+      const below = containerDrift(mysql, {
+        cmd: ["--max-connections=500"],
+        ulimits: nofile,
+      });
+      expect(below[0]?.message).toContain("with --max-connections=500");
+      for (const cmd of [
+        ["--max-connections=2000"],
+        ["--max_connections=1000"],
+      ]) {
+        expect(containerDrift(mysql, { cmd, ulimits: nofile })).toEqual([]);
+      }
+    });
+
+    it("finds a missing or low open-file limit, on any container", () => {
+      const redis = PLANS.redis.container(options());
+      expect(
+        containerDrift(redis, { cmd: null, ulimits: null }).map(
+          (item) => item.setting,
+        ),
+      ).toEqual(["nofile"]);
+      const low = containerDrift(redis, {
+        cmd: null,
+        ulimits: [{ Name: "nofile", Soft: 1024, Hard: 1024 }],
+      });
+      expect(low[0]?.message).toContain("open-file limit of 1024");
+      // Negative control: the limit it is created with.
+      expect(containerDrift(redis, { cmd: null, ulimits: nofile })).toEqual([]);
+    });
+
+    it("reports both when both are behind", () => {
+      expect(
+        containerDrift(mysql, { cmd: ["mysqld"], ulimits: null }).map(
+          (item) => item.setting,
+        ),
+      ).toEqual(["nofile", "max-connections"]);
+    });
+
+    it("on Postgres, counts only a pin below the target: ALTER SYSTEM keeps an unpinned value", () => {
+      const postgres = PLANS.postgres.container(options());
+      expect(
+        containerDrift(postgres, { cmd: ["postgres"], ulimits: nofile }),
+      ).toEqual([]);
+      const pinned = containerDrift(postgres, {
+        cmd: ["postgres", "-c", "max_connections=100"],
+        ulimits: nofile,
+      });
+      expect(pinned.map((item) => item.setting)).toEqual(["max-connections"]);
+      expect(pinned[0]?.message).toContain("-c max_connections=100");
+      // Negative control: the spec's own pin.
+      expect(
+        containerDrift(postgres, {
+          cmd: ["-c", "max_connections=700"],
+          ulimits: nofile,
+        }),
+      ).toEqual([]);
+    });
+
+    it("reads docker inspect's line, and nothing else", () => {
+      const line =
+        '["b64c52d6f0fd","mysql:8.4",["mysqld"],[{"Hard":65536,"Name":"nofile","Soft":65536}]]\n';
+      expect(parseInspected(line)).toEqual({
+        id: "b64c52d6f0fd",
+        image: "mysql:8.4",
+        cmd: ["mysqld"],
+        ulimits: [{ Hard: 65_536, Name: "nofile", Soft: 65_536 }],
+      });
+      expect(parseInspected('["x","mongo:7",null,null]')).toEqual({
+        id: "x",
+        image: "mongo:7",
+        cmd: null,
+        ulimits: null,
+      });
+      expect(parseInspected("")).toBeNull();
+      expect(parseInspected("Error: No such container")).toBeNull();
+      expect(parseInspected("[1,2,3,4]")).toBeNull();
+      expect(INSPECT_FORMAT).toContain("{{json .Config.Cmd}}");
+    });
+
+    it("refuses another image, and a container with files copied in", () => {
+      expect(recreateBlocker(mysql, { image: "mysql:8.4" })).toBeNull();
+      expect(recreateBlocker(mysql, { image: "mysql:8.0" })).toContain(
+        "mysql:8.0",
+      );
+      expect(
+        recreateBlocker(PLANS["azure-oauth"].container(options()), {
+          image: AZURE_CONTAINER_IMAGE,
+        }),
+      ).toContain("copied into it");
+    });
+  });
+
+  describe("the commands", () => {
+    it("stops, renames to -prev, runs the spec with --volumes-from -prev, and removes -prev without -v", () => {
+      const argv = recreateArgv(mysql);
+      const prev = `bun-jobs-mysql${RECREATE_SUFFIX}`;
+      expect(prev).toBe("bun-jobs-mysql-prev");
+      expect(argv.stop).toEqual([
+        "docker",
+        "stop",
+        "--time",
+        String(RECREATE_STOP_SECONDS),
+        "bun-jobs-mysql",
+      ]);
+      expect(argv.rename).toEqual(["docker", "rename", "bun-jobs-mysql", prev]);
+      expect(argv.remove).toEqual(["docker", "rm", prev]);
+
+      // The same container as a fresh one, under the same name, with the old
+      // one's volumes: the same ports, limit, environment and arguments.
+      const run = argv.run;
+      const at = run.indexOf("--volumes-from");
+      expect(run[at + 1]).toBe(prev);
+      expect(at).toBeLessThan(run.indexOf(mysql.image));
+      expect(run.toSpliced(at, 2)).toEqual(dockerRunArgv(mysql));
+      expect(run.slice(3, 5)).toEqual(["--name", "bun-jobs-mysql"]);
+      expect(run).toContain("127.0.0.1:3307:3306");
+      expect(run).toContain("nofile=65536:65536");
+      expect(run.at(-1)).toBe("--max-connections=1000");
+    });
+
+    it("negative control: a fresh container mounts no other container's volumes", () => {
+      expect(dockerRunArgv(mysql)).not.toContain("--volumes-from");
+    });
+  });
+
+  describe("recreateContainer", () => {
+    let logs: string[];
+    let spy: ReturnType<typeof spyOn<Console, "log">>;
+
+    beforeEach(() => {
+      logs = [];
+      spy = spyOn(console, "log").mockImplementation((line: unknown) => {
+        logs.push(String(line));
+      });
+    });
+    afterEach(() => spy.mockRestore());
+
+    const OLD = "old0000";
+    const NEW = "new1111";
+
+    /**
+     * A fake Docker holding containers by name, through the script's command
+     * seam. `fail` makes a command fail; a `run` that `createsOnFailure` still
+     * leaves the container behind, as a start failure does.
+     */
+    const fakeDocker = (
+      setup: {
+        fail?: (argv: string[]) => boolean;
+        createsOnFailure?: boolean;
+        prevExists?: boolean;
+        /** `docker rename` answers success and renames nothing. */
+        renameLies?: boolean;
+        ready?: boolean[];
+        problem?: string | null;
+      } = {},
+    ) => {
+      const containers = new Map<string, string>([["bun-jobs-mysql", OLD]]);
+      if (setup.prevExists) {
+        containers.set("bun-jobs-mysql-prev", "stale99");
+      }
+      const calls: string[][] = [];
+      const ready = [...(setup.ready ?? [true, true])];
+      let waits = 0;
+      let verifies = 0;
+      const answer = (ok: boolean, stdout = "") => ({
+        code: ok ? 0 : 1,
+        stdout,
+        stderr: ok ? "" : "simulated failure",
+        ok,
+      });
+      const runner: Runner = async (argv) => {
+        calls.push(argv);
+        const [, verb] = argv;
+        if (verb === "ps") {
+          const name = /\^\/(.+)\$/.exec(argv[4] ?? "")?.[1] ?? "";
+          return answer(true, containers.has(name) ? "running\n" : "");
+        }
+        if (verb === "container") {
+          const id = containers.get(argv.at(-1) ?? "");
+          const inspected: Omit<InspectedContainer, "id"> = {
+            image: "mysql:8.4",
+            cmd: ["mysqld"],
+            ulimits: null,
+          };
+          return id
+            ? answer(
+                true,
+                JSON.stringify([
+                  id,
+                  inspected.image,
+                  inspected.cmd,
+                  inspected.ulimits,
+                ]),
+              )
+            : answer(false);
+        }
+        const failed = setup.fail?.(argv) ?? false;
+        if (verb === "run") {
+          if (!failed || setup.createsOnFailure) {
+            containers.set(argv[4] ?? "", NEW);
+          }
+          return answer(!failed);
+        }
+        if (failed) {
+          return answer(false);
+        }
+        if (verb === "rename" && setup.renameLies) {
+          return answer(true);
+        }
+        if (verb === "rename") {
+          const id = containers.get(argv[2] ?? "");
+          if (!id) {
+            return answer(false);
+          }
+          containers.delete(argv[2] ?? "");
+          containers.set(argv[3] ?? "", id);
+        } else if (verb === "rm") {
+          const target = argv.at(-1) ?? "";
+          for (const [name, id] of containers) {
+            if (name === target || id === target) {
+              containers.delete(name);
+            }
+          }
+        }
+        return answer(true);
+      };
+      const io: RecreateIo = {
+        runner,
+        waitReady: async () => {
+          waits++;
+          return ready.shift() ?? true;
+        },
+        verify: async () => {
+          verifies++;
+          return setup.problem ?? null;
+        },
+      };
+      /** The commands that change something: no ps, no inspect. */
+      const changes = () =>
+        calls.filter(([, verb]) => verb !== "ps" && verb !== "container");
+      return {
+        io,
+        containers,
+        calls,
+        changes,
+        waits: () => waits,
+        verifies: () => verifies,
+      };
+    };
+    const argv = recreateArgv(mysql);
+    /** Whether any command removed a volume, or the old container. */
+    const destroyedData = (calls: string[][]) =>
+      calls.some(
+        (call) =>
+          call.includes("-v") ||
+          call.includes("--volumes") ||
+          (call[1] === "rm" && call.includes(OLD)),
+      );
+
+    it("a dry run prints every command, and the rollback, and runs none", async () => {
+      const f = fakeDocker();
+      const result = await recreateContainer(mysql, true, f.io);
+      expect(result.outcome).toBe("planned");
+      expect(f.calls).toEqual([]);
+      const printed = logs.join("\n");
+      for (const command of [argv.stop, argv.rename, argv.run, argv.remove]) {
+        expect(printed).toContain(`$ ${command.join(" ")}`);
+      }
+      expect(printed).toContain("--volumes-from bun-jobs-mysql-prev");
+      expect(printed).toContain(
+        "docker rename bun-jobs-mysql-prev bun-jobs-mysql; docker start bun-jobs-mysql",
+      );
+    });
+
+    it("recreates: stop, rename, run, wait, verify, and only then remove -prev", async () => {
+      const f = fakeDocker();
+      const result = await recreateContainer(mysql, false, f.io);
+      expect(result.outcome).toBe("recreated");
+      expect(f.changes()).toEqual([
+        argv.stop,
+        argv.rename,
+        argv.run,
+        argv.remove,
+      ]);
+      expect(f.waits()).toBe(1);
+      expect(f.verifies()).toBe(1);
+      expect([...f.containers]).toEqual([["bun-jobs-mysql", NEW]]);
+      expect(destroyedData(f.calls)).toBe(false);
+    });
+
+    it("rolls back when the new container fails its check: removes the new one by id, renames -prev back, starts it", async () => {
+      const f = fakeDocker({ problem: "bun_cache_test no longer connects" });
+      const result = await recreateContainer(mysql, false, f.io);
+      expect(result.outcome).toBe("rolled-back");
+      expect(result.note).toContain("bun_cache_test no longer connects");
+      expect(f.changes()).toEqual([
+        argv.stop,
+        argv.rename,
+        argv.run,
+        ["docker", "rm", "--force", NEW],
+        ["docker", "rename", "bun-jobs-mysql-prev", "bun-jobs-mysql"],
+        ["docker", "start", "bun-jobs-mysql"],
+      ]);
+      // The new one waited for, then the old one once it was back.
+      expect(f.waits()).toBe(2);
+      expect([...f.containers]).toEqual([["bun-jobs-mysql", OLD]]);
+      expect(destroyedData(f.calls)).toBe(false);
+    });
+
+    it("negative control: the data check would catch a rollback that removed the old container", () => {
+      expect(destroyedData([["docker", "rm", "--force", OLD]])).toBe(true);
+      expect(destroyedData([["docker", "rm", "-v", "x"]])).toBe(true);
+    });
+
+    it("rolls back when the new container never accepts the credentials", async () => {
+      const f = fakeDocker({ ready: [false, true] });
+      const result = await recreateContainer(mysql, false, f.io);
+      expect(result.outcome).toBe("rolled-back");
+      expect(f.verifies()).toBe(0);
+      expect([...f.containers]).toEqual([["bun-jobs-mysql", OLD]]);
+    });
+
+    it("rolls back a failing start: a run that made the container removes it; one that made none removes nothing", async () => {
+      const made = fakeDocker({
+        fail: (call) => call[1] === "run",
+        createsOnFailure: true,
+      });
+      expect((await recreateContainer(mysql, false, made.io)).outcome).toBe(
+        "rolled-back",
+      );
+      expect(made.changes()).toContainEqual(["docker", "rm", "--force", NEW]);
+      expect([...made.containers]).toEqual([["bun-jobs-mysql", OLD]]);
+
+      const none = fakeDocker({ fail: (call) => call[1] === "run" });
+      expect((await recreateContainer(mysql, false, none.io)).outcome).toBe(
+        "rolled-back",
+      );
+      expect(none.changes().some((call) => call[1] === "rm")).toBe(false);
+      expect([...none.containers]).toEqual([["bun-jobs-mysql", OLD]]);
+      expect(destroyedData(made.calls) || destroyedData(none.calls)).toBe(
+        false,
+      );
+    });
+
+    it("a failed stop renames nothing and starts the old container again", async () => {
+      const f = fakeDocker({ fail: (call) => call[1] === "stop" });
+      const result = await recreateContainer(mysql, false, f.io);
+      expect(result.outcome).toBe("rolled-back");
+      expect(f.changes()).toEqual([
+        argv.stop,
+        ["docker", "start", "bun-jobs-mysql"],
+      ]);
+    });
+
+    it("says so when the old container does not come back, naming where its data is", async () => {
+      const f = fakeDocker({ ready: [false, false] });
+      const result = await recreateContainer(mysql, false, f.io);
+      expect(result.outcome).toBe("rollback-failed");
+      expect(logs.join("\n")).toContain("did not come back");
+    });
+
+    it("leaves -prev in place when renaming it back fails, and says how to finish", async () => {
+      const f = fakeDocker({
+        problem: "max_connections is 151, not 1000",
+        fail: (call) =>
+          call[1] === "rename" && call[2] === "bun-jobs-mysql-prev",
+      });
+      const result = await recreateContainer(mysql, false, f.io);
+      expect(result.outcome).toBe("rollback-failed");
+      expect(f.containers.get("bun-jobs-mysql-prev")).toBe(OLD);
+      expect(logs.join("\n")).toContain(
+        "docker rename bun-jobs-mysql-prev bun-jobs-mysql && docker start bun-jobs-mysql",
+      );
+    });
+
+    it("never removes the old container, even after a rename that said it worked and did not", async () => {
+      const f = fakeDocker({
+        renameLies: true,
+        // The name is still taken, so the new container cannot be made.
+        fail: (call) => call[1] === "run",
+      });
+      await recreateContainer(mysql, false, f.io);
+      expect(f.containers.get("bun-jobs-mysql")).toBe(OLD);
+      expect(destroyedData(f.calls)).toBe(false);
+    });
+
+    it("refuses to start when an earlier recreate left a -prev, changing nothing", async () => {
+      const f = fakeDocker({ prevExists: true });
+      const result = await recreateContainer(mysql, false, f.io);
+      expect(result.outcome).toBe("refused");
+      expect(f.changes()).toEqual([]);
+      expect(f.containers.get("bun-jobs-mysql-prev")).toBe("stale99");
+    });
+
+    it("keeps the new container when only removing -prev fails, and says so", async () => {
+      const f = fakeDocker({
+        fail: (call) => call[1] === "rm",
+      });
+      const result = await recreateContainer(mysql, false, f.io);
+      expect(result.outcome).toBe("recreated");
+      expect(result.note).toContain("left to remove");
+      expect(f.containers.get("bun-jobs-mysql")).toBe(NEW);
+      expect(f.containers.get("bun-jobs-mysql-prev")).toBe(OLD);
+    });
   });
 });
