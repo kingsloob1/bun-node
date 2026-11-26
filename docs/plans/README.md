@@ -52,7 +52,7 @@ plan you are about to work on.
 | [`bun-ui/`](bun-ui/README.md) | BU-1 #666, BU-2 #708, BU-3 #709 and BU-5 #710 merged (the old names cleaned up in #713), released in 3.0.0-rc.1 (#712); BU-4 (the shared kit) built 2026-11-10, awaiting landing | landing BU-4; bun-security's PR-U1 builds on it | its Status |
 | [`bun-security/`](bun-security/README.md) | approved 2026-11-07; its foundations merged: trustProxy #653, the throttle T1 to T3 #654 to #656; verified crawlers (layers.md L3.2, PR-S12) added 2026-11-10, Q29 to Q31 answered; M1 started 2026-11-15, PR-S1 (package and core) built on `feat/bun-security-s1`, not merged | M1: landing PR-S1, then P2, P3, P4, D0 beside it, S2 after it | its Status |
 | [`opentelemetry/`](opentelemetry/README.md) | plan only | **held** (the user's decision) | the plan |
-| [`bun-auth/`](bun-auth/README.md) | plan approved 2026-11-20 (names §15, all fourteen recommendations §16); nothing built | PR-A0 (bun-common `req.webRequest()`), then A1 | the plan, §14 |
+| [`bun-auth/`](bun-auth/README.md) | plan approved 2026-11-20 (names §15, all fourteen recommendations §16); PR-A0 merged (#887); A1 (the package), A3 (`./password`) and A6 (`./sql`) built | A1 lands, then A3 and A6 add their files | the plan, §14 |
 
 **Held** means the user has not scheduled it, not that it is blocked. The
 user's order (2026-10-17): Nest 12 parity, then BunValidate complete and

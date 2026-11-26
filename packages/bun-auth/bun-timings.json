@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "files": {
+    "__tests__/mount.test.ts": 2479,
+    "__tests__/address.test.ts": 2450,
+    "__tests__/limiter.test.ts": 2000,
+    "__tests__/session.test.ts": 1833,
+    "__tests__/serve.test.ts": 1100,
+    "__tests__/errors.test.ts": 915,
+    "__tests__/treeShaking.test.ts": 759,
+    "__tests__/packaging.test.ts": 22
+  }
+}

@@ -18,6 +18,7 @@ import type {
 } from "../consumer-check";
 import {
   bareSpecifiers,
+  columnCompilerOptions,
   consumerManifest,
   failures,
   planConsumers,
@@ -601,4 +602,104 @@ describe("runCheck: an entry scoped to one peer that needs another", () => {
     expect(result.runtime["@fixture/pkg/a"]).toBe("ok");
     expect(failures(result).failed).toEqual([]);
   }, 180_000);
+});
+
+describe("columnCompilerOptions: consumerLib", () => {
+  it("appends the extra libs to every column's lib, without repeating one", () => {
+    expect(columnCompilerOptions("bundler", false, ["DOM"]).lib).toEqual([
+      "ESNext",
+      "DOM",
+    ]);
+    expect(columnCompilerOptions("node16", true, ["DOM"]).lib).toEqual([
+      "ES2022",
+      "DOM",
+    ]);
+    // The browser column has DOM already, in its own case.
+    expect(columnCompilerOptions("browser", false, ["dom"]).lib).toEqual([
+      "DOM",
+      "ES2022",
+    ]);
+    expect(columnCompilerOptions("bun-init", false).lib).toEqual(["ESNext"]);
+    expect(columnCompilerOptions("bundler", false).skipLibCheck).toBe(false);
+  });
+});
+
+// End to end: a package whose required peer's declarations name DOM-only
+// globals (`HeadersInit`, `JsonWebKey`), as better-auth's do. With
+// skipLibCheck off, a Bun consumer on lib ESNext reports them inside the
+// peer; `consumerLib: ["DOM"]` gives the consumers the lib they need.
+describe("runCheck: consumerLib", () => {
+  const root = mkdtempSync(join(tmpdir(), "cc-consumer-lib-"));
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+  const peer = join(root, "peer");
+  writeTree(peer, {
+    "package.json": JSON.stringify({
+      name: "@fixture/dom-peer",
+      version: "1.0.0",
+      type: "module",
+      exports: { ".": { types: "./index.d.ts", default: "./index.js" } },
+    }),
+    "index.js": `export function send() {}\n`,
+    "index.d.ts": `export declare function send(headers: HeadersInit, key: JsonWebKey): void;\n`,
+  });
+  /** The package, whose consumer-check.json asks for `consumerLib` (or not). */
+  function fixture(dir: string, consumerLib?: string[]): string {
+    writeTree(dir, {
+      "package.json": JSON.stringify({
+        name: "@fixture/uses-dom-peer",
+        version: "1.0.0",
+        type: "module",
+        exports: { ".": { types: "./index.d.ts", default: "./index.js" } },
+        peerDependencies: { "@fixture/dom-peer": "*" },
+      }),
+      "index.js": `export { send } from "@fixture/dom-peer";\n`,
+      "index.d.ts": `export { send } from "@fixture/dom-peer";\n`,
+      "consumer-check.json": JSON.stringify({
+        workspaceDependencies: [peer],
+        ...(consumerLib ? { consumerLib } : {}),
+        entries: [{ spelling: "@fixture/uses-dom-peer", values: ["send"] }],
+      }),
+    });
+    return dir;
+  }
+  const columns = ["bundler/strict", "bundler/slc"];
+  const statuses = (result: RunResult) =>
+    result.cells.map((cell) => `${cell.column}:${cell.status}`).sort();
+
+  it('passes every cell with consumerLib: ["DOM"]', async () => {
+    const result = await runCheck({
+      packageDir: fixture(join(root, "with"), ["DOM"]),
+      work: join(root, "work-with"),
+      columns,
+    });
+    expect(statuses(result)).toEqual(["bundler/slc:OK", "bundler/strict:OK"]);
+    expect(failures(result).failed).toEqual([]);
+  }, 180_000);
+
+  it("negative control: without it the strict cell fails inside the peer", async () => {
+    const result = await runCheck({
+      packageDir: fixture(join(root, "without")),
+      work: join(root, "work-without"),
+      columns,
+    });
+    expect(statuses(result)).toEqual([
+      "bundler/slc:OK",
+      "bundler/strict:LIB-ERRORS",
+    ]);
+    const strict = result.cells.find((c) => c.column === "bundler/strict");
+    expect(strict?.sample.join("\n")).toContain("HeadersInit");
+  }, 180_000);
+
+  it("refuses a consumerLib that is not a list of names", async () => {
+    const dir = fixture(join(root, "bad"));
+    writeTree(dir, {
+      "consumer-check.json": JSON.stringify({
+        consumerLib: "DOM",
+        entries: [{ spelling: "@fixture/uses-dom-peer" }],
+      }),
+    });
+    await expect(
+      runCheck({ packageDir: dir, work: join(root, "work-bad"), columns }),
+    ).rejects.toThrow("consumerLib");
+  });
 });

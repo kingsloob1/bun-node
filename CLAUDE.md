@@ -68,6 +68,18 @@ published packages under `packages/`:
   bun-sql's sync over its tables as definitions (`lib/drivers/sql-schema.ts`),
   reported in its own `SchemaChange` shape. Bun only;
   bun-common is its one runtime dependency, `mongodb` an optional peer.
+- **`@kingsleyweb/bun-auth`** — better-auth on bun-node
+  ([plan](docs/plans/bun-auth/README.md)): the app's own `betterAuth()`
+  instance (a required peer, `>=1.7.0 <2`) mounted on bun-common by
+  `mountAuth`/`authHandler` with the body handed over by `req.webRequest()`
+  and the client's address in `x-bun-auth-client-ip`, or on a plain
+  `Bun.serve` by `./serve`'s `withAuth`; `sessionMiddleware`,
+  `requireSession` and `getAuthSession` put the session typed from the
+  instance on the request. It never changes the app's better-auth
+  configuration, only warns. Being built in PRs A1 to A9 (`./sql`,
+  `./password`, `./security`, `./authorize`, `./client` land as they come).
+  Bun only; bun-common is its one runtime dependency, bun-security and
+  bun-sql optional peers.
 
 Each package: `lib/` source, `__tests__/` (bun:test), a `bun check`
 typecheck (`bun run check`), and `bun lint` plus `bun fmt --check` against
@@ -148,7 +160,7 @@ bun run test               # type-check the tests, then run them in parallel —
 **Lint and format, since PR E of [bun-lint-fmt](docs/plans/bun-lint-fmt/README.md)
 §7.** The gate is `bun run lint` (`bun lint`; in a `lint` script it is the
 linter) and `bun run format:check` (`bun fmt --check`), two steps (Q6), in each
-of the 19 directories with a `lint` script (the nine packages, the six
+of the 20 directories with a `lint` script (the ten packages, the six
 `examples/*`, `playground/`, `benchmarks/`, `templates/compute-provider/` and
 `tools/vscode-bun-lint/`), `bun run lint:scripts` and
 `bun run format:check:scripts` from the root for `scripts/`, and
@@ -1259,12 +1271,12 @@ in the package `.gitignore`, and `./scripts/**/*` in its `tsconfig.json`
   for the whole package: `false`, or the exact modules with an effect at
   load (bun-ui `["**/*.css", "./app/*/main.tsx"]`; bun-common its four
   `lib/contract/` modules that install the logger resolution; bun-jobs and
-  bun-cache their process and thread entries; bun-security its `./lib/testing/crossprocess-worker.ts` (the store conformance kit's second process, which runs at load); bun-sql `false`; bun-nest `false`, its decorators
+  bun-cache their process and thread entries; bun-security its `./lib/testing/crossprocess-worker.ts` (the store conformance kit's second process, which runs at load); bun-sql `false`; bun-auth `false`; bun-nest `false`, its decorators
   applied by call staying on classes in their own module). A module that only
   re-exports drops its bare imports with it, so the importer of an effect
   module is listed too. The check is each package's
-  `__tests__/treeShaking.test.ts`, in all nine: `Bun.build` a one-export app
-  (bun-jobs, bun-cache, bun-nest, bun-security and bun-sql target Bun), assert its bytes stay under a
+  `__tests__/treeShaking.test.ts`, in all ten: `Bun.build` a one-export app
+  (bun-jobs, bun-cache, bun-nest, bun-security, bun-sql and bun-auth target Bun), assert its bytes stay under a
   measured bound, and that each listed effect survives, with negative controls
   on a copy of the package with the field removed or narrowed. Bun at run time
   ignores the field, so no other suite can show it wrong, and a wrong `false`
@@ -1318,6 +1330,13 @@ in the package `.gitignore`, and `./scripts/**/*` in its `tsconfig.json`
   prints each consumer's spellings and install time before the matrix.
   It runs each consumer's own tsc, deliberately not `bun check`: the point is
   what a consumer on TypeScript 5.9 or 6.0 sees.
+  **`consumerLib`** in `consumer-check.json` adds `lib` entries to every
+  consumer's compiler options in every column, for a package whose required
+  peer's declarations need one: bun-auth sets `["DOM"]`, because better-auth's
+  own declarations name `HeadersInit` and `JsonWebKey`, which Bun's types do
+  not declare globally (25 errors inside better-auth with `skipLibCheck` off,
+  with or without bun-auth). Use it only for a lib the peer needs in every
+  app, and say so in the package's README.
   bun-common: 92/92 cells OK on TS 6.0 and 5.9, against 34 OK on raw `.ts`.
   bun-ui's jobs entries: 44/44 OK on TS 6.0 (its browser-safe `lib/shared/config` also
   under `browser`), against 28 OK on raw `.ts` (before it became bun-ui).

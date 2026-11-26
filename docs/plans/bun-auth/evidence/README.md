@@ -282,3 +282,55 @@ every adapter configuration and mount, and through bun-nest's adapter with
 Nest's body parser on. Passing `req.request` instead failed with `500` as E5
 measured: by `use` and by route on the default adapter, by route under
 `deferBody`, and in every bun-nest configuration.
+
+## E15. `ipAddressHeaders` and `trustedProxies` (PR-A1)
+
+Taken on 2026-11-26 with Bun 1.4.5-canary.1+862278db7 on linux-x64 and
+better-auth 1.7.27, with `NODE_ENV=production` (so better-auth's
+development fallback to `127.0.0.1` is off). A spike in the session's scratch
+directory, a single file run with `bun`: `betterAuth()` on the memory
+adapter, its rate-limit storage `"database"` (so instances do not share the
+process-wide `Map` of E7), requests handed straight to `auth.handler`. The
+client header is `x-bun-auth-client-ip` ("ours"). E7 marked both options
+**assumed**; both take effect.
+
+The session's `ipAddress` after a sign-up:
+
+| `advanced.ipAddress` | Headers sent | `session.ipAddress` |
+|---|---|---|
+| unset | XFF `198.51.100.1`, ours `203.0.113.7` | `198.51.100.1` |
+| `ipAddressHeaders: [ours]` | XFF `198.51.100.1`, ours `203.0.113.7` | `203.0.113.7` |
+| `ipAddressHeaders: [ours]` | XFF `198.51.100.1` only | `""` (none) |
+| `ipAddressHeaders: [ours, "x-forwarded-for"]` | XFF `198.51.100.1` only | `198.51.100.1`: a later header is read when ours is absent |
+| `ipAddressHeaders: [ours]` | ours `::ffff:203.0.113.7` | `203.0.113.7` |
+| `ipAddressHeaders: [ours]` | ours `2001:db8::1` | `2001:0db8:0000:0000:0000:0000:0000:0000`: IPv6 by its `/64` (`ipv6Subnet`) |
+| unset | XFF `198.51.100.1, 10.0.0.5` | `""`: a multi-value header is skipped without `trustedProxies` |
+| `trustedProxies: ["10.0.0.0/8"]` | XFF `198.51.100.1, 10.0.0.5` | `198.51.100.1` |
+| `trustedProxies: ["10.0.0.0/8"]` | XFF `198.51.100.1, 192.0.2.9, 10.0.0.5` | `192.0.2.9`: the first untrusted hop from the right |
+| `[ours]`, `trustedProxies: ["127.0.0.0/8"]` | ours `127.0.0.1` | `""`: a client inside a trusted range resolves to nothing |
+| `[ours]`, `trustedProxies: ["10.0.0.0/8"]` | ours `203.0.113.7` | `203.0.113.7` |
+
+Its limiter, six wrong sign-ins with `customRules` of 3 per 60 s:
+
+| `advanced.ipAddress` | Headers per attempt | Statuses |
+|---|---|---|
+| unset | XFF changes each time, ours fixed | `401` ×6: never limited |
+| `ipAddressHeaders: [ours]` | XFF changes each time, ours fixed | `401` ×3, `429` ×3 |
+| `ipAddressHeaders: [ours]` | ours changes each time | `401` ×6 |
+| `trustedProxies: ["10.0.0.0/8"]` | XFF `198.51.100.50, 10.0.0.<n>` | `401` ×3, `429` ×3 |
+| unset | XFF `198.51.100.60, 10.0.1.<n>` | `401` ×3, `429` ×3: no address, so one shared bucket |
+
+So naming bun-auth's header alone in `ipAddressHeaders` makes the session's
+address and the limiter's key the address bun-common resolved, and a forged
+`X-Forwarded-For` stops mattering. `trustedProxies` is not needed with it
+(the header holds one address), and is harmful when a range covers clients.
+The same is asserted against `mountAuth` in bun-auth's
+`__tests__/address.test.ts` (under `bun test`, where better-auth's test
+fallback applies only when no header resolves).
+
+**A Bun bug met on the way** (oven-sh/bun#49395, already filed; commented
+with the empty-array case and this workaround): `new Request(request, {
+headers })` keeps the input's headers when `headers` is empty, so removing
+the client's only header that way handed its forged copy on. bun-auth builds
+the copy from the request's parts when the header set is empty
+(`lib/handover.ts`); remove that once a stable Bun has the fix.

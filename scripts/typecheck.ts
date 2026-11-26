@@ -57,6 +57,7 @@ export const PROJECTS = [
   "packages/bun-client/__tests__/browser/tsconfig.json",
   "packages/bun-security/tsconfig.json",
   "packages/bun-sql/tsconfig.json",
+  "packages/bun-auth/tsconfig.json",
   "benchmarks/tsconfig.json",
   "playground/tsconfig.json",
   "examples/bun-jobs/tsconfig.json",

@@ -1,0 +1,45 @@
+{
+  "$comment": "Import spellings a consumer of @kingsleyweb/bun-auth writes, checked against the packed tarball by `bun scripts/consumer-check.ts packages/bun-auth` from the repo root. Every spelling here worked at some point; removing one hides a regression. better-auth is the app's own (a required peer), so the consumer installs the version the repository tests. better-auth's own declarations name DOM globals (HeadersInit, JsonWebKey) that Bun's types do not declare, so its consumers type-check with the DOM lib, as an app using better-auth must (evidence: 25 errors inside better-auth, with or without bun-auth, under lib ESNext and skipLibCheck off).",
+  "workspaceDependencies": ["packages/bun-contract", "packages/bun-common"],
+  "consumerDependencies": ["better-auth@1.7.27", "@better-auth/core@1.7.27"],
+  "consumerLib": ["DOM"],
+  "entries": [
+    {
+      "$comment": "The root: mounting on bun-common, the session on the request, and their types. Checked in a consumer with no optional peer.",
+      "spelling": "@kingsleyweb/bun-auth",
+      "values": [
+        "mountAuth",
+        "authHandler",
+        "sessionMiddleware",
+        "requireSession",
+        "getAuthSession",
+        "DEFAULT_CLIENT_IP_HEADER"
+      ],
+      "types": [
+        "AuthInstance",
+        "AuthSession",
+        "AuthRequest",
+        "BunAuthOptions",
+        "RequireSessionOptions"
+      ],
+      "snippet": "import { betterAuth } from \"better-auth\";\nimport { BunHttpAdapter } from \"@kingsleyweb/bun-common\";\nconst auth = betterAuth({ emailAndPassword: { enabled: true }, onAPIError: { throw: true }, advanced: { ipAddress: { ipAddressHeaders: [m.DEFAULT_CLIENT_IP_HEADER] } } });\nconst app = new BunHttpAdapter(0);\nm.mountAuth(app, auth, { basePath: \"/api/auth\", warn: true });\napp.get(\"/me\", m.requireSession(auth, { roles: [\"admin\"] }), (req: t.AuthRequest<typeof auth>, res) => { res.json({ email: req.user?.email }); });\nconst found = m.getAuthSession<typeof auth>(new Request(\"http://localhost/\"));\nconst _email: string | undefined = found?.user.email;\nexport type _sessionNotAny = Expect<IsAny<t.AuthSession<typeof auth>>>;\nconst _same: Equal<t.AuthSession<typeof auth>, typeof auth.$Infer.Session> = true;\nexport const _r = [_email, _same];"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-auth/lib",
+      "values": ["mountAuth", "requireSession"],
+      "types": ["AuthRequest", "BunAuthOptions"]
+    },
+    {
+      "$comment": "A plain Bun.serve, without bun-common's router.",
+      "spelling": "@kingsleyweb/bun-auth/serve",
+      "values": ["withAuth"],
+      "types": ["ServeServer", "AuthInstance", "BunAuthOptions"],
+      "snippet": "import { betterAuth } from \"better-auth\";\nconst auth = betterAuth({ emailAndPassword: { enabled: true } });\nconst fetch = m.withAuth(auth, (request: Request) => new Response(request.url), { clientIpHeader: \"x-client-ip\" });\nconst served: Promise<Response> = fetch(new Request(\"http://localhost/\"), { requestIP: () => null });\nexport type _fetchNotAny = Expect<IsAny<typeof fetch>>;\nexport const _s = served;"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-auth/lib/serve",
+      "values": ["withAuth"],
+      "types": ["ServeServer"]
+    }
+  ]
+}
