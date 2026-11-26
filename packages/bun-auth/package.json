@@ -1,0 +1,130 @@
+{
+  "name": "@kingsleyweb/bun-auth",
+  "type": "module",
+  "version": "3.3.0",
+  "private": false,
+  "description": "better-auth on bun-node: mount an app's own betterAuth() instance on bun-common or a plain Bun.serve with the request body and the resolved client address handed over intact, the session typed from that instance on the request, a guard answering 401 and 403 as problem+json, and warnings for the settings that hide errors or trust a forgeable address",
+  "author": "okafor obinna <kingsloob1@gmail.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/kingsloob1/bun-node/tree/develop/packages/bun-auth#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kingsloob1/bun-node.git",
+    "directory": "packages/bun-auth"
+  },
+  "bugs": {
+    "url": "https://github.com/kingsloob1/bun-node/issues"
+  },
+  "keywords": [
+    "bun",
+    "better-auth",
+    "auth",
+    "authentication",
+    "session",
+    "middleware",
+    "bun-common"
+  ],
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "@kingsleyweb/source": "./lib/index.ts",
+      "types": "./dts/index.d.ts",
+      "default": "./lib/index.ts"
+    },
+    "./lib": {
+      "@kingsleyweb/source": "./lib/index.ts",
+      "types": "./dts/index.d.ts",
+      "default": "./lib/index.ts"
+    },
+    "./serve": {
+      "@kingsleyweb/source": "./lib/serve/index.ts",
+      "types": "./dts/serve/index.d.ts",
+      "default": "./lib/serve/index.ts"
+    },
+    "./lib/serve": {
+      "@kingsleyweb/source": "./lib/serve/index.ts",
+      "types": "./dts/serve/index.d.ts",
+      "default": "./lib/serve/index.ts"
+    },
+    "./lib/*.ts": {
+      "@kingsleyweb/source": "./lib/*.ts",
+      "types": "./dts/*.d.ts",
+      "default": "./lib/*.ts"
+    },
+    "./lib/*.js": {
+      "@kingsleyweb/source": "./lib/*.ts",
+      "types": "./dts/*.d.ts",
+      "default": "./lib/*.ts"
+    },
+    "./lib/*": {
+      "@kingsleyweb/source": "./lib/*.ts",
+      "types": "./dts/*.d.ts",
+      "default": "./lib/*.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "lib/index.ts",
+  "types": "dts/index.d.ts",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "directories": {
+    "lib": "lib",
+    "test": "__tests__"
+  },
+  "files": [
+    "dts",
+    "lib"
+  ],
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "scripts": {
+    "build:types": "bun scripts/build-declarations.ts",
+    "bun-version": "bun --version",
+    "prepack": "bun scripts/build-declarations.ts",
+    "test": "bun test --check --parallel --timings=bun-timings.json",
+    "test:serial": "bun test --check",
+    "test:timings": "rm -f bun-timings.json && bun test --check --parallel --timings=bun-timings.json --update-timings",
+    "check": "bun check",
+    "lint": "bun lint",
+    "format": "bun fmt",
+    "format:check": "bun fmt --check"
+  },
+  "dependencies": {
+    "@kingsleyweb/bun-common": "workspace:^"
+  },
+  "peerDependencies": {
+    "@better-auth/core": ">=1.7.0 <2",
+    "@kingsleyweb/bun-security": "workspace:^",
+    "@kingsleyweb/bun-sql": "workspace:^",
+    "@types/bun": ">=1.4.2",
+    "better-auth": ">=1.7.0 <2",
+    "typescript": "^5.9.3 || ^6.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@kingsleyweb/bun-security": {
+      "optional": true
+    },
+    "@kingsleyweb/bun-sql": {
+      "optional": true
+    },
+    "@types/bun": {
+      "optional": true
+    },
+    "typescript": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@better-auth/core": "1.7.27",
+    "@better-auth/test-utils": "1.7.27",
+    "@kingsleyweb/bun-security": "workspace:^",
+    "@kingsleyweb/bun-sql": "workspace:^",
+    "@types/bun": "catalog:",
+    "better-auth": "1.7.27",
+    "bun-types": "catalog:",
+    "typescript": "catalog:"
+  }
+}
