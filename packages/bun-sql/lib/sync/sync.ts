@@ -204,11 +204,17 @@ export async function syncSqlSchema(
   }
 
   // Indexes, grouped by the table they are on so each table is read once.
-  const tablesWithIndexes = [
-    ...new Set(definition.indexes.map((i) => i.table)),
+  // Every defined table is read, not only those with an index still defined:
+  // a table whose last `ix_` index left the definition still has it to drop
+  // (#888).
+  const tablesToIndex = [
+    ...new Set([
+      ...definition.tables.map((table) => table.name),
+      ...definition.indexes.map((index) => index.table),
+    ]),
   ];
 
-  for (const table of tablesWithIndexes) {
+  for (const table of tablesToIndex) {
     const wanted = definition.indexes.filter((index) => index.table === table);
     const existing = await backend.all<IndexRow>(
       dialect.describeIndexes(table),

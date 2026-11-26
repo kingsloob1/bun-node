@@ -189,6 +189,40 @@ function registerSuite(backend: SqlBackend): void {
       expect(await sync(prefix)).toEqual([]);
     });
 
+    it("drops the ix_ indexes of a table with no index left in the definition (#888)", async () => {
+      const prefix = await created();
+      const { log } = fixtureTables(prefix);
+      const handMade = `hand_${prefix}log_line`;
+      await sql().unsafe(`CREATE INDEX ${handMade} ON ${log} (seq)`);
+      // The log's one index leaves the definition: the table has none left.
+      const full = fixtureDefinition(prefix, dialect);
+      const definition = {
+        ...full,
+        indexes: full.indexes.filter((index) => index.table !== log),
+      };
+      const syncWithout = async (
+        options: Parameters<typeof resolveSyncOptions>[0] = {},
+      ) =>
+        await syncSqlSchema(
+          backendOf(sql()),
+          dialect,
+          definition,
+          resolveSyncOptions(options),
+        );
+      // Reported, even on a dry run; the hand-made index is left alone.
+      expect(await syncWithout({ dryRun: true })).toEqual([
+        expect.objectContaining({
+          kind: "drop-index",
+          table: log,
+          target: `ix_${prefix}log_items`,
+          blocking: false,
+          applied: false,
+        }),
+      ]);
+      expect((await syncWithout())[0]?.applied).toBe(true);
+      expect(await syncWithout()).toEqual([]);
+    });
+
     it("rebuilds an index whose predicate changed, where the engine has partial indexes", async () => {
       const prefix = await created();
       const { items } = fixtureTables(prefix);
