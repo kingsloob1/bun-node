@@ -633,7 +633,7 @@ as columns of `scripts/nest-matrix.ts` (§9.3):
 | 12.2.0 | every PR touching bun-nest or bun-common: the last release before 12.3.0's platform-express changes (a returned `Error`, `http-errors`, a stream failing mid-body) and 12.4.0's streaming path |
 | 11.2.7 | every PR touching bun-nest or bun-common |
 | 11.1.20 and 12.0.0 (the floors) | once per merge window |
-| 11-latest (11.2.9) | every PR touching bun-nest or bun-common: what `^11.1.20` installs today (11.2.8 backported 12.x behaviours, so a read of what the core does matters here) |
+| 11-latest (11.2.12) | every PR touching bun-nest or bun-common: what `^11.1.20` installs today (11.2.8 and 11.2.10 backported 12.x behaviours, so a read of what the core does matters here) |
 | a new Nest release | when it ships, before the lock moves |
 
 A bun-jobs PR that changes `createJobsApi`'s options or `JobsApi`'s shape also

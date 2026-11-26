@@ -19,9 +19,9 @@
  */
 import type { INestApplication } from "@nestjs/common";
 import type { WsTestClient } from "./helpers";
+import { createRequire } from "node:module";
 import { Module, UseFilters, UsePipes } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
-import { SocketModule } from "@nestjs/websockets/socket-module.js";
 import {
   MessageBody,
   SubscribeMessage,
@@ -42,6 +42,18 @@ import { connectWs } from "./helpers";
 import "reflect-metadata";
 
 const { EVENT } = MessageEventTypes;
+
+/**
+ * `@nestjs/websockets/socket-module`, required here, once every static import
+ * (`@nestjs/core` among them) has run. A static import of it can be evaluated
+ * before `@nestjs/core` (Bun evaluates CommonJS imports out of order,
+ * oven-sh/bun#49614), and on Nest 11.2.10 and later that enters a require
+ * cycle that leaves the application without its WebSocket module: no gateway
+ * is served (docs/bun-bugs/cjs-imports-evaluated-out-of-order.md).
+ */
+const { SocketModule } = createRequire(import.meta.url)(
+  "@nestjs/websockets/socket-module.js",
+) as typeof import("@nestjs/websockets/socket-module.js");
 
 /** Whether Nest applies global pipes to gateways (Nest 12): the helper's capability. */
 const GLOBAL_PIPES_REACH_GATEWAYS =

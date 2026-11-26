@@ -23,6 +23,7 @@ it and the test that guards it.
 | [`experimentalDecorators` and `emitDecoratorMetadata` are read from the working directory's tsconfig, not the file's](./decorator-options-read-from-cwd-tsconfig.md) | 1.4.3-canary.1, 1.4.4-canary.1 | [#28605](https://github.com/oven-sh/bun/issues/28605) (same root cause; our case [commented](https://github.com/oven-sh/bun/issues/28605#issuecomment-6091707278)) | bun-nest's decorators applied by call; `lib/jobs/bootCheck.ts` |
 | [`Bun.serve` accepts a request with two `Host` header lines](./duplicate-host-accepted.md) | 1.4.2 to 1.4.5-canary.1 | [#44232](https://github.com/oven-sh/bun/issues/44232) | bun-security's L6 `shape.host` |
 | [`bun install` resolves a `file:` dependency's devDependencies, so `catalog:` and `workspace:` there fail outside the workspace](./file-dependency-resolves-dev-dependencies.md) | 1.4.4-canary.1 | [#22879](https://github.com/oven-sh/bun/issues/22879) (feature request; our case [commented](https://github.com/oven-sh/bun/issues/22879#issuecomment-6712639232)) | documented only: CLAUDE.md, the compute-provider template (frozen installs) |
+| [CommonJS packages imported from an ES module are evaluated out of order](./cjs-imports-evaluated-out-of-order.md) | 1.4.3, 1.4.5-canary.1 | [#49614](https://github.com/oven-sh/bun/issues/49614) | `examples/bun-nest/07-validation/standard-validation.ts`; bun-nest's gateway validation tests |
 
 Found earlier, while planning native routes, and filed upstream; their
 reproductions live with that plan's evidence

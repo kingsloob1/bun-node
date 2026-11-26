@@ -74,6 +74,7 @@ Underneath, routing is
   - [Upload errors](#upload-errors)
 - [`BunWebSocketAdapter`](#bunwebsocketadapter)
   - [Gateways](#gateways)
+    - [Gateways missing on Nest 11.2.10 and later](#gateways-missing-on-nest-11210-and-later-a-bun-bug)
   - [Namespaces and paths](#namespaces-and-paths)
   - [Gateway ports](#gateway-ports)
   - [Wire format](#wire-format)
@@ -306,12 +307,12 @@ consumer type check.
 | 12.4.2 | 5.3.0 | the latest 12 |
 | 12.0.0 | 5.2.1 | Nest 12's floor |
 | 12.1.3, 12.2.0, 12.3.0, 12.3.3, 12.4.0, 12.4.1 | 5.2.1 (12.1.3), 5.3.0 | |
-| 11.2.9 | 5.2.1 | the latest 11 |
-| 11.2.7 | 5.2.1 | |
+| 11.2.12 | 5.2.1 | the latest 11 |
+| 11.2.9, 11.2.7 | 5.2.1 | |
 | 11.1.20 | 5.2.1 | the floor |
 
-11.2.8 backported behaviours of 12.2 and 12.3 to Nest 11: the cells of the 11.2
-column below say which.
+11.2.8 and 11.2.10 backported behaviours of 12.2, 12.3 and later 12 releases
+to Nest 11: the cells of the 11.2 column below say which.
 
 The floor is 11.1.20: older 11 releases lack `@Ack()` (11.1.7) and the CORS
 delegate types (11.1.14), and before 11.1.20 an `@Sse()` observable that
@@ -328,6 +329,7 @@ What differs by release, and what the adapter reads to tell:
 | `@Sse()` data that is a number or a boolean | breaks the stream (a falsy one dropped before 11.1.29) | breaks the stream | breaks the stream | stringified | — |
 | 404 outside the prefix | Nest's JSON | Nest's JSON | HTML | HTML | `mapException` (1) |
 | Errors outside a route mapped by | the core | the core | the adapter | the adapter | — |
+| A `SyntaxError` or `URIError` without a `status` of 400 (a middleware's `next(err)`) | 400, its message | 400, its message; 500 from 11.2.10 | 400, its message | 400, its message | — (on 11 the core maps it) |
 | A falsy status | skipped | skipped | applied | applied | `mapException` (1) |
 | `MEDIA_TYPE` version | 1st parameter | 1st parameter | any parameter | any, unquoted | (1), `isRejectedByPipes` (2) |
 | `MulterModule` `limits` | replaced | replaced | merged | merged | `mapException` (1) |
@@ -336,7 +338,7 @@ What differs by release, and what the adapter reads to tell:
 | `exclude()` matching | Nest's | Nest's, the router's from 11.2.8 | Nest's | the router's | — |
 | A middleware two of one entry's paths match runs | twice | twice, once from 11.2.8 | twice | once | the core's `registerHandler` (3) |
 | A middleware on a route of two versions, on one path, runs | per version | per version | per version | per version, once from 12.3.0 | — |
-| A returned `Error`, status 400 or more | its properties | its properties | its properties | its properties, the status alone from 12.3.0 | (1), `getHttpErrorMessage` (4) |
+| A returned `Error`, status 400 or more | its properties | its properties, the status alone from 11.2.10 | its properties | its properties, the status alone from 12.3.0 | (1), `getHttpErrorMessage` (4); on 11, `mapExternalException` (6) |
 | `http-errors` client errors (an over-limit body) reach `@Catch(HttpException)` | no | no | no | from 12.3.0 | (1), `getHttpErrorMessage` (4) |
 | A WS exception whose `cause` cannot be serialised | dropped | sent without it from 11.2.8 | an `ERROR` packet | sent without it | `emitErrorPayload` on Nest's filter |
 | A `StreamableFile` failing mid-body | ends the body | ends it, resets from 11.2.8 | ends the body | ends it, resets from 12.3.0 | what the file's own `errorHandler` did |
@@ -364,6 +366,10 @@ What differs by release, and what the adapter reads to tell:
 5. `isRejectedByPipes` in `@nestjs/core/internal`, or on 11, which has no such
    file, in the module that holds it (`@nestjs/core/router/rejected-by-pipes.js`),
    added in 12.2.0 and 11.2.8.
+6. `RoutesResolver.prototype.mapExternalException` in `@nestjs/core`, asked
+   when the adapter is built: from 11.2.10 it leaves a `SyntaxError` without
+   a `status` of 400 unmapped, which the core shipped beside platform-express's
+   hiding of a returned `Error`. Nest 12 has no such method.
 
 A dash means the adapter reads nothing: the core calls what it needs
 (`getRouteMatchingOptions()` for `exclude()`), and an older core never calls
@@ -595,7 +601,7 @@ and
 | `@HttpCode`, `@Header` | As on Express. A `Content-Type` is completed as `res.set()` completes it: `html` is `text/html`, and a type with a default charset (`text/*`, `application/json`) gets it. |
 | `@Redirect(url, status)` | As on Express (`res.redirect(status, url)`): `Location` is URL-encoded, the status defaults to `302`, and the body is Express's short "Found. Redirecting to …" — `text/plain`, `text/html` or empty, chosen by `Accept`, with `Vary: Accept`. A handler returning `{ url, statusCode }` overrides either. |
 | `StreamableFile` | Streamed. Its `type`, `disposition` and `length` fill in `Content-Type`, `Content-Disposition` and `Content-Length` when the handler has not set them. A source error goes to the file's `errorHandler` (`setErrorHandler()`), as on Express: the response waits for the first chunk, so a source that fails before it (or had already failed) is answered by the handler, by default `400` with the error's message. A source that fails after that goes to the handler too: on Nest 11.2.8 and later, and 12.3.0 and later, its default destroys the response, so the client sees the connection reset rather than a truncated file that looks whole; before them it ends the response, as on Express. A `HEAD` answers with the headers, a `Content-Length` the file declares included, and destroys the source after its first chunk. If the client leaves before the file is read to the end, even before the handler returned it, its source is destroyed, as on platform-express 12, so an abandoned download holds no file descriptor. |
-| A returned `Error` | On Nest 12.3.0 and later, with a status of 400 or more, the body is `{ statusCode, message }` with the status text, as on Express: an `Error`'s enumerable properties, such as an HTTP client's `config.headers.authorization`, never reach the client. Before 12.3.0 they are serialised, on Express as here. Under a status below 400 they are serialised on every release. |
+| A returned `Error` | On Nest 12.3.0 and later, and 11.2.10 and later, with a status of 400 or more, the body is `{ statusCode, message }` with the status text, as on Express: an `Error`'s enumerable properties, such as an HTTP client's `config.headers.authorization`, never reach the client. Before those releases they are serialised, on Express as here. Under a status below 400 they are serialised on every release. |
 | A status | On Nest 12, any status Nest passes is applied, `0` included, and checked as Express 5's `res.status` checks it: a non-integer or a code outside 100–999 fails, and Nest answers `500`. On Nest 11 a falsy status (`0`, `NaN`) is skipped, as its platform-express skips it. |
 | `@Render(view)` | As on Express (`res.render(view, result)`): renders `view` with the view engine (see [Views](#views-render-and-resrender)), the handler's return value being the locals. The status is the route's (`@HttpCode()`). A missing view or a throwing template answers Nest's `500`. |
 
@@ -1849,6 +1855,36 @@ await app.listen(3000);
 
 See
 [`gateway-basics.ts`](https://github.com/kingsloob1/bun-node/blob/develop/examples/bun-nest/04-websockets/gateway-basics.ts).
+
+#### Gateways missing on Nest 11.2.10 and later (a Bun bug)
+
+On Nest 11.2.10 and later under Bun, an app can **randomly start without
+its WebSocket gateways**: an upgrade to a gateway's path answers 404, and
+no gateway handler runs. Measured: 7 of 15 starts on Nest 11.2.12, none on
+12.4.2.
+
+The cause is a Bun bug,
+[oven-sh/bun#49614](https://github.com/oven-sh/bun/issues/49614): CommonJS
+packages imported from an ES module can be evaluated out of order when they
+share a dependency. Nest 11.2.10 added a require cycle through
+`@nestjs/websockets/socket-module` and `@nestjs/core`, so an app that
+**statically** imports `@nestjs/microservices` or
+`@nestjs/websockets/socket-module` beside `@nestjs/core` can enter it from
+the wrong end, and Nest then has no WebSocket module. bun-nest cannot see
+Nest's private `SocketModule`, so it cannot detect this.
+
+The workaround: load those two modules with `import()` after your static
+imports (measured: 0 of 20 starts failed).
+
+```ts
+import { NestFactory } from "@nestjs/core";
+import { BunHttpAdapter } from "@kingsleyweb/bun-nest";
+// not: import { MicroserviceOptions } from "@nestjs/microservices";
+await import("@nestjs/microservices");
+```
+
+`docs/bun-bugs/cjs-imports-evaluated-out-of-order.md` has the minimal
+reproduction; remove the workaround once a stable Bun ships the fix.
 
 ### Namespaces and paths
 

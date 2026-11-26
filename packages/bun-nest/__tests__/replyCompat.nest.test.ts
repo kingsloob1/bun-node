@@ -36,6 +36,7 @@ import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import { Readable } from "node:stream";
 import {
+  BadRequestException,
   Catch,
   Controller,
   Get,
@@ -52,6 +53,7 @@ import {
 import { APP_FILTER, NestFactory } from "@nestjs/core";
 import { AbstractHttpAdapter } from "@nestjs/core/adapters/http-adapter.js";
 import { BaseExceptionFilter } from "@nestjs/core/exceptions/base-exception-filter.js";
+import { RoutesResolver } from "@nestjs/core/router/routes-resolver.js";
 import { RouterResponseController } from "@nestjs/core/router/router-response-controller.js";
 import { ExpressAdapter } from "@nestjs/platform-express";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -910,10 +912,33 @@ describe("the charset table is the one Express reads", () => {
 });
 
 /**
- * A Nest 12.3.0 or later, stood in on the installed core's prototypes, or one
- * older than it, while `build` runs: what the adapter reads when it is built.
+ * The cores the adapter tells apart when it is built, stood in on the
+ * installed core's prototypes: `"12.3"`, Nest 12.3.0 or later (Nest 12's
+ * `mapException` and `getHttpErrorMessage`); `"11.2.10"`, Nest 11.2.10 or
+ * later (no `mapException`, and a `mapExternalException` that leaves a
+ * `SyntaxError` without a 400 status unmapped); `"older"`, a core older than
+ * both (no `getHttpErrorMessage`, and a `mapExternalException` that maps
+ * every `SyntaxError`).
  */
-function withCore<T>(atLeast12_3: boolean, build: () => T): T {
+type CoreStandIn = "12.3" | "11.2.10" | "older";
+
+/** A `mapExternalException` as Nest 11 before 11.2.10 has it: every `SyntaxError` mapped. */
+function mapsEverySyntaxError(error: unknown): unknown {
+  return error instanceof SyntaxError || error instanceof URIError
+    ? new BadRequestException(error.message)
+    : error;
+}
+
+/** A `mapExternalException` as Nest 11.2.10 has it: only one with a 400 status. */
+function mapsSyntaxErrorWith400(error: unknown): unknown {
+  return (error instanceof SyntaxError || error instanceof URIError) &&
+    (error as { status?: unknown }).status === 400
+    ? new BadRequestException(error.message)
+    : error;
+}
+
+/** Runs `build` on the stood-in `core`: what the adapter reads when it is built. */
+function withCore<T>(core: CoreStandIn, build: () => T): T {
   const adapterPrototype = AbstractHttpAdapter.prototype as unknown as Record<
     string,
     unknown
@@ -922,28 +947,54 @@ function withCore<T>(atLeast12_3: boolean, build: () => T): T {
     string,
     unknown
   >;
+  const resolverPrototype = RoutesResolver.prototype as unknown as Record<
+    string,
+    unknown
+  >;
   const mapException = adapterPrototype.mapException;
   const getHttpErrorMessage = filterPrototype.getHttpErrorMessage;
-  const stubs = atLeast12_3
-    ? {
-        mapException: mapException ?? (() => undefined),
-        getHttpErrorMessage: getHttpErrorMessage ?? (() => ""),
-      }
-    : { mapException, getHttpErrorMessage: undefined };
+  const hadMapExternal = Object.hasOwn(
+    resolverPrototype,
+    "mapExternalException",
+  );
+  const mapExternalException = resolverPrototype.mapExternalException;
+  const stubs = {
+    "12.3": {
+      mapException: mapException ?? (() => undefined),
+      getHttpErrorMessage: getHttpErrorMessage ?? (() => ""),
+      mapExternalException: undefined,
+    },
+    "11.2.10": {
+      mapException: undefined,
+      getHttpErrorMessage: getHttpErrorMessage ?? (() => ""),
+      mapExternalException: mapsSyntaxErrorWith400,
+    },
+    older: {
+      mapException,
+      getHttpErrorMessage: undefined,
+      mapExternalException: mapsEverySyntaxError,
+    },
+  }[core];
   adapterPrototype.mapException = stubs.mapException;
   filterPrototype.getHttpErrorMessage = stubs.getHttpErrorMessage;
+  resolverPrototype.mapExternalException = stubs.mapExternalException;
   try {
     return build();
   } finally {
     adapterPrototype.mapException = mapException;
     filterPrototype.getHttpErrorMessage = getHttpErrorMessage;
+    if (hadMapExternal) {
+      resolverPrototype.mapExternalException = mapExternalException;
+    } else {
+      delete resolverPrototype.mapExternalException;
+    }
   }
 }
 
 describe("the adapter's read of the core", () => {
   describe("mapException", () => {
-    const newer = withCore(true, () => new BunHttpAdapter());
-    const older = withCore(false, () => new BunHttpAdapter());
+    const newer = withCore("12.3", () => new BunHttpAdapter());
+    const older = withCore("older", () => new BunHttpAdapter());
 
     it("from 12.3.0, maps a client error in http-errors' shape, keeping its message and cause", () => {
       const error = httpError(413, true);
@@ -988,12 +1039,12 @@ describe("the adapter's read of the core", () => {
 
   describe("a returned Error", () => {
     /** Boots {@link RepliesModule} on an adapter built on the given core. */
-    function bootOn(atLeast12_3: boolean) {
-      return bootReplies(withCore(atLeast12_3, () => new BunHttpAdapter()));
+    function bootOn(core: CoreStandIn) {
+      return bootReplies(withCore(core, () => new BunHttpAdapter()));
     }
 
     it("from 12.3.0, says only the status: the credential stays home", async () => {
-      const { app, base } = await bootOn(true);
+      const { app, base } = await bootOn("12.3");
       try {
         const answer = await outcome(`${base}/r/err-400`);
         expect(answer.status).toBe(400);
@@ -1022,8 +1073,8 @@ describe("the adapter's read of the core", () => {
       }
     });
 
-    it("before 12.3.0, serialises its properties, as Express does there", async () => {
-      const { app, base } = await bootOn(false);
+    it("before 12.3.0 and 11.2.10, serialises its properties, as Express does there", async () => {
+      const { app, base } = await bootOn("older");
       try {
         const answer = await outcome(`${base}/r/err-400`);
         expect(answer.status).toBe(400);
@@ -1032,6 +1083,32 @@ describe("the adapter's read of the core", () => {
         await app.close();
       }
     });
+
+    // #885: platform-express 11.2.10 backported 12.3's hiding, on a core
+    // without Nest 12's `mapException`, which the adapter's read of 12.3
+    // needs; it is told by the core's `mapExternalException` instead.
+    it("from 11.2.10, says only the status too: the credential stays home (#885)", async () => {
+      const { app, base } = await bootOn("11.2.10");
+      try {
+        const answer = await outcome(`${base}/r/err-400`);
+        expect(answer.status).toBe(400);
+        expect(JSON.parse(answer.body ?? "")).toEqual({
+          statusCode: 400,
+          message: "Bad Request",
+        });
+        expect(answer.body).not.toContain(SECRET);
+        const ok = await outcome(`${base}/r/err-200`);
+        expect(ok.body).toContain(SECRET);
+      } finally {
+        await app.close();
+      }
+    });
+
+    it("on 11.2.10, maps no http-errors error itself: that read stays 12.3's", () => {
+      const adapter = withCore("11.2.10", () => new BunHttpAdapter());
+      const error = httpError(413, true);
+      expect(adapter.mapException(error)).toBe(error);
+    });
   });
 
   describe.skipIf(!CORE_CALLS_MAP_EXCEPTION)(
@@ -1039,7 +1116,7 @@ describe("the adapter's read of the core", () => {
     () => {
       it("reaches @Catch(HttpException) from 12.3.0, with its cause", async () => {
         const { app, base } = await bootReplies(
-          withCore(true, () => new BunHttpAdapter()),
+          withCore("12.3", () => new BunHttpAdapter()),
         );
         try {
           const answer = await outcome(`${base}/r/json`, {
@@ -1060,7 +1137,7 @@ describe("the adapter's read of the core", () => {
 
       it("before 12.3.0, the core's filter answers it, with the adapter's message", async () => {
         const { app, base } = await bootReplies(
-          withCore(false, () => new BunHttpAdapter()),
+          withCore("older", () => new BunHttpAdapter()),
         );
         try {
           const answer = await outcome(`${base}/r/json`, {
