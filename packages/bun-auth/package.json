@@ -46,6 +46,16 @@
       "types": "./dts/serve/index.d.ts",
       "default": "./lib/serve/index.ts"
     },
+    "./sql": {
+      "@kingsleyweb/source": "./lib/sql/index.ts",
+      "types": "./dts/sql/index.d.ts",
+      "default": "./lib/sql/index.ts"
+    },
+    "./lib/sql": {
+      "@kingsleyweb/source": "./lib/sql/index.ts",
+      "types": "./dts/sql/index.d.ts",
+      "default": "./lib/sql/index.ts"
+    },
     "./lib/*.ts": {
       "@kingsleyweb/source": "./lib/*.ts",
       "types": "./dts/*.d.ts",

@@ -110,7 +110,7 @@ describe("package.json exports", () => {
   });
 
   it("gives every area its own subpath", () => {
-    for (const area of ["serve"]) {
+    for (const area of ["serve", "sql"]) {
       for (const key of [`./${area}`, `./lib/${area}`]) {
         expect(manifest.exports[key]).toEqual({
           "@kingsleyweb/source": `./lib/${area}/index.ts`,

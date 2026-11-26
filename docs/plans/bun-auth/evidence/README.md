@@ -334,3 +334,82 @@ headers })` keeps the input's headers when `headers` is empty, so removing
 the client's only header that way handed its forged copy on. bun-auth builds
 the copy from the request's parts when the header set is empty
 (`lib/handover.ts`); remove that once a stable Bun has the fix.
+
+## E16. The SQL adapter on four engines (PR-A6)
+
+Taken on 2026-11-26 with Bun 1.4.5-canary.1+862278db7 on linux-x64, against
+`develop` at `2f9fe5ec`, with better-auth and `@better-auth/test-utils`
+1.7.27. The servers were `setup-databases.ts`'s: Postgres 16.15, MySQL
+8.4.11, MariaDB 11.8.9; SQLite was Bun's, 3.53.4. The spikes are single
+files run with `bun` against bun-jobs' test databases, each in a table of
+its own that it dropped.
+
+**better-auth's adapter kit runs under `bun test` unchanged.** The kit
+imports `test`, `expect`, `describe`, `beforeAll` and `afterAll` from
+`vitest`, and Bun resolves that to its own runner:
+`import.meta.resolve("vitest")` in a test file is `bun:test/vitest`. Run
+against better-auth's memory adapter, all seven suites (`normal`,
+`transactions`, `auth-flow`, `number-id`, `joins`, `uuid`,
+`case-insensitive`) passed 468 of 468, also with `node_modules/vitest` moved
+away. Nothing was ported. `vitest` is still installed as the kit's peer, and
+unused. The kit is order-dependent by design (each group of cases sets up the
+options and migrations the next relies on): under `bun test --randomize` the
+memory adapter failed 59 and 44 of 468 (seeds 41854 and 54053), so an order
+check leaves the kit's files out and runs them in file order.
+
+**Dates.** A `Date` written and read back through Bun's client, with the
+session's time zone at UTC and at +05:30 (Asia/Kolkata on Postgres):
+
+| Engine | Column | Read back as | Exact |
+|---|---|---|---|
+| Postgres | `TIMESTAMPTZ(3)`, `TIMESTAMP(3)` | `Date` | yes, both zones |
+| MySQL, MariaDB | `DATETIME(3)`, `TIMESTAMP(3)` | `Date` | yes, both zones |
+| any server | `BIGINT` of epoch milliseconds | text on Postgres, a number on MySQL and MariaDB | yes |
+| SQLite | any | binding a `Date` throws ("Binding expected string, TypedArray, boolean, number, bigint or null") | — |
+
+So the adapter stores the engine's timestamp type (`TIMESTAMPTZ(3)`,
+`DATETIME(3)`), readable in the database and exact, and on SQLite better-auth's
+ISO 8601 text (its factory's `supportsDates: false`), which orders correctly
+as text.
+
+**Other values.** Postgres stores JSON text bound into a `JSONB` column as a
+JSON *string* (`"{\"a\":1}"`), so the adapter casts it (bun-sql's
+`jsonParameter`, `$1::text::json`); MySQL and MariaDB parse it and return an
+object. Postgres returns `BIGINT`, `BIGSERIAL` and `COUNT(*)` as text. MySQL
+and MariaDB return `BOOLEAN` as `1`/`0` and accept either in a comparison;
+Postgres refuses `boolean = integer`. An insert on MySQL and MariaDB reports
+`lastInsertRowid`, which is how a serial id is read back without
+`RETURNING`.
+
+**Foreign keys.** An inline `REFERENCES … ON DELETE CASCADE` creates a
+constraint on MariaDB and none on MySQL 8.4, which parses and ignores it
+(`information_schema.REFERENTIAL_CONSTRAINTS`, 1 and 0 rows). bun-sql's
+definitions have no foreign keys and no unique indexes, so the adapter
+creates its unique indexes itself and no foreign keys; better-auth deletes a
+user's sessions and accounts itself (`internalAdapter.deleteUser`, read in
+1.7.27).
+
+**Identifiers.** better-auth's columns are camelCase and its main table is
+`user`, reserved on Postgres; the rate limit's `key` is reserved on MySQL.
+bun-sql's sync binds table and column names as catalog parameters and splices
+the same strings into its DDL, so it cannot take quoted names. The adapter
+gives it the names as stored for the comparison (a dry run) and renders every
+statement itself with quoted identifiers.
+
+**Two bun-sql bugs found** (filed, each with a workaround in the adapter):
+- kingsloob1/bun-node#886: `openSqlClient("sqlite", { url })` opens a
+  Postgres client for a bare path that `detectAdapter` calls SQLite. The
+  adapter rewrites a bare path to `file:<path>`.
+- kingsloob1/bun-node#888: `syncSqlSchema` never drops a stale `ix_` index
+  on a table with no index left in its definition (better-auth's `user`). The
+  adapter reads those tables' indexes itself.
+
+**The suites** (`packages/bun-auth/__tests__/sql/`), the counts in the PR-A6
+report: the kit on each engine; a real `betterAuth()` round trip (sign-up,
+session, sign-out, sign-in; a two-factor backup code redeemed by six
+concurrent requests is accepted once, and more than once with a non-atomic
+`incrementOne` as the negative control; an organisation's members through
+native joins); the schema from empty to a sync with no change, from a drifted
+table, as a dry run, as better-auth's CLI script and with `syncSchema: true`;
+`consumeOne` and a guarded `incrementOne` against eight racers, each with a
+read-then-write negative control.

@@ -1,8 +1,10 @@
 # bun-auth's SQL adapter: better-auth on bun-sql — sub-plan
 
-Part of [the bun-auth plan](README.md) (PR-A6). Status: **plan only**.
+Part of [the bun-auth plan](README.md) (PR-A6). Status: **built in PR-A6
+(2026-11-26), awaiting review**; what the build decided is in
+[Decided in the build](#decided-in-the-build-pr-a6).
 **Measured** and **assumed** are used as in the main plan; the measurements
-are in [`evidence/`](evidence/README.md), E9.
+are in [`evidence/`](evidence/README.md), E9 and E16.
 
 ## What better-auth asks of an adapter (measured, E9)
 
@@ -57,8 +59,9 @@ export const auth = betterAuth({
     `npx @better-auth/cli migrate` and our own `syncSchema` agree;
   - identifier columns get bun-sql's exact collation on MySQL and MariaDB, as
     bun-jobs' do;
-  - dates are stored as epoch milliseconds or the engine's timestamp type, to
-    be decided by measurement: better-auth's `supportsDates`.
+  - dates are stored as the engine's timestamp type, `TIMESTAMPTZ(3)` and
+    `DATETIME(3)`, and as ISO 8601 text on SQLite, which cannot bind a `Date`
+    (measured, E16).
 - **Atomic forms:** `consumeOne` (verification tokens used once) and
   `incrementOne` (counters) as single statements on each engine. They are an
   update with a guard, then `RETURNING` or a re-read inside a transaction on
@@ -70,22 +73,61 @@ export const auth = betterAuth({
 ## Tests
 
 - **better-auth's own adapter cases**, `@better-auth/test-utils/adapter`,
-  1.7.27. Its peer is `vitest ^4 || ^5`. Whether it runs under `bun test` is
-  **assumed unknown**:
-  - if it runs, the suite runs it on each engine whose URL is set;
-  - if not, its cases are ported to `bun:test` with a note naming the
-    version they came from, and the version matrix re-reads them when
-    better-auth moves.
+  1.7.27. Its peer is `vitest ^4 || ^5`. It **runs under `bun test`
+  unchanged** (measured, E16: Bun resolves `vitest` to `bun:test`), so the
+  suite runs all seven of its suites on each engine whose URL is set, and
+  nothing is ported.
 - **A round trip on each engine.** The four servers come from
   `bun scripts/setup-databases.ts`, under `BUN_AUTH_TEST_*_URL`, falling back
   to bun-jobs'. Each suite skips visibly when its URL is unset and fails when
   it is set but unreachable.
   - Sign up, sign in, get the session, sign out.
   - Two factors' backup codes consumed once under concurrency (the negative
-    control: a non-atomic `consumeOne` lets two through).
+    control: a non-atomic `consumeOne` lets two through). Built: better-auth
+    1.7.27 redeems a backup code with `incrementOne` (a compare-and-set on
+    `backupCodes`), so the control is a non-atomic `incrementOne`.
   - An organisation's members listed with `join`.
 - **A schema created by the adapter syncs to no change**, on every engine:
   bun-sql's baseline test.
+
+## Decided in the build (PR-A6)
+
+- **Column types** are in `lib/sql/schema.ts`'s table. On MySQL and MariaDB
+  every string compares exactly: identifiers (an id, a reference, a unique,
+  indexed or sortable string) are bun-sql's `idType`, other text
+  `MEDIUMTEXT` in the same binary collation.
+- **Unique indexes** (`ux_…`) are the adapter's own, created and never
+  dropped: bun-sql's `IndexDefinition` has no `unique`. Plain indexes (`ix_…`)
+  are bun-sql's to sync.
+- **No foreign keys**: bun-sql's definitions have none, MySQL ignores an
+  inline `REFERENCES` (E16), and better-auth deletes a user's dependants
+  itself. A follow-up could add both to bun-sql's definitions.
+- **Quoted identifiers**: better-auth's camelCase columns and `user` table
+  need quoting, which bun-sql's sync cannot take (it binds names as catalog
+  parameters). bun-sql compares, as a dry run over the names as stored; the
+  adapter renders every statement with quoted names.
+- **A column a sync adds to an existing table is nullable**, even where
+  better-auth requires it: the rows already there have no value, and MySQL
+  would fill them with an implicit default silently.
+- **`createSchema`** (the CLI's `generate`) writes the sync's own plan as SQL:
+  what `syncSchema()` would apply, and a retype only as a comment.
+- **`update`** changes every matching row and returns the first, as
+  better-auth's Kysely and memory adapters do.
+- **Joins** (`advanced.database.joins`) are one query per joined model for
+  all the rows, by `IN` on the joining column, grouped back with the
+  per-parent limit.
+- **Paging**: better-auth's adapter API pages by `limit` and `offset`, not by
+  cursor, so bun-sql's keyset cursors have nowhere to go. The adapter orders by
+  the sort field and then the id, so offset pages are stable.
+- **MySQL and MariaDB's `updateMany`** counts the matching rows under
+  `FOR UPDATE` in the update's transaction: their affected-row count is rows
+  *changed*, and Bun's client cannot ask for rows matched.
+- **SQLite is one connection**: every statement runs under one lock per
+  client, a transaction holds it throughout, and a statement from inside the
+  transaction's async context runs on.
+- **Two bun-sql bugs**, worked around in the adapter: kingsloob1/bun-node#886
+  (a bare SQLite path opens a Postgres client) and kingsloob1/bun-node#888
+  (a stale `ix_` index survives on a table with no index left).
 
 ## Estimate
 
