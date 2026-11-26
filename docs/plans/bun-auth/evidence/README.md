@@ -235,3 +235,50 @@ The limiter was off; there were ten tries of each, alternating:
 |---|---|---|---|
 | a wrong password for an account that exists | `401` | `{"message":"Invalid email or password","code":"INVALID_EMAIL_OR_PASSWORD"}` | 64.4 ms |
 | an account that does not exist | `401` | the same | 64.4 ms |
+
+## E14. `req.webRequest()` and `requestParsing({ retainBuffer })` (PR-A0)
+
+Taken on 2026-11-26 with Bun 1.4.5-canary.1+862278db7 on linux-x64, against
+`develop` at `beff674d` with PR-A0's `req.webRequest()`, which reports where
+the body of the `Request` it answers came from (`webRequestSource()`:
+`"original"`, `"retained"`, `"decoded"`, `"parsed"` or `"none"`). No
+better-auth: the handler was bun-common's adapter answering a handler that
+reads `req.webRequest().text()`. Served on port 0 (a real socket, so bodies
+were framed as in production), three bodies — JSON with irregular spacing,
+a form with its keys out of order and a `+`, and plain text — sent to
+`/api/auth/x`, with and without `app.use("/api/auth", requestParsing({
+retainBuffer: true }))` in front. "Exact" means the bytes the handler read
+were the bytes sent.
+
+| Adapter `request` options | `requestParsing({ retainBuffer: true })` on the prefix | Source | JSON | form | text |
+|---|---|---|---|---|---|
+| default (`retainBuffer` unset, which keeps the bytes) | no | `retained` | exact | exact | exact |
+| default | yes | `retained` | exact | exact | exact |
+| `retainBuffer: false` | no | `parsed` | not exact | not exact | exact |
+| `retainBuffer: false` | **yes** | **`parsed`** | **not exact** | **not exact** | exact |
+| `deferBody: true` | no | `original` (a `use` handler, before the read) | exact | exact | exact |
+| `deferBody: true` | yes | `retained` | exact | exact | exact |
+| `deferBody: true, retainBuffer: false` | no | `original` | exact | exact | exact |
+| `deferBody: true, retainBuffer: false` | yes | `retained` | exact | exact | exact |
+
+So the plan's assumption (§4.1) holds only in part. `requestParsing({
+retainBuffer: true })` keeps the bytes on its prefix only for a body still
+unread when it runs, which means an adapter with `deferBody`. An adapter with
+`retainBuffer: false` and no `deferBody` has already read a JSON, form, text
+or XML body without its bytes (`request.json()`, `request.text()`) while the
+request was built, so the middleware is too late, and `webRequest()` answers
+a `"parsed"` request rebuilt from the value. The text body survives that only
+because its value is its text. With the adapter's default, every body keeps
+its bytes anyway, so the middleware changes nothing.
+
+The same rows are asserted in bun-common's `__tests__/webRequest.test.ts`
+(socket-free, with served-shaped requests), beside the parse-mode matrix:
+JSON, urlencoded, multipart, text, XML, raw and no content type, each with
+`deferBody` on and off, `retainBuffer` kept and dropped, mounted by `use` and
+by a route. Multipart and raw always keep their bytes. A body that came with
+a `Content-Encoding` is `"decoded"`: the decoded bytes, the header dropped.
+A Fetch API handler reading JSON and forms through `webRequest()` passed on
+every adapter configuration and mount, and through bun-nest's adapter with
+Nest's body parser on. Passing `req.request` instead failed with `500` as E5
+measured: by `use` and by route on the default adapter, by route under
+`deferBody`, and in every bun-nest configuration.

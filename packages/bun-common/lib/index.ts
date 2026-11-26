@@ -625,6 +625,7 @@ export {
   wsTransport,
 } from "./contract/channel";
 export { requestParsing, type RequestParsingOptions } from "./requestParsing";
+export { webRequestSource, type WebRequestSource } from "./webRequest";
 export { createServeStaticHandler, ServeStaticError } from "./serveStatic";
 export {
   BunViews,

@@ -85,6 +85,7 @@ import {
   UnknownCompressionDictionaryError,
   values,
 } from "./utils/native";
+import { markWebRequest, serializeParsedBody } from "./webRequest";
 
 /**
  * bun-common-specific query-parse options layered on top of picoquery's native
@@ -1875,6 +1876,13 @@ export class BunRequest<
   #readDirect = false;
 
   /**
+   * The value a body read without its bytes parsed to (see {@link #readDirect}),
+   * kept apart from `req.body`, which middleware may replace:
+   * {@link webRequest} rebuilds the body from it.
+   */
+  #receivedBody: unknown = undefined;
+
+  /**
    * The parsed body. Widened to {@link DefaultRequestBody} so the generic
    * `TBody` view can be cast in and out without narrowing the storage.
    */
@@ -2879,6 +2887,7 @@ export class BunRequest<
     }
     this.#bodyParsed = true;
     this.#readDirect = true;
+    this.#receivedBody = this._body;
   }
 
   /** {@link #bodyEnded}, answering the request: the initial read's settlement. */
@@ -2917,6 +2926,7 @@ export class BunRequest<
           this._contentType = "json";
           this.#bodyParsed = true;
           this.#readDirect = true;
+          this.#receivedBody = this._body;
           return this.#ended();
         },
         (error: unknown) =>
@@ -2943,6 +2953,7 @@ export class BunRequest<
         }
         this.#bodyParsed = true;
         this.#readDirect = true;
+        this.#receivedBody = this._body;
         return this.#ended();
       },
       (error: unknown) => this.#failed(error),
@@ -3572,6 +3583,110 @@ export class BunRequest<
       this.#settleEmptyBody();
     }
     return this._buffer;
+  }
+
+  /**
+   * The request as a web `Request` carrying its body as received, for a
+   * handler written against the Fetch API (`(request: Request) =>
+   * Promise<Response>`, such as better-auth's) that reads the body itself.
+   * Handing it {@link request} fails once the body has been read
+   * (`Body already used`), which the adapter does before the first handler
+   * unless `deferBody` is set. This answers, by what is left of the body:
+   *
+   * - unread (`deferBody`, or `parseBody: false`): a `clone()` of
+   *   {@link request}, so its bytes are the ones received and the original
+   *   stays readable for `req.body` and other code;
+   * - read with its bytes kept (`retainBuffer`, the default): a `Request`
+   *   rebuilt from {@link buffer} — decoded when it came with a
+   *   `Content-Encoding`, whose header is then dropped;
+   * - read without them (`retainBuffer: false`: `request.json()`,
+   *   `request.text()`): rebuilt from the value parsed then, in the same
+   *   content type but not byte for byte;
+   * - no body (`GET`, `HEAD`, none sent): {@link request} itself when it has
+   *   no body, else a copy without one.
+   *
+   * {@link webRequestSource} tells which, so a caller that needs the exact
+   * bytes can refuse a `"parsed"` one. A rebuilt request keeps the URL, the
+   * method, the headers ({@link headersObj}; `Content-Length` set to the body
+   * sent, `Transfer-Encoding` dropped) and the abort `signal`. Each call
+   * answers a new, unread `Request` (but the bodiless original) and never
+   * reads the body: `req.body`, {@link buffer} and a deferred read work as
+   * before.
+   *
+   * @throws TypeError while the body is still being read (await
+   * {@link ready} first), and when it was read with nothing kept — through
+   * {@link request} directly, or by a read that failed.
+   */
+  webRequest(): Request {
+    const original = this.request;
+    const method = original.method;
+    if (method === "GET" || method === "HEAD") {
+      if (original.body === null) {
+        return markWebRequest(original, "none");
+      }
+      const headers = new Headers(this.headersObj);
+      headers.delete("content-length");
+      headers.delete("transfer-encoding");
+      headers.delete("content-encoding");
+      return markWebRequest(
+        new Request(original.url, { method, headers, signal: original.signal }),
+        "none",
+      );
+    }
+    if (this.#readDirect) {
+      const xml =
+        this.getParserOpts("xml") ?? this.legacyOptions.parseXmlOpts ?? {};
+      const text = serializeParsedBody(this._contentType, this.#receivedBody, {
+        urlencoded: withDefaultQueryOpts(this.getParserOpts("urlencoded")),
+        attributeNamePrefix: xml.attributeNamePrefix,
+        textNodeName: xml.textNodeName,
+      });
+      return markWebRequest(this.#rebuiltRequest(Buffer.from(text)), "parsed");
+    }
+    const buffer = this._buffer;
+    if (!original.bodyUsed) {
+      if (original.body === null) {
+        return markWebRequest(original, "none");
+      }
+      if (buffer === undefined) {
+        // `clone()` is typed by both bun-types and undici-types; Bun's is the one that runs.
+        return markWebRequest(original.clone() as Request, "original");
+      }
+    }
+    if (buffer !== undefined) {
+      const encoding = this.headersObj.get("content-encoding");
+      const decoded =
+        encoding !== null && parseContentCodings(encoding).length > 0;
+      return markWebRequest(
+        this.#rebuiltRequest(buffer),
+        decoded ? "decoded" : "retained",
+      );
+    }
+    throw new TypeError(
+      this.#bodyState === "errored"
+        ? "webRequest(): the body's read failed, with nothing kept to send on"
+        : "webRequest(): the body was read with nothing kept to send on " +
+            "(a read still in progress: await req.ready() first)",
+    );
+  }
+
+  /**
+   * A copy of {@link request} carrying `body`: the URL, method, headers and
+   * signal kept, `Content-Length` set to `body`'s and `Transfer-Encoding` and
+   * `Content-Encoding` dropped (a kept body is the decoded one).
+   */
+  #rebuiltRequest(body: Uint8Array): Request {
+    const original = this.request;
+    const headers = new Headers(this.headersObj);
+    headers.delete("transfer-encoding");
+    headers.delete("content-encoding");
+    headers.set("content-length", String(body.byteLength));
+    return new Request(original.url, {
+      method: original.method,
+      headers,
+      body,
+      signal: original.signal,
+    });
   }
 
   /**
