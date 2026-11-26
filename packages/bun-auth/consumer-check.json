@@ -58,6 +58,23 @@
       "peers": ["@kingsleyweb/bun-sql"],
       "values": ["bunSqlAdapter"],
       "types": ["BunSqlAdapter"]
+    },
+    {
+      "$comment": "better-auth's password hooks on Bun.password. Needs better-auth and @better-auth/core (required peers); checked in a consumer with no optional peer.",
+      "spelling": "@kingsleyweb/bun-auth/password",
+      "values": ["bunPassword", "isBunPasswordHash"],
+      "types": [
+        "BunPasswordOptions",
+        "BunPasswordAlgorithm",
+        "BunPasswordHooks",
+        "LegacyHashEvent"
+      ],
+      "snippet": "import { betterAuth } from \"better-auth\";\nconst password: t.BunPasswordHooks = m.bunPassword({ algorithm: { algorithm: \"argon2id\", memoryCost: 19456, timeCost: 2 }, onLegacyHash: async (event: t.LegacyHashEvent) => { if (event.userId !== null) await event.rehash(); } });\nconst auth = betterAuth({ emailAndPassword: { enabled: true, password } });\nconst legacy: boolean = m.isBunPasswordHash(\"salt:hash\");\nexport type _hooksNotAny = Expect<IsAny<t.BunPasswordHooks>>;\nexport const _p = [auth, legacy];"
+    },
+    {
+      "spelling": "@kingsleyweb/bun-auth/lib/password",
+      "values": ["bunPassword"],
+      "types": ["LegacyHashEvent"]
     }
   ]
 }

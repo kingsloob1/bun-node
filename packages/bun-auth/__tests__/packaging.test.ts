@@ -110,7 +110,7 @@ describe("package.json exports", () => {
   });
 
   it("gives every area its own subpath", () => {
-    for (const area of ["serve", "sql"]) {
+    for (const area of ["serve", "sql", "password"]) {
       for (const key of [`./${area}`, `./lib/${area}`]) {
         expect(manifest.exports[key]).toEqual({
           "@kingsleyweb/source": `./lib/${area}/index.ts`,
@@ -183,12 +183,14 @@ describe("this package's dependencies", () => {
     }
   });
 
-  it("checks the root and ./serve in a consumer with no optional peer", () => {
+  it("checks the root, ./serve and ./password in a consumer with no optional peer", () => {
     for (const entry of checkConfig.entries ?? []) {
       if (
         entry.spelling === "@kingsleyweb/bun-auth" ||
         entry.spelling.startsWith("@kingsleyweb/bun-auth/serve") ||
         entry.spelling.startsWith("@kingsleyweb/bun-auth/lib/serve") ||
+        entry.spelling.startsWith("@kingsleyweb/bun-auth/password") ||
+        entry.spelling.startsWith("@kingsleyweb/bun-auth/lib/password") ||
         entry.spelling === "@kingsleyweb/bun-auth/lib"
       ) {
         expect(entry.peers ?? []).toEqual([]);
