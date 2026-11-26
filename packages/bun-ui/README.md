@@ -569,6 +569,10 @@ the UI's own page needs are accepted and ignored.
   UI's are a WebSocket, which cannot carry headers, so it authenticates by
   cookie.
 - **React is bundled in** (any page, React or not, any React version).
+- **Your bundler owns its splitting.** The module's lazy screens are plain
+  `import()`s, with no preload table of the package's own: re-bundled, your
+  output names only its own chunk files (#880). Loaded from the UI's router
+  instead, a screen's chunks are found as the browser reads them.
 - **Give it a plain element**, not a `<main>`: the UI renders its own
   `<main>` landmark and its screen's `<h1>`, so your page keeps its own
   header and navigation landmarks beside them, as in the [host-shell
