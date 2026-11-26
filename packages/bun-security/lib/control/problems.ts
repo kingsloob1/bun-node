@@ -64,3 +64,36 @@ export function notFound(what: string): ApiProblem {
 export function conflict(detail: string, current: unknown): ApiProblem {
   return new ApiProblem(409, "conflict", detail, { current });
 }
+
+/**
+ * The problem for a client error raised outside the API's own code, or
+ * `undefined` when `error` is not one: an `http-errors`-shaped error (a
+ * `400`, `413` or `415` `status` or `statusCode`, `expose: true`), as bun-common's deferred
+ * body read throws for a body over the host's `maxContentLength` (`413`),
+ * a body that does not parse as its declared type (`400`), or a refused
+ * `Content-Encoding` or charset (`415`). Its message is safe to show, so it
+ * is the problem's detail (#883: these used to answer `500 internal`).
+ * Another status is not mapped: the API has no code that would name it
+ * faithfully, so it stays an internal error.
+ */
+export function clientErrorProblem(error: unknown): ApiProblem | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const fields = error as Error & {
+    readonly status?: unknown;
+    readonly statusCode?: unknown;
+    readonly expose?: unknown;
+  };
+  const status =
+    typeof fields.status === "number" ? fields.status : fields.statusCode;
+  if (fields.expose !== true) return undefined;
+  switch (status) {
+    case 400:
+      return new ApiProblem(400, "invalid_request", error.message);
+    case 413:
+      return new ApiProblem(413, "too_large", error.message);
+    case 415:
+      return new ApiProblem(415, "unsupported_encoding", error.message);
+    default:
+      return undefined;
+  }
+}

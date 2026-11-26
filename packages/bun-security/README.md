@@ -1400,6 +1400,12 @@ const admin = await secureAdmin({ port: 9443, api }); // 127.0.0.1 unless told o
   `policy.published`, `bundle.compiled`, `approval.created` and
   `approval.decided` (server-sent events) to operators who may read the
   scope; `/openapi.json` and `/asyncapi.json` document it all.
+- **Bodies the host refuses**: on a host that reads bodies on demand
+  (`deferBody: true`, as `secureAdmin` sets), the host's own refusal of a
+  body is answered as the client's, not as an `internal` error: one over
+  its `parseBody.maxContentLength` is a `413` `too_large`, one that does not
+  parse as its declared type a `400` `invalid_request`, a refused charset or
+  `Content-Encoding` a `415` `unsupported_encoding`. None is logged.
 - `./control/contract` holds the wire types, permission and role names and
   problem codes, browser-safe with no runtime import, for a UI or client.
 

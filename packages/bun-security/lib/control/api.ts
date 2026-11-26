@@ -26,7 +26,7 @@ import { csrf } from "../http/csrf";
 import { agentEventsRoute } from "./agentEvents";
 import { resolveOptions } from "./options";
 import { ControlPlane } from "./plane";
-import { ApiProblem } from "./problems";
+import { ApiProblem, clientErrorProblem } from "./problems";
 import { addRoute, sendProblem } from "./route";
 import { routes } from "./routes";
 import { addAgentEventsRoute, addAgentRoutes } from "./agentRoutes";
@@ -265,6 +265,13 @@ export function createSecurityApi(options: SecurityApiOptions): SecurityApi {
           })),
         }),
       );
+      return;
+    }
+    // A client error from outside the API's code: the host's deferred body
+    // read refusing a body (413, 400, 415). The client's mistake, not ours.
+    const clientProblem = clientErrorProblem(error);
+    if (clientProblem !== undefined) {
+      sendProblem(res, clientProblem);
       return;
     }
     if (error instanceof ResponseValidationError) {
