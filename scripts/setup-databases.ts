@@ -55,12 +55,25 @@ const REPO_ROOT = resolve(import.meta.dir, "..");
  * this script's own checks do the same. A container that exists is only
  * started, never recreated, so its certificate is never replaced under it.
  *
+ * Docker fixes a container's server arguments (`--max-connections`, Postgres's
+ * `-c max_connections`) and its `--ulimit nofile` when it is created, so a
+ * container made before one of them was added keeps the old settings. Such a
+ * container is reported, and recreated only with `--recreate`
+ * ({@link recreateContainer}): stopped, renamed to `<name>-prev`, run again
+ * under its name with `--volumes-from <name>-prev` (the same data), checked
+ * (the credentials, the setting, every database it had), and only then is
+ * `<name>-prev` removed, never its volume; any failure puts the old one back.
+ * The recreated container never gets a lower `max_connections` than the server
+ * has now. One with files copied in at creation (`azure-oauth`) or running
+ * another image is not recreated.
+ *
  * ```bash
  * bun scripts/setup-databases.ts              # install what is missing, configure what is not
  * bun scripts/setup-databases.ts --dry-run    # print the plan, change nothing
  * bun scripts/setup-databases.ts --docker     # containers instead of system packages
  * bun scripts/setup-databases.ts --only=mongodb
  * bun scripts/setup-databases.ts --max-connections=800
+ * bun scripts/setup-databases.ts --only=mysql --recreate --dry-run
  * bun scripts/setup-databases.ts --print-env  # just the env vars for the suites
  * ```
  */
@@ -342,6 +355,14 @@ interface Options {
    * a restart drops every open connection on a shared server.
    */
   restartPostgres: boolean;
+  /**
+   * Recreate a container of this script's whose creation-time settings
+   * (`--max-connections`, Postgres's `-c max_connections`, the open-file
+   * limit) fall short of what it is created with now, keeping its data with
+   * `--volumes-from` (see {@link recreateContainer}). Off by default: without
+   * it such a container is only reported.
+   */
+  recreate: boolean;
 }
 
 /**
@@ -389,6 +410,7 @@ export function parseArgs(argv: string[]): Options {
     maxConnections: defaultMaxConnections(),
     postgresMaxConnections: defaultPostgresMaxConnections(),
     restartPostgres: false,
+    recreate: false,
   };
 
   for (const arg of argv) {
@@ -443,6 +465,8 @@ export function parseArgs(argv: string[]): Options {
       );
     } else if (arg === "--restart-postgres") {
       options.restartPostgres = true;
+    } else if (arg === "--recreate") {
+      options.recreate = true;
     } else if (arg === "--help" || arg === "-h") {
       printHelp();
       process.exit(0);
@@ -499,10 +523,23 @@ Options
                     Restart Postgres to apply a raised max_connections,
                     then confirm it. Off by default: a restart drops every
                     open connection.
+  --recreate        Recreate a container of this script's that was created
+                    without a setting it is created with now (MariaDB's and
+                    MySQL's --max-connections, Postgres's -c max_connections
+                    pinned below the target, the open-file limit), keeping
+                    its data: stop it, rename it to <name>-prev, run the new
+                    one with --volumes-from <name>-prev, wait for the
+                    credentials, check the setting and every database, and
+                    only then remove <name>-prev (never its volume). Any
+                    failure puts the old container back. Without it such a
+                    container is only reported. It restarts the server, so
+                    run it when nothing is using it; --dry-run prints the
+                    commands.
 
 Running it twice is safe: an installed server is not reinstalled, and
 configuration runs only when a connection with the expected credentials
 fails. Nothing is dropped or overwritten, and no limit is ever lowered.
+A container is recreated only with --recreate, and keeps its data.
 `);
 }
 
@@ -841,8 +878,18 @@ export function dockerCreateArgv(spec: ContainerSpec): string[] {
   return [docker, "create", ...rest];
 }
 
-/** The `docker run` command that creates a container to `spec`. */
-export function dockerRunArgv(spec: ContainerSpec): string[] {
+/**
+ * The `docker run` command that creates a container to `spec`. With
+ * `volumesFrom`, the new container mounts that container's volumes, which is
+ * how {@link recreateContainer} keeps a server's data.
+ */
+export function dockerRunArgv(
+  spec: ContainerSpec,
+  extra: {
+    /** A container whose volumes the new one mounts (`--volumes-from`). */
+    volumesFrom?: string;
+  } = {},
+): string[] {
   return [
     "docker",
     "run",
@@ -862,6 +909,7 @@ export function dockerRunArgv(spec: ContainerSpec): string[] {
     // an existing container; it applies when one is created.
     "--ulimit",
     `nofile=${OPEN_FILE_LIMIT}:${OPEN_FILE_LIMIT}`,
+    ...(extra.volumesFrom ? ["--volumes-from", extra.volumesFrom] : []),
     ...Object.entries(spec.env).flatMap(([key, value]) => [
       "--env",
       `${key}=${value}`,
@@ -924,45 +972,405 @@ async function containerCmd(name: string): Promise<string[] | null> {
   }
 }
 
+/** What `docker container inspect` reports about how a container was created. */
+export interface InspectedContainer {
+  /** Its id, so a rollback can tell the old container from the new one. */
+  id: string;
+  /** The image it was created from (`Config.Image`). */
+  image: string;
+  /** Its command line (`Config.Cmd`): the server's arguments; `null` when it has none. */
+  cmd: string[] | null;
+  /** Its ulimits (`HostConfig.Ulimits`); `null` when none were set at creation. */
+  ulimits: Array<{
+    /** The limit's name, `nofile` for the open-file limit. */
+    Name: string;
+    /** The soft limit. */
+    Soft: number;
+    /** The hard limit. */
+    Hard: number;
+  }> | null;
+}
+
 /**
- * Warns when an existing container was created without the open-file limit.
- * Docker fixes ulimits at creation, so an older container keeps the daemon's
- * default until it is recreated; this only reports, and changes nothing.
+ * The `docker container inspect` format {@link parseInspected} reads: one JSON
+ * array of the id, the image, the command line and the ulimits.
  */
-async function checkContainerLimit(name: string): Promise<void> {
-  const inspected = await run([
+export const INSPECT_FORMAT =
+  "[{{json .Id}},{{json .Config.Image}},{{json .Config.Cmd}},{{json .HostConfig.Ulimits}}]";
+
+/**
+ * Reads how a container was created, or `null` when there is no such
+ * container (or no Docker). The format is JSON, read through {@link run}'s
+ * pipe: snap Docker's output is lost only when it is redirected to a file
+ * under `/tmp`, which this never does.
+ */
+async function inspectContainer(
+  name: string,
+  runner: Runner = run,
+): Promise<InspectedContainer | null> {
+  const inspected = await runner([
     "docker",
     "container",
     "inspect",
     "--format",
-    "{{json .HostConfig.Ulimits}}",
+    INSPECT_FORMAT,
     name,
   ]);
+  return inspected.ok ? parseInspected(inspected.stdout) : null;
+}
 
-  // No such container, or no Docker: nothing to check.
-  if (!inspected.ok) {
-    return;
-  }
-
-  /** One entry of `docker inspect`'s `HostConfig.Ulimits`; the list is `null` when none are set. */
-  type Ulimits = Array<{ Name: string; Soft: number }> | null;
-  let limits: Ulimits;
+/**
+ * Parses {@link inspectContainer}'s output ({@link INSPECT_FORMAT}), or
+ * `null` when it is not that.
+ */
+export function parseInspected(stdout: string): InspectedContainer | null {
   try {
-    // Cast to the named type: `typeof limits` here would read the narrowed
-    // type of a variable not yet assigned, not its declaration.
-    limits = JSON.parse(inspected.stdout.trim()) as Ulimits;
+    const [id, image, cmd, ulimits] = JSON.parse(stdout.trim()) as [
+      unknown,
+      unknown,
+      unknown,
+      unknown,
+    ];
+    if (typeof id !== "string" || typeof image !== "string") {
+      return null;
+    }
+    return {
+      id,
+      image,
+      cmd: Array.isArray(cmd) ? cmd.map(String) : null,
+      ulimits: Array.isArray(ulimits)
+        ? (ulimits as InspectedContainer["ulimits"])
+        : null,
+    };
   } catch {
-    return;
+    return null;
+  }
+}
+
+/** One setting a container was created without, or with too little of. */
+export interface Drift {
+  /** Which setting. */
+  setting: "max-connections" | "nofile";
+  /** What the container has against what it is created with now, in words. */
+  message: string;
+}
+
+/**
+ * The settings `inspected` was created without, against what `spec` creates
+ * a container with now. Only settings fixed at creation count, and only
+ * shortfalls:
+ *
+ *   - the open-file limit, `--ulimit nofile`, missing or below
+ *     {@link OPEN_FILE_LIMIT};
+ *   - MariaDB's and MySQL's `--max-connections`, missing or below the spec's
+ *     (both spellings, as {@link maxConnectionsArg} reads them);
+ *   - Postgres's `-c max_connections`, only when pinned **below** the spec's.
+ *     A container with no pin is not behind: `ALTER SYSTEM` keeps its value
+ *     across restarts, and a pin would outrank a higher value set that way.
+ *
+ * A container above the spec is somebody's deliberate choice, and not drift.
+ */
+export function containerDrift(
+  spec: ContainerSpec,
+  inspected: Pick<InspectedContainer, "cmd" | "ulimits">,
+): Drift[] {
+  const drift: Drift[] = [];
+
+  const soft = inspected.ulimits?.find(
+    (limit) => limit.Name === "nofile",
+  )?.Soft;
+  if (soft === undefined || soft < OPEN_FILE_LIMIT) {
+    drift.push({
+      setting: "nofile",
+      message:
+        soft === undefined
+          ? `created without --ulimit nofile=${OPEN_FILE_LIMIT}:${OPEN_FILE_LIMIT}, so it has the Docker daemon's default open-file limit`
+          : `created with an open-file limit of ${soft}, below ${OPEN_FILE_LIMIT}`,
+    });
   }
 
-  const soft = limits?.find((limit) => limit.Name === "nofile")?.Soft;
-  if (soft !== undefined && soft >= OPEN_FILE_LIMIT) {
-    return;
+  const args = spec.args ?? [];
+  const wanted = maxConnectionsArg(args);
+  if (wanted !== null) {
+    const pinned = maxConnectionsArg(inspected.cmd);
+    if (pinned === null || pinned < wanted) {
+      drift.push({
+        setting: "max-connections",
+        message: `created ${pinned === null ? "without --max-connections" : `with --max-connections=${pinned}`}, where it is now created with --max-connections=${wanted}`,
+      });
+    }
+    return drift;
   }
 
-  log.warn(
-    `container ${name} has ${soft === undefined ? "the Docker daemon's default open-file limit" : `an open-file limit of ${soft}`}; recreate it to get --ulimit nofile=${OPEN_FILE_LIMIT}:${OPEN_FILE_LIMIT} (keep its data with --volumes-from)`,
+  const pgWanted = postgresMaxConnectionsArg(args);
+  if (pgWanted !== null) {
+    const pinned = postgresMaxConnectionsArg(inspected.cmd);
+    if (pinned !== null && pinned < pgWanted) {
+      drift.push({
+        setting: "max-connections",
+        message: `created with -c max_connections=${pinned}, which outranks ALTER SYSTEM, where it is now created with -c max_connections=${pgWanted}`,
+      });
+    }
+  }
+  return drift;
+}
+
+/**
+ * Why a drifted container cannot be recreated by {@link recreateContainer},
+ * or `null` when it can. `--volumes-from` carries the container's volumes and
+ * nothing else, so a container with files copied into its filesystem at
+ * creation ({@link ContainerSpec.copyIn}) would lose them; and one running
+ * another image would have its data opened by a different server version.
+ */
+export function recreateBlocker(
+  spec: ContainerSpec,
+  inspected: Pick<InspectedContainer, "image">,
+): string | null {
+  if (spec.copyIn) {
+    return `its files were copied into it at creation, which --volumes-from does not carry; remove it (docker rm ${spec.name}) and rerun to create it afresh`;
+  }
+  if (inspected.image !== spec.image) {
+    return `it runs ${inspected.image}, not ${spec.image}, and recreating it would open its data with another server version; recreate it by hand`;
+  }
+  return null;
+}
+
+/** The suffix of the name a container is renamed to while it is recreated. */
+export const RECREATE_SUFFIX = "-prev";
+
+/**
+ * How long `docker stop` lets a server shut down cleanly before killing it,
+ * in seconds. Docker's default of 10 can cut an InnoDB shutdown short, which
+ * a restart then has to recover from.
+ */
+export const RECREATE_STOP_SECONDS = 60;
+
+/** The commands of a recreate, in the order they run. */
+export interface RecreateArgv {
+  /** Stops the old container. */
+  stop: string[];
+  /** Renames it out of the way, to `<name>-prev`. */
+  rename: string[];
+  /** Runs the new container, under the old name, with the old one's volumes. */
+  run: string[];
+  /** Removes the old container, never its volumes (no `-v`), once the new one checks out. */
+  remove: string[];
+}
+
+/** The commands {@link recreateContainer} runs for `spec`. */
+export function recreateArgv(spec: ContainerSpec): RecreateArgv {
+  const prev = `${spec.name}${RECREATE_SUFFIX}`;
+  return {
+    stop: [
+      "docker",
+      "stop",
+      "--time",
+      String(RECREATE_STOP_SECONDS),
+      spec.name,
+    ],
+    rename: ["docker", "rename", spec.name, prev],
+    run: dockerRunArgv(spec, { volumesFrom: prev }),
+    remove: ["docker", "rm", prev],
+  };
+}
+
+/** What {@link recreateContainer} does its work through; tests pass fakes. */
+export interface RecreateIo {
+  /** Runs a docker command. */
+  runner: Runner;
+  /** Waits until the server accepts the expected credentials. */
+  waitReady: () => Promise<boolean>;
+  /**
+   * Checks the new container: the settings it was recreated for, and that
+   * every database that connected before still connects. Resolves the
+   * problem found, or `null`.
+   */
+  verify: () => Promise<string | null>;
+}
+
+/** How a recreate ended. */
+export interface RecreateResult {
+  /**
+   * `recreated`: the new container is in place; `planned`: a dry run;
+   * `refused`: nothing was changed; `rolled-back`: it failed and the old
+   * container is serving again; `rollback-failed`: it failed and the old
+   * container could not be brought back (its data is intact, under the name
+   * the log gives).
+   */
+  outcome:
+    "recreated" | "planned" | "refused" | "rolled-back" | "rollback-failed";
+  /** A note for the summary. */
+  note: string;
+}
+
+/**
+ * Recreates `spec`'s container with the settings it is created with now,
+ * keeping its data:
+ *
+ *   1. `docker stop` it (with {@link RECREATE_STOP_SECONDS} to shut down);
+ *   2. `docker rename` it to `<name>-prev`;
+ *   3. `docker run` the new one under the old name, with the old one's
+ *      volumes (`--volumes-from <name>-prev`), so the same data directory;
+ *   4. wait for the expected credentials;
+ *   5. verify the setting and that every database still connects;
+ *   6. only then `docker rm <name>-prev`, never with `-v`.
+ *
+ * On any failure from step 1 on, it rolls back: removes the new container
+ * (only one whose id is not the old one's), renames `<name>-prev` back,
+ * starts it and waits for the credentials. It refuses to start when a
+ * `<name>-prev` already exists, which is an earlier recreate's leftover. A
+ * dry run prints the commands and runs none.
+ */
+export async function recreateContainer(
+  spec: ContainerSpec,
+  dryRun: boolean,
+  io: RecreateIo,
+): Promise<RecreateResult> {
+  const name = spec.name;
+  const prev = `${name}${RECREATE_SUFFIX}`;
+  const argv = recreateArgv(spec);
+
+  log.cmd(argv.stop);
+  log.cmd(argv.rename);
+  log.cmd(argv.run);
+  log.skip(
+    "then wait for the expected credentials, check the setting and that every database still connects, and only then:",
   );
+  log.cmd(argv.remove);
+  log.skip(
+    `on any failure: docker rm --force <the new ${name}>; docker rename ${prev} ${name}; docker start ${name}`,
+  );
+  if (dryRun) {
+    return { outcome: "planned", note: "would be recreated, keeping its data" };
+  }
+
+  const existing = await io.runner([
+    "docker",
+    "ps",
+    "--all",
+    "--filter",
+    `name=^/${prev}$`,
+    "--format",
+    "{{.State}}",
+  ]);
+  if (!existing.ok) {
+    log.bad(tail(existing.stderr, 2) || "could not list the containers");
+    return { outcome: "refused", note: "not recreated: docker ps failed" };
+  }
+  if (existing.stdout.trim()) {
+    log.bad(
+      `a container named ${prev} already exists, left by an earlier recreate; check it holds nothing you need, remove it (docker rm ${prev}, never -v: its volume may be the data) and rerun`,
+    );
+    return { outcome: "refused", note: `not recreated: ${prev} exists` };
+  }
+
+  const old = await inspectContainer(name, io.runner);
+  if (!old) {
+    log.bad(`could not inspect container ${name}`);
+    return { outcome: "refused", note: "not recreated: inspect failed" };
+  }
+
+  /** Puts the old container back, after `why`. */
+  const rollBack = async (
+    renamed: boolean,
+    why: string,
+  ): Promise<RecreateResult> => {
+    log.bad(why);
+    log.warn(`rolling back to the old container ${name}`);
+    if (renamed) {
+      // Only a container that is not the old one: never the data's owner.
+      const made = await inspectContainer(name, io.runner);
+      if (made && made.id !== old.id) {
+        const remove = ["docker", "rm", "--force", made.id];
+        log.cmd(remove);
+        const removed = await io.runner(remove);
+        if (!removed.ok) {
+          log.bad(
+            `could not remove the new container: ${tail(removed.stderr, 2)}; the old one, with the data, is ${prev}: docker rm --force ${made.id} && docker rename ${prev} ${name} && docker start ${name}`,
+          );
+          return {
+            outcome: "rollback-failed",
+            note: `recreate failed (${why}); rollback failed, the old container is ${prev}`,
+          };
+        }
+      }
+      const back = ["docker", "rename", prev, name];
+      log.cmd(back);
+      const renamedBack = await io.runner(back);
+      if (!renamedBack.ok) {
+        log.bad(
+          `could not rename ${prev} back: ${tail(renamedBack.stderr, 2)}; the old container and its data are intact under that name: docker rename ${prev} ${name} && docker start ${name}`,
+        );
+        return {
+          outcome: "rollback-failed",
+          note: `recreate failed (${why}); rollback failed, the old container is ${prev}`,
+        };
+      }
+    }
+    const start = ["docker", "start", name];
+    log.cmd(start);
+    const started = await io.runner(start);
+    if (!started.ok || !(await io.waitReady())) {
+      log.bad(
+        `the old container ${name} did not come back${started.ok ? " with the expected credentials" : `: ${tail(started.stderr, 2)}`}; check docker logs ${name} | cat`,
+      );
+      return {
+        outcome: "rollback-failed",
+        note: `recreate failed (${why}); the old container did not come back`,
+      };
+    }
+    log.did(`rolled back: the old container ${name} is serving again`);
+    return {
+      outcome: "rolled-back",
+      note: `recreate failed (${why}); rolled back to the old container`,
+    };
+  };
+
+  const stopped = await io.runner(argv.stop);
+  if (!stopped.ok) {
+    return await rollBack(
+      false,
+      `could not stop ${name}: ${tail(stopped.stderr, 2)}`,
+    );
+  }
+  const renamed = await io.runner(argv.rename);
+  if (!renamed.ok) {
+    return await rollBack(
+      false,
+      `could not rename ${name}: ${tail(renamed.stderr, 2)}`,
+    );
+  }
+  const created = await io.runner(argv.run);
+  if (!created.ok) {
+    return await rollBack(
+      true,
+      `could not run the new ${name}: ${tail(created.stderr, 2)}`,
+    );
+  }
+  if (!(await io.waitReady())) {
+    return await rollBack(
+      true,
+      `the new ${name} did not accept the expected credentials`,
+    );
+  }
+  const problem = await io.verify();
+  if (problem) {
+    return await rollBack(true, `the new ${name} failed its check: ${problem}`);
+  }
+
+  const removed = await io.runner(argv.remove);
+  if (!removed.ok) {
+    log.warn(
+      `could not remove ${prev}: ${tail(removed.stderr, 2)}; the new container is in use, so remove the old one yourself: docker rm ${prev} (never -v)`,
+    );
+    log.did(`recreated ${name}, keeping its data`);
+    return {
+      outcome: "recreated",
+      note: `recreated, keeping its data (${prev} left to remove)`,
+    };
+  }
+  log.did(`recreated ${name}, keeping its data`);
+  return { outcome: "recreated", note: "recreated, keeping its data" };
 }
 
 /** Creates a container, copies `files` into it, then starts it. */
@@ -1025,14 +1433,11 @@ async function ensureContainer(
 ): Promise<boolean> {
   const state = await containerState(spec.name);
 
+  // An existing container's creation-time settings are checked once it is
+  // usable, by `reconcileContainer`.
   if (state === "running") {
     log.skip(`container ${spec.name} is already running`);
-    await checkContainerLimit(spec.name);
     return true;
-  }
-
-  if (state) {
-    await checkContainerLimit(spec.name);
   }
 
   if (state) {
@@ -1473,8 +1878,9 @@ async function raiseOverSql(
  * raised with a drop-in file plus `SET GLOBAL` as root, through `sudo` like
  * the user creation. A container is created with `--max-connections`; one
  * that already exists below the target is raised live through the root
- * account the container was created with, and told to be recreated when its
- * command line would put the old value back on a restart.
+ * account the container was created with. A container whose command line
+ * lacks the target is reported (or, with `--recreate`, recreated) before
+ * this runs, by `reconcileContainer`.
  */
 async function ensureConnectionLimit(
   plan: ServicePlan,
@@ -1509,9 +1915,6 @@ async function ensureConnectionLimit(
     }
   } else if (decision.action === "keep") {
     log.skip(describeLimit(decision));
-    if (host === "container") {
-      await warnUnpinnedLimit(plan.service, name, target, decision.current);
-    }
     return `max_connections ${decision.current}`;
   } else {
     log.warn(describeLimit(decision));
@@ -1535,7 +1938,6 @@ async function ensureConnectionLimit(
       }
       log.did(`raised max_connections to ${target}`);
     }
-    await warnUnpinnedLimit(plan.service, name, target, target);
     return `max_connections ${from}${target}`;
   }
 
@@ -1585,42 +1987,6 @@ async function isDirectory(path: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-/**
- * Warns when a container's command line does not carry the target, so the
- * value it has now is a runtime setting a restart may undo. MariaDB's
- * `SET GLOBAL` is lost on a restart; MySQL's `SET PERSIST`, which is how this
- * script raises it, is kept, but a value set by hand with `SET GLOBAL` is not.
- * Only reports, like {@link checkContainerLimit}, and never suggests less
- * than the server has now.
- */
-async function warnUnpinnedLimit(
-  service: Service,
-  name: string,
-  target: number,
-  current: number | null,
-): Promise<void> {
-  const cmd = await containerCmd(name);
-  if (cmd === null) {
-    return;
-  }
-  const pinned = maxConnectionsArg(cmd);
-  if (pinned !== null && pinned >= target) {
-    return;
-  }
-  const created =
-    pinned === null
-      ? "without --max-connections"
-      : `with --max-connections=${pinned}`;
-  const undo =
-    service === "mysql"
-      ? "a restart keeps a value set with SET PERSIST but loses one set with SET GLOBAL"
-      : "a restart loses the live value";
-  const wanted = Math.max(target, current ?? 0);
-  log.warn(
-    `container ${name} was created ${created}, so ${undo}; recreate it to get --max-connections=${wanted} (keep its data with --volumes-from)`,
-  );
 }
 
 /* ------------------------------------------------------------------ *
@@ -1850,7 +2216,7 @@ export async function applyPostgresLimit(
     ctx.containerPin < target
   ) {
     log.bad(
-      `container ${ctx.containerName} was created with -c max_connections=${ctx.containerPin}, which outranks ALTER SYSTEM; recreate it with -c max_connections=${target} (keep its data with --volumes-from)`,
+      `container ${ctx.containerName} was created with -c max_connections=${ctx.containerPin}, which outranks ALTER SYSTEM; rerun with --recreate to recreate it with -c max_connections=${target}, keeping its data`,
     );
     return `max_connections ${plan.current ?? "unknown"} (pinned by the container's command line)`;
   }
@@ -3145,6 +3511,8 @@ interface Outcome {
   note: string;
   /** Whether bun-cache's database could not be made usable, on a server that has one. */
   cacheFailed?: boolean;
+  /** Whether `--recreate` was asked for and did not recreate this server's container. */
+  recreateFailed?: boolean;
 }
 
 /**
@@ -3348,6 +3716,200 @@ function withLimit(note: string, limit: string): string {
   return limit ? `${note}; ${limit}` : note;
 }
 
+/** What {@link reconcileContainer} found and did. */
+interface Reconciled {
+  /** A note for the summary, or `""` when the container is as it should be. */
+  note: string;
+  /** Whether `--recreate` was asked for and did not happen, which fails the run. */
+  failed: boolean;
+  /** Whether the server is down after it: a rollback that did not bring the old container back. */
+  down: boolean;
+}
+
+/** Nothing to report. */
+const RECONCILED: Reconciled = { note: "", failed: false, down: false };
+
+/**
+ * A SQL server's databases this script provides, by name and the suites' URL
+ * to each: bun-jobs', bun-cache's and bun-cache's benchmark one. Empty for a
+ * server that is not SQL.
+ */
+function sqlDatabases(
+  plan: ServicePlan,
+  options: Options,
+): Array<{ name: string; url: string }> {
+  if (!plan.managesConnectionLimit && plan.service !== "postgres") {
+    return [];
+  }
+  return [
+    { name: options.database, url: plan.url(options) },
+    ...(plan.cacheUrl
+      ? [{ name: options.cacheDatabase, url: plan.cacheUrl(options) }]
+      : []),
+    ...(plan.cacheBenchUrl
+      ? [{ name: options.cacheBenchDatabase, url: plan.cacheBenchUrl(options) }]
+      : []),
+  ];
+}
+
+/**
+ * The `max_connections` a SQL server has now, or `null` when it cannot be
+ * read or the server has none. For Postgres a value waiting for a restart
+ * counts too, so a recreate never pins less than what is pending.
+ */
+async function liveLimit(
+  plan: ServicePlan,
+  options: Options,
+): Promise<number | null> {
+  if (plan.managesConnectionLimit) {
+    return await readMaxConnections(plan.url(options));
+  }
+  if (plan.service === "postgres") {
+    const state = await readPostgresLimit(plan.url(options));
+    return state === null
+      ? null
+      : Math.max(state.current, state.pendingValue ?? 0);
+  }
+  return null;
+}
+
+/**
+ * Checks an existing container of this script's against what it is created
+ * with now ({@link containerDrift}). A container that is behind is reported,
+ * with the flag that fixes it; with `--recreate`, and while it is running, it
+ * is recreated by {@link recreateContainer}, keeping its data.
+ *
+ * The recreated container never gets less than the server has now: its
+ * `max_connections` argument is the larger of the target and the live value
+ * (on Postgres, a value pending a restart too), so a value raised by hand
+ * survives. A live value that cannot be read stops a real recreate, since it
+ * could not know it would not lower it. Before stopping the container it notes
+ * which of the server's databases connect as the suites' user; the new
+ * container must connect to the same ones.
+ */
+async function reconcileContainer(
+  plan: ServicePlan,
+  options: Options,
+  running: boolean,
+): Promise<Reconciled> {
+  const spec = plan.container(options);
+  const inspected = await inspectContainer(spec.name);
+  if (!inspected) {
+    return RECONCILED;
+  }
+  const drift = containerDrift(spec, inspected);
+  if (drift.length === 0) {
+    return RECONCILED;
+  }
+
+  for (const item of drift) {
+    log.warn(`container ${spec.name} was ${item.message}`);
+  }
+  if (
+    plan.managesConnectionLimit &&
+    drift.some((item) => item.setting === "max-connections")
+  ) {
+    log.warn(
+      plan.service === "mysql"
+        ? "its max_connections lasts across a restart only while it was raised with SET PERSIST (as this script raises it), not with SET GLOBAL"
+        : "a restart loses a max_connections raised live with SET GLOBAL",
+    );
+  }
+  if (!options.recreate) {
+    log.warn(
+      `rerun with --recreate to recreate ${spec.name} with them, keeping its data (it restarts the server)`,
+    );
+    return {
+      ...RECONCILED,
+      note: "container behind its spec (see --recreate)",
+    };
+  }
+  if (!running) {
+    log.bad(`container ${spec.name} is not running, so it is not recreated`);
+    return { ...RECONCILED, note: "not recreated: not running", failed: true };
+  }
+  const blocker = recreateBlocker(spec, inspected);
+  if (blocker) {
+    log.bad(`not recreating ${spec.name}: ${blocker}`);
+    return { ...RECONCILED, note: "not recreated", failed: true };
+  }
+
+  // Never pin less than the server has now.
+  let recreated = spec;
+  let wanted: number | null = null;
+  if (plan.managesConnectionLimit || plan.service === "postgres") {
+    const target =
+      plan.service === "postgres"
+        ? options.postgresMaxConnections
+        : options.maxConnections;
+    const live = await liveLimit(plan, options);
+    if (live === null && !options.dryRun) {
+      log.bad(
+        `could not read ${spec.name}'s max_connections, so it is not recreated: that could lower it`,
+      );
+      return {
+        ...RECONCILED,
+        note: "not recreated: max_connections unreadable",
+        failed: true,
+      };
+    }
+    wanted = Math.max(target, live ?? 0);
+    recreated = plan.container(
+      plan.service === "postgres"
+        ? { ...options, postgresMaxConnections: wanted }
+        : { ...options, maxConnections: wanted },
+    );
+  }
+
+  const databases: Array<{ name: string; url: string }> = [];
+  if (!options.dryRun) {
+    for (const database of sqlDatabases(plan, options)) {
+      if (await sqlReachable(database.url)) {
+        databases.push(database);
+      }
+    }
+  }
+
+  log.warn(`recreating ${spec.name}, keeping its data`);
+  const result = await recreateContainer(recreated, options.dryRun, {
+    runner: run,
+    waitReady: () => waitForConfigured(plan, options, plan.readyTimeout),
+    verify: async () => {
+      const after = await inspectContainer(spec.name);
+      if (!after) {
+        return "it could not be inspected";
+      }
+      const left = containerDrift(recreated, after);
+      if (left.length > 0) {
+        return `it was ${left.map((item) => item.message).join("; ")}`;
+      }
+      if (wanted !== null) {
+        const now = await liveLimit(plan, options);
+        if (now === null || now < wanted) {
+          return `max_connections is ${now ?? "unreadable"}, not ${wanted}`;
+        }
+        log.did(`max_connections is ${now}`);
+      }
+      for (const database of databases) {
+        if (!(await sqlReachable(database.url))) {
+          return `${database.name} no longer connects as ${options.user}: ${lastSqlError}`;
+        }
+      }
+      if (databases.length > 0) {
+        log.did(
+          `${databases.map((database) => database.name).join(", ")} still connect as ${options.user}`,
+        );
+      }
+      return null;
+    },
+  });
+  return {
+    note: result.note,
+    failed: result.outcome !== "recreated" && result.outcome !== "planned",
+    down: result.outcome === "rollback-failed",
+  };
+}
+
 /**
  * {@link setupServer}, then bun-cache's database on a server that has one and
  * came up ready.
@@ -3399,12 +3961,23 @@ async function setupServer(
   // Usable already? Then there is nothing to install and nothing to configure.
   if (await plan.configured(options)) {
     log.skip("already installed, running and reachable");
-    // It may be one of this script's containers, created before the limit.
     const name = plan.container(options).name;
-    await checkContainerLimit(name);
+    const state = platform.docker ? await containerState(name) : "";
+    // It may be one of this script's containers, created before a setting it
+    // is created with now.
+    const reconciled = platform.docker
+      ? await reconcileContainer(plan, options, state === "running")
+      : RECONCILED;
+    if (reconciled.down) {
+      return {
+        service: plan.service,
+        ready: false,
+        note: reconciled.note,
+        recreateFailed: true,
+      };
+    }
     // Whichever is serving: a server this script ran as a container is raised
     // as one, whatever the mode says, and anything else is a native install.
-    const state = platform.docker ? await containerState(name) : "";
     const host: LimitHost =
       plan.dockerOnly || state === "running" ? "container" : "native";
     const limit = await connectionLimit(
@@ -3417,7 +3990,8 @@ async function setupServer(
     return {
       service: plan.service,
       ready: true,
-      note: withLimit("already set up", limit),
+      note: withLimit(withLimit("already set up", reconciled.note), limit),
+      recreateFailed: reconciled.failed,
     };
   }
 
@@ -3470,6 +4044,19 @@ async function setupServer(
       };
     }
 
+    // A container this run created has every setting; an older one may not.
+    const reconciled = existed
+      ? await reconcileContainer(plan, options, true)
+      : RECONCILED;
+    if (reconciled.down) {
+      return {
+        service: plan.service,
+        ready: false,
+        note: reconciled.note,
+        recreateFailed: true,
+      };
+    }
+
     const limit = await connectionLimit(
       plan,
       "container",
@@ -3480,7 +4067,11 @@ async function setupServer(
     return {
       service: plan.service,
       ready,
-      note: withLimit("connected with the expected credentials", limit),
+      note: withLimit(
+        withLimit("connected with the expected credentials", reconciled.note),
+        limit,
+      ),
+      recreateFailed: reconciled.failed,
     };
   }
 
@@ -3634,6 +4225,7 @@ async function main(): Promise<void> {
         platform.docker ? "docker available" : "no docker",
         `max_connections >= ${options.maxConnections}`,
         `postgres >= ${options.postgresMaxConnections}${options.restartPostgres ? " (restarts it)" : ""}`,
+        options.recreate ? "recreates containers behind their spec" : "",
         options.dryRun ? "dry run" : "",
       ]
         .filter(Boolean)
@@ -3665,6 +4257,15 @@ async function main(): Promise<void> {
     console.log(
       colour.dim(
         `\n  bun-cache's ${options.cacheDatabase} or ${options.cacheBenchDatabase} database could not be made usable on every server; see above.`,
+      ),
+    );
+    process.exitCode = 1;
+  }
+
+  if (outcomes.some((outcome) => outcome.recreateFailed)) {
+    console.log(
+      colour.dim(
+        "\n  A container could not be recreated; see above. Nothing was removed.",
       ),
     );
     process.exitCode = 1;
