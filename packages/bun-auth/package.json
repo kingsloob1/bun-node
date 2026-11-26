@@ -56,6 +56,16 @@
       "types": "./dts/sql/index.d.ts",
       "default": "./lib/sql/index.ts"
     },
+    "./password": {
+      "@kingsleyweb/source": "./lib/password/index.ts",
+      "types": "./dts/password/index.d.ts",
+      "default": "./lib/password/index.ts"
+    },
+    "./lib/password": {
+      "@kingsleyweb/source": "./lib/password/index.ts",
+      "types": "./dts/password/index.d.ts",
+      "default": "./lib/password/index.ts"
+    },
     "./lib/*.ts": {
       "@kingsleyweb/source": "./lib/*.ts",
       "types": "./dts/*.d.ts",

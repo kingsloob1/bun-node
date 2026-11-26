@@ -31,6 +31,7 @@ bun-auth never changes the app's better-auth configuration. It reads it.
 - [The session on the request](#the-session-on-the-request)
 - [A plain Bun.serve](#a-plain-bunserve)
 - [A SQL database](#a-sql-database)
+- [Passwords on Bun.password](#passwords-on-bunpassword)
 - [Warnings](#warnings)
 - [Errors](#errors)
 - [Telemetry](#telemetry)
@@ -67,10 +68,11 @@ its `consumer-check.json`).
 |---|---|
 | `@kingsleyweb/bun-auth` | `mountAuth`, `authHandler`, `sessionMiddleware`, `requireSession`, `getAuthSession`, `DEFAULT_CLIENT_IP_HEADER`; the types `AuthInstance`, `AuthSession`, `AuthRequest`, `BunAuthOptions`, `RequireSessionOptions` |
 | `@kingsleyweb/bun-auth/serve` | `withAuth` for a plain `Bun.serve`; the type `ServeServer` |
+| `@kingsleyweb/bun-auth/password` | `bunPassword`, better-auth's password hashing on `Bun.password`, and `isBunPasswordHash`; the types `BunPasswordOptions`, `BunPasswordAlgorithm`, `BunPasswordHooks`, `LegacyHashEvent` |
 | `@kingsleyweb/bun-auth/sql` | `bunSqlAdapter`, better-auth's database adapter on bun-sql (an optional peer this entry needs); the types `BunSqlAdapter`, `BunSqlAdapterOptions`, `AuthSchemaChange` |
 
 Each is also under `./lib/` (`@kingsleyweb/bun-auth/lib/serve`). Later
-entries (`./password`, `./security`, `./authorize`, `./client`) are
+entries (`./security`, `./authorize`, `./client`) are
 described in the plan and added as they land.
 
 ## Quick start
@@ -256,6 +258,46 @@ better-auth deletes a user's sessions and accounts itself.
 (guarded counters, two-factor backup codes) are one statement on Postgres and
 SQLite, and a `SELECT … FOR UPDATE` and the write in one transaction on MySQL
 and MariaDB, which have no `RETURNING`.
+
+## Passwords on Bun.password
+
+`bunPassword()` hashes better-auth's passwords with `Bun.password` (argon2id
+by default) instead of better-auth's own scrypt. It is opt-in: better-auth's
+default stays better-auth's choice.
+
+```ts
+import { bunPassword } from "@kingsleyweb/bun-auth/password";
+
+export const auth = betterAuth({
+  emailAndPassword: {
+    enabled: true,
+    password: bunPassword({
+      onLegacyHash: async ({ rehash }) => {
+        await rehash(); // move the user to Bun.password at this sign-in
+      },
+    }),
+  },
+});
+```
+
+- **Verifying** reads the stored hash's format: `$argon2…$` and bcrypt's
+  `$2a$`/`$2b$`/`$2y$` go to `Bun.password.verify`; anything else, which for
+  an existing user base is better-auth's own `salt:hash` scrypt form, goes to
+  better-auth's `verifyPassword`. `Bun.password.verify` throws on the scrypt
+  form, so without this fallback every existing user would be locked out.
+- **`onLegacyHash(event)`** is called after a password matches a legacy
+  hash: once per successful check, never for a wrong password. `event` names
+  the user (`userId`, `accountId`) and the hash, and `rehash()` stores the
+  password again as a `Bun.password` hash, so a user base moves over one
+  sign-in at a time. An error the callback throws is logged through
+  better-auth's logger and does not fail the sign-in.
+- **`algorithm`** is what `Bun.password.hash` takes: `"argon2id"`,
+  `"argon2i"`, `"argon2d"`, `"bcrypt"`, or one of them with its costs.
+
+better-auth hands the hook only the hash and the password, so `onLegacyHash`
+finds the account through better-auth's endpoint context
+(`@better-auth/core/context`); called outside a better-auth request, the
+event has no user and `rehash()` does nothing.
 
 ## Warnings
 
