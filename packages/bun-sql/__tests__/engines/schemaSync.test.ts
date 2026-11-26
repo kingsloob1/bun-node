@@ -9,6 +9,7 @@
  * when it ends (`helpers/backends.ts`).
  */
 import type { SQL } from "bun";
+import type { SchemaDefinition, SchemaSyncOptions } from "../../lib/index";
 import type { SqlBackend } from "../helpers/backends";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import {
@@ -333,6 +334,190 @@ function registerSuite(backend: SqlBackend): void {
         expect(await sync(prefix)).toEqual([]);
       });
     }
+  });
+
+  describe(`${backend.name}: quoted identifiers and unique indexes (#889)`, () => {
+    /** A table named as someone else's schema names it: mixed case, reserved words, one unique column. */
+    const accounts = (prefix: string, unique = true): SchemaDefinition => {
+      const table = `${prefix}Account`;
+      return {
+        tables: [
+          {
+            name: table,
+            primaryKey: ["id"],
+            columns: [
+              { name: "id", type: dialect.idType, suffix: "NOT NULL" },
+              { name: "user", type: dialect.idType, suffix: "NOT NULL" },
+              { name: "key", type: dialect.longTextType },
+              { name: "email", type: dialect.idType, suffix: "NOT NULL" },
+              { name: "emailVerified", type: "INTEGER" },
+            ],
+          },
+        ],
+        indexes: [
+          {
+            name: `ix_${prefix}account_user`,
+            table,
+            columns: ["user", "emailVerified"],
+          },
+          ...(unique
+            ? [
+                {
+                  name: `ux_${prefix}account_email`,
+                  table,
+                  columns: ["email"],
+                  unique: true,
+                },
+              ]
+            : []),
+        ],
+      };
+    };
+    /** Creates `definition` quoted, its table recorded (quoted) for dropping. */
+    const createQuoted = async (definition: SchemaDefinition) => {
+      for (const table of definition.tables)
+        made.push(dialect.quote(table.name));
+      await runStatements(
+        sql(),
+        dialect,
+        createSchema(definition, dialect, { quoteIdentifiers: true }),
+      );
+    };
+    /** Syncs `definition` with quoted identifiers and `options`. */
+    const syncQuoted = async (
+      definition: SchemaDefinition,
+      options: SchemaSyncOptions = {},
+    ) =>
+      await syncSqlSchema(
+        backendOf(sql()),
+        dialect,
+        definition,
+        resolveSyncOptions({ ...options, quoteIdentifiers: true }),
+      );
+
+    it("creates the schema and reads it back with no drift", async () => {
+      const definition = accounts(runPrefix());
+      await createQuoted(definition);
+      expect(await syncQuoted(definition, { dryRun: true })).toEqual([]);
+      expect(await syncQuoted(definition)).toEqual([]);
+    });
+
+    it("negative control: unquoted, the same names do not survive the engine", async () => {
+      const prefix = runPrefix();
+      const definition = accounts(prefix);
+      made.push(
+        definition.tables[0].name,
+        dialect.quote(definition.tables[0].name),
+      );
+      const outcome = await runStatements(
+        sql(),
+        dialect,
+        createSchema(definition, dialect),
+      ).then(
+        async () =>
+          // SQLite takes the words and folds no case: the one engine where
+          // the unquoted DDL round-trips.
+          (
+            await syncSqlSchema(
+              backendOf(sql()),
+              dialect,
+              definition,
+              resolveSyncOptions({}),
+            )
+          ).length === 0
+            ? "round-trips"
+            : "drifts",
+        () => "refused",
+      );
+      expect(outcome).toBe(
+        backend.name === "sqlite" ? "round-trips" : "refused",
+      );
+    });
+
+    it("adds a missing camelCase column under its quoted name, once", async () => {
+      const definition = accounts(runPrefix());
+      await createQuoted(definition);
+      const table = dialect.quote(definition.tables[0].name);
+      if (backend.name === "sqlite") {
+        // SQLite drops a column only without an index on it.
+        await sql().unsafe(`DROP INDEX ${definition.indexes[0].name}`);
+      }
+      await sql().unsafe(
+        `ALTER TABLE ${table} DROP COLUMN ${dialect.quote("emailVerified")}`,
+      );
+      const plan = await syncQuoted(definition, { dryRun: true });
+      expect(plan).toContainEqual(
+        expect.objectContaining({
+          kind: "add-column",
+          target: "emailVerified",
+          statement: expect.stringContaining(dialect.quote("emailVerified")),
+        }),
+      );
+      await syncQuoted(definition);
+      expect(await syncQuoted(definition)).toEqual([]);
+    });
+
+    it("creates a missing unique index, which then refuses a duplicate", async () => {
+      const prefix = runPrefix();
+      await createQuoted(accounts(prefix, false));
+      const definition = accounts(prefix);
+      expect(await syncQuoted(definition, { dryRun: true })).toEqual([
+        expect.objectContaining({
+          kind: "create-index",
+          target: `ux_${prefix}account_email`,
+          statement: expect.stringMatching(/^CREATE UNIQUE INDEX /),
+        }),
+      ]);
+      await syncQuoted(definition);
+      expect(await syncQuoted(definition)).toEqual([]);
+      const table = dialect.quote(definition.tables[0].name);
+      const insert = (id: string) =>
+        sql().unsafe(
+          `INSERT INTO ${table} (${dialect.quote("id")}, ${dialect.quote("user")}, ${dialect.quote("email")}) VALUES ('${id}', 'u', 'a@example.com')`,
+        );
+      await insert("1");
+      await expect(insert("2")).rejects.toThrow();
+    });
+
+    it("never drops a unique index: not when it leaves the definition, not when it drifts", async () => {
+      const prefix = runPrefix();
+      const definition = accounts(prefix);
+      await createQuoted(definition);
+      const table = definition.tables[0].name;
+      // A unique index named in the driver's own convention.
+      const uniqueIx = `ix_${prefix}account_key`;
+      await sql().unsafe(
+        `CREATE UNIQUE INDEX ${uniqueIx} ON ${dialect.quote(table)} (${dialect.quote("email")}, ${dialect.quote("user")})`,
+      );
+      // Not in the definition: an ix_ index, but unique, so it stays.
+      expect(await syncQuoted(definition, { dryRun: true })).toEqual([]);
+      // In the definition with other columns: drifted, but unique, so it stays.
+      const drifted: SchemaDefinition = {
+        ...definition,
+        indexes: [
+          ...definition.indexes,
+          { name: uniqueIx, table, columns: ["email"], unique: true },
+        ],
+      };
+      expect(await syncQuoted(drifted, { dryRun: true })).toEqual([]);
+    });
+
+    it("rebuilds unique a plain index the definition now marks unique", async () => {
+      const prefix = runPrefix();
+      const plain = accounts(prefix, false);
+      await createQuoted(plain);
+      const definition: SchemaDefinition = {
+        ...plain,
+        indexes: plain.indexes.map((index) => ({ ...index, unique: true })),
+      };
+      const plan = await syncQuoted(definition, { dryRun: true });
+      expect(plan.map((change) => `${change.kind} ${change.target}`)).toEqual([
+        `drop-index ix_${prefix}account_user`,
+        `create-index ix_${prefix}account_user`,
+      ]);
+      await syncQuoted(definition);
+      expect(await syncQuoted(definition)).toEqual([]);
+    });
   });
 }
 

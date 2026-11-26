@@ -17,6 +17,8 @@ import {
   encodePageCursor,
   keysetAfter,
   loadMongoClient,
+  renderColumn,
+  renderIndexColumn,
   resolveConnectionUrl,
   resolveSyncOptions,
   takeBooleanParam,
@@ -211,6 +213,7 @@ describe("sync options, cursors, guards, MongoDB", () => {
       indexes: true,
       alterColumns: false,
       dryRun: false,
+      quoteIdentifiers: false,
     });
     expect(resolveSyncOptions(true)).toEqual(resolveSyncOptions({}));
     expect(
@@ -245,5 +248,60 @@ describe("sync options, cursors, guards, MongoDB", () => {
     const MongoClient = await loadMongoClient("the test");
     expect(typeof MongoClient).toBe("function");
     expect(MongoClient.name).toBe("MongoClient");
+  });
+});
+
+describe("quoting and unique indexes (#889)", () => {
+  it("quotes per engine, doubling a quote inside", () => {
+    expect(dialectFor("postgres").quote("user")).toBe('"user"');
+    expect(dialectFor("sqlite").quote('a"b')).toBe('"a""b"');
+    expect(dialectFor("mysql").quote("key")).toBe("`key`");
+    expect(dialectFor("mariadb").quote("a`b")).toBe("`a``b`");
+  });
+
+  it("renders as before without quoteIdentifiers, and quotes names (not index names) with it", () => {
+    const dialect = dialectFor("postgres");
+    const definition = {
+      tables: [
+        {
+          name: "user",
+          primaryKey: ["id"],
+          columns: [
+            { name: "id", type: "TEXT", suffix: "NOT NULL" },
+            { name: "emailVerified", type: "INTEGER" },
+          ],
+        },
+      ],
+      indexes: [
+        {
+          name: "ux_user_email",
+          table: "user",
+          columns: ["emailVerified"],
+          unique: true,
+        },
+      ],
+    };
+    expect(createSchema(definition, dialect)).toEqual([
+      "CREATE TABLE IF NOT EXISTS user (\n      id TEXT NOT NULL,\n      emailVerified INTEGER,\n      PRIMARY KEY (id)\n    )",
+      "CREATE UNIQUE INDEX IF NOT EXISTS ux_user_email ON user (emailVerified)",
+    ]);
+    expect(
+      createSchema(definition, dialect, { quoteIdentifiers: true }),
+    ).toEqual([
+      'CREATE TABLE IF NOT EXISTS "user" (\n      "id" TEXT NOT NULL,\n      "emailVerified" INTEGER,\n      PRIMARY KEY ("id")\n    )',
+      'CREATE UNIQUE INDEX IF NOT EXISTS ux_user_email ON "user" ("emailVerified")',
+    ]);
+  });
+
+  it("keeps renderColumn and renderIndexColumn point-free under .map", () => {
+    const columns = [
+      { name: "a", type: "TEXT" },
+      { name: "b", type: "INT" },
+    ];
+    expect(columns.map(renderColumn)).toEqual(["a TEXT", "b INT"]);
+    expect(["a", "b"].map(renderIndexColumn)).toEqual(["a", "b"]);
+    expect(renderColumn(columns[0], { quote: dialectFor("mysql").quote })).toBe(
+      "`a` TEXT",
+    );
   });
 });

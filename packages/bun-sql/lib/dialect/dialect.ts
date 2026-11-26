@@ -336,6 +336,16 @@ function parsePostgresJson<T>(value: unknown, fallback: T): T {
   return value as T;
 }
 
+/** An identifier in double quotes, a `"` inside doubled: Postgres's and SQLite's. */
+function doubleQuote(identifier: string): string {
+  return `"${identifier.replaceAll('"', '""')}"`;
+}
+
+/** An identifier in backticks, a `` ` `` inside doubled: MySQL's and MariaDB's. */
+function backtickQuote(identifier: string): string {
+  return `\`${identifier.replaceAll("`", "``")}\``;
+}
+
 /** Shared behaviour, overridden per engine below. */
 const base = {
   jsonOut: parseJson,
@@ -380,7 +390,8 @@ function makeDialects(fail: SqlConfigError): Record<SqlAdapter, SqlDialect> {
       WHERE table_name IN (${tables.map((_, i) => `$${i + 1}`).join(", ")})
         AND table_schema = ANY (current_schemas(false))`,
     describeIndexes: () =>
-      `SELECT indexname AS name, indexdef AS definition, NULL AS columns
+      `SELECT indexname AS name, indexdef AS definition, NULL AS columns,
+            indexdef LIKE 'CREATE UNIQUE INDEX %' AS uniq
        FROM pg_indexes
       WHERE tablename = $1 AND schemaname = ANY (current_schemas(false))`,
     addColumn: (table, column) =>
@@ -394,6 +405,7 @@ function makeDialects(fail: SqlConfigError): Record<SqlAdapter, SqlDialect> {
     isConcurrentCreate: (error) =>
       hasErrorCode(error, ["23505", 23505, "42710", 42710]),
     dropIndex: (name) => `DROP INDEX CONCURRENTLY IF EXISTS ${name}`,
+    quote: doubleQuote,
     normalizeType: normalizeSqlType,
     idType: "TEXT",
     nameType: "TEXT",
@@ -570,7 +582,8 @@ function makeDialects(fail: SqlConfigError): Record<SqlAdapter, SqlDialect> {
     // either exists under its name or it does not.
     describeIndexes: () =>
       `SELECT INDEX_NAME AS name, '' AS definition,
-            GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',') AS columns
+            GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ',') AS columns,
+            MIN(NON_UNIQUE) = 0 AS uniq
        FROM information_schema.STATISTICS
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
       GROUP BY INDEX_NAME`,
@@ -586,6 +599,7 @@ function makeDialects(fail: SqlConfigError): Record<SqlAdapter, SqlDialect> {
       hasErrorCode(error, [1061, "1061", "ER_DUP_KEYNAME"]),
     isConcurrentCreate: () => false,
     dropIndex: (name, table) => `DROP INDEX ${name} ON ${table}`,
+    quote: backtickQuote,
     normalizeType: normalizeSqlType,
     // Binary and `NO PAD`: see `idType` on the interface. `utf8mb4_0900_bin` is
     // MySQL 8's; MariaDB has its own, below.
@@ -782,7 +796,8 @@ function makeDialects(fail: SqlConfigError): Record<SqlAdapter, SqlDialect> {
       WHERE m.type = 'table'
         AND m.name IN (${tables.map(() => "?").join(", ")})`,
     describeIndexes: () =>
-      `SELECT name, COALESCE(sql, '') AS definition, NULL AS columns
+      `SELECT name, COALESCE(sql, '') AS definition, NULL AS columns,
+            COALESCE(sql, '') LIKE 'CREATE UNIQUE INDEX %' AS uniq
        FROM sqlite_master
       WHERE type = 'index' AND tbl_name = ?`,
     addColumn: (table, column) => `ALTER TABLE ${table} ADD COLUMN ${column}`,
@@ -796,6 +811,7 @@ function makeDialects(fail: SqlConfigError): Record<SqlAdapter, SqlDialect> {
       /index .* already exists/i.test(String((error as Error | null)?.message)),
     isConcurrentCreate: () => false,
     dropIndex: (name) => `DROP INDEX IF EXISTS ${name}`,
+    quote: doubleQuote,
     normalizeType: normalizeSqlType,
     idType: "TEXT",
     nameType: "TEXT",

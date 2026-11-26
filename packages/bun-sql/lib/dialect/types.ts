@@ -88,13 +88,16 @@ export interface SqlDialect {
    */
   describeColumns: (tables: readonly string[]) => string;
   /**
-   * A query listing a table's indexes as `name`, `definition` and `columns`.
+   * A query listing a table's indexes as `name`, `definition`, `columns` and
+   * `uniq`.
    *
    * `definition` is the engine's own rendering where it has one, and `''`
    * where it does not; a sync reads a predicate and per-column collations out
    * of it. `columns` is the index's column names in order, comma-separated,
    * where the engine does not render a definition — MySQL and MariaDB — and
    * `NULL` elsewhere, so an index whose columns changed is still noticed there.
+   * `uniq` is whether it is a unique index (a boolean, or `1`/`0` as the
+   * engine returns one), which a sync never drops (#889).
    */
   describeIndexes: (table: string) => string;
   /** Adds one column to an existing table. */
@@ -155,6 +158,15 @@ export interface SqlDialect {
   isConcurrentCreate: (error: unknown) => boolean;
   /** Drops an index. MySQL needs the table; the others do not. */
   dropIndex: (name: string, table: string) => string;
+  /**
+   * An identifier quoted for this engine's DDL: `"name"` on Postgres and
+   * SQLite, `` `name` `` on MySQL and MariaDB, a quote inside doubled. For a
+   * name the engine would otherwise fold or refuse: a reserved word
+   * (`user` on Postgres, `key` on MySQL) or a mixed-case one
+   * (`emailVerified`, which Postgres stores as `emailverified` unquoted).
+   * `createSchema` and the sync use it under `quoteIdentifiers` (#889).
+   */
+  quote: (identifier: string) => string;
   /**
    * The engine's name for a type, reduced to something comparable.
    *

@@ -39,6 +39,13 @@ export interface SchemaSyncOptions {
    * Defaults to false.
    */
   dryRun?: boolean;
+  /**
+   * Quote table and column names in every statement with the dialect's
+   * `quote`, as `createSchema`'s option of the same name does; the catalog
+   * is still asked about, and matched by, the names as given. Defaults to
+   * false (#889).
+   */
+  quoteIdentifiers?: boolean;
 }
 
 /** One difference between what the driver expects and what the database has. */
@@ -111,6 +118,8 @@ export interface ResolvedSyncOptions {
   alterColumns: boolean;
   /** Report without applying. */
   dryRun: boolean;
+  /** Quote table and column names in the statements. */
+  quoteIdentifiers: boolean;
 }
 
 /** Fills in the defaults, which are "everything that cannot block". */
@@ -124,5 +133,6 @@ export function resolveSyncOptions(
     indexes: given.indexes ?? true,
     alterColumns: given.alterColumns ?? false,
     dryRun: given.dryRun ?? false,
+    quoteIdentifiers: given.quoteIdentifiers ?? false,
   };
 }

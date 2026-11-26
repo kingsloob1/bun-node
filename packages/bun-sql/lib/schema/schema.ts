@@ -53,6 +53,13 @@ export interface IndexDefinition {
   columns: (string | CollatedIndexColumn)[];
   /** A partial-index predicate, where the engine has them. */
   predicate?: string;
+  /**
+   * A unique index: `CREATE UNIQUE INDEX`. Defaults to `false`. A sync
+   * creates one that is missing (a `create-index` change, which fails while
+   * the table holds duplicates) and never drops a unique index on its own:
+   * dropping or changing one is a deliberate migration (#889).
+   */
+  unique?: boolean;
 }
 
 /** One table a driver owns, as data rather than as a DDL string. */
@@ -80,34 +87,95 @@ export interface CreateSchemaOptions extends SqlErrorOptions {
    * {@link createSchema}). Empty by default: everything is created.
    */
   readonly existing?: ReadonlySet<string>;
+  /**
+   * Quote every table and column name in the DDL with the dialect's
+   * `quote` (`"user"`, `` `key` ``), for names the engine would fold or
+   * refuse: reserved words, mixed case. Index names stay as given. Defaults
+   * to `false`, so a definition renders byte for byte as before (#889).
+   * Pass the same to the sync (`SchemaSyncOptions.quoteIdentifiers`).
+   */
+  readonly quoteIdentifiers?: boolean;
 }
 
-/** One column, as it appears inside a `CREATE TABLE`. */
-export function renderColumn(column: ColumnDefinition): string {
-  return `${column.name} ${column.type}${column.suffix ? ` ${column.suffix}` : ""}`;
+/** How a name reaches DDL: quoted with the dialect's `quote`, or as given. */
+export type IdentifierQuoter = (identifier: string) => string;
+
+/** A name as given: what DDL uses without `quoteIdentifiers`. */
+const asGiven: IdentifierQuoter = (identifier) => identifier;
+
+/** The quoter `quoteIdentifiers` asks for on `dialect`. */
+export function identifierQuoter(
+  dialect: Pick<SqlDialect, "quote">,
+  quoteIdentifiers: boolean | undefined,
+): IdentifierQuoter {
+  return quoteIdentifiers === true ? dialect.quote : asGiven;
 }
 
-/** One index column as it appears in a `CREATE INDEX`. */
+/** How the render functions write names: {@link CreateSchemaOptions.quoteIdentifiers}' quoter, or as given. */
+export interface RenderNameOptions {
+  /** Writes a table or column name into the DDL (`dialect.quote` to quote it). Default: the name as given. */
+  readonly quote?: IdentifierQuoter;
+}
+
+/** The quoter an options argument names; anything else (a `.map` index) is the name as given. */
+function quoterOf(
+  options: RenderNameOptions | number | undefined,
+): IdentifierQuoter {
+  return typeof options === "object" && typeof options.quote === "function"
+    ? options.quote
+    : asGiven;
+}
+
+/**
+ * One column, as it appears inside a `CREATE TABLE`.
+ *
+ * @param options How its name is written. Default: as given. (A `.map`
+ *   index in its place is ignored, so `columns.map(renderColumn)` still works.)
+ */
+export function renderColumn(
+  column: ColumnDefinition,
+  options?: RenderNameOptions | number,
+): string {
+  return `${quoterOf(options)(column.name)} ${column.type}${column.suffix ? ` ${column.suffix}` : ""}`;
+}
+
+/**
+ * One index column as it appears in a `CREATE INDEX`.
+ *
+ * @param options How its name is written. Default: as given. (A `.map`
+ *   index in its place is ignored.)
+ */
 export function renderIndexColumn(
   column: string | CollatedIndexColumn,
+  options?: RenderNameOptions | number,
 ): string {
+  const quote = quoterOf(options);
   return typeof column === "string"
-    ? column
-    : `${column.name} COLLATE ${column.collation}`;
+    ? quote(column)
+    : `${quote(column.name)} COLLATE ${column.collation}`;
 }
 
-/** The `CREATE INDEX` for one index definition. */
+/**
+ * The `CREATE INDEX` (`CREATE UNIQUE INDEX` for a unique one) for one index
+ * definition.
+ *
+ * @param concurrently Build it without blocking writes, where the engine can (the sync's). Default: `false`.
+ * @param options How the table and column names are written; the index's own name stays as given. Default: as given.
+ */
 export function renderIndex(
   index: IndexDefinition,
   dialect: SqlDialect,
   concurrently = false,
+  options?: RenderNameOptions,
 ): string {
+  const quote = quoterOf(options);
   const where = index.predicate ? dialect.partialIndex(index.predicate) : "";
   const how = concurrently ? dialect.concurrentIndex : "";
+  const unique = index.unique === true ? "UNIQUE " : "";
 
   const ifNotExists = dialect.indexIfNotExists ? "IF NOT EXISTS " : "";
 
-  return `CREATE INDEX ${how}${ifNotExists}${index.name} ON ${index.table} (${index.columns.map(renderIndexColumn).join(", ")})${where}`;
+  return `CREATE ${unique}INDEX ${how}${ifNotExists}${index.name} ON ${quote(index.table)} (${index.columns.map((column) => renderIndexColumn(column, { quote })).join(", ")})${where}`;
 }
 
 /**
@@ -133,21 +201,22 @@ export function createSchema(
 ): string[] {
   assertDefinition(definition, failWith(options));
   const existing = options.existing ?? new Set<string>();
+  const quote = identifierQuoter(dialect, options.quoteIdentifiers);
 
   return [
     ...definition.tables.map((table) => {
       const body = [
-        ...table.columns.map(renderColumn),
+        ...table.columns.map((column) => renderColumn(column, { quote })),
         ...(table.primaryKey.length > 0
-          ? [`PRIMARY KEY (${table.primaryKey.join(", ")})`]
+          ? [`PRIMARY KEY (${table.primaryKey.map(quote).join(", ")})`]
           : []),
       ].join(",\n      ");
 
-      return `CREATE TABLE IF NOT EXISTS ${table.name} (\n      ${body}\n    )`;
+      return `CREATE TABLE IF NOT EXISTS ${quote(table.name)} (\n      ${body}\n    )`;
     }),
     ...definition.indexes
       .filter((index) => !existing.has(index.table))
-      .map((index) => renderIndex(index, dialect)),
+      .map((index) => renderIndex(index, dialect, false, { quote })),
   ];
 }
 

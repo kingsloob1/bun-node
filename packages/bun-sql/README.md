@@ -138,6 +138,16 @@ for (const statement of createSchema(definition, dialect)) {
   reports back (`BIGSERIAL PRIMARY KEY` comes back as `bigint`).
 - An index name or table missing, or an index on a table the definition does
   not define, throws `ConfigError`.
+- **`unique: true`** on an index renders `CREATE UNIQUE INDEX`.
+- **`{ quoteIdentifiers: true }`** quotes every table and column name with
+  the dialect's `quote` (`"user"` on Postgres and SQLite, `` `key` `` on
+  MySQL and MariaDB), for a schema whose names are reserved words or mixed
+  case (`emailVerified`, which Postgres folds to `emailverified` unquoted).
+  Index names stay as given. Pass the same option to the sync. Off by
+  default, so existing definitions render byte for byte as before.
+- **No foreign keys.** A definition has none: MySQL parses an inline
+  `REFERENCES` in a column suffix and ignores it, and no driver here needs
+  one (#889).
 
 ## Schema sync
 
@@ -169,6 +179,7 @@ reader and writer, so it is reported `blocking: true` and applied only with
 | `indexes` | `true` | drop the driver's retired indexes, rebuild a changed one |
 | `alterColumns` | `false` | retype or recollate columns (blocking) |
 | `dryRun` | `false` | report every change, apply none |
+| `quoteIdentifiers` | `false` | quote table and column names in the statements, as `createSchema`'s option (the catalog is still read by the names as given) |
 
 Every change comes back as a `SchemaChange` (`kind`, `table`, `target`,
 `statement`, `reason`, `blocking`, `applied`, and `collation` for an
@@ -178,6 +189,10 @@ identifier in the wrong collation), so a dry run is a plan.
 driver names its own indexes by. An index added by hand is never touched.
 Every table the definition lists is read, so a table whose last `ix_` index
 left the definition still has it dropped.
+**Nor a unique index**, whatever its name: one missing is created (and
+fails while the table holds duplicates), one that left the definition or
+changed stays, since dropping one is a deliberate migration. A plain index
+the definition now marks `unique` is rebuilt unique.
 
 On MySQL and MariaDB an identifier column in a case-insensitive collation is
 a correctness problem, not a storage one. `collationDrift` lists such columns
