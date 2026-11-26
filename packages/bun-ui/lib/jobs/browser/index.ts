@@ -33,5 +33,10 @@ export {
 } from "../../kit/browser/mount";
 export type { UiSection } from "../../kit/browser/sections";
 export { sectionsFor } from "../../kit/browser/sections";
-export type { JobsSection, JobsSectionId } from "./sections";
-export { JOBS_SECTIONS } from "./sections";
+export type {
+  JobsSection,
+  JobsSectionId,
+  JobsSectionPermission,
+  JobsSectionsMeta,
+} from "./sections";
+export { JOBS_SECTIONS, jobsSectionsFor } from "./sections";

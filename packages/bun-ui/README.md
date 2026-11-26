@@ -464,6 +464,20 @@ const menu = sectionsFor(JOBS_SECTIONS, (action) => permissions.actions[action] 
   then also leaves out a section its API does not serve (its mode and
   features, the `sections` option), so a menu built from permissions alone
   may link to a page the UI answers with its not-found screen.
+- **For the jobs UI, use `jobsSectionsFor(meta, can, sections?)`**: the
+  exact list its own nav shows, permission and what the API serves
+  together, from the API's `GET <api>/meta` body and the `can` above
+  (`sections` is the UI's `sections` option, both parts on by default):
+
+  ```ts
+  import { jobsSectionsFor } from "@kingsleyweb/bun-ui/jobs/browser";
+
+  const meta = await (await fetch("/admin/jobs-api/meta")).json();
+  const menu = jobsSectionsFor(meta, (action) => permissions.actions[action] === true);
+  ```
+
+  The security UI's sections hang on permission alone, so `sectionsFor` is
+  its whole rule.
 - The docs viewer's two sections need nothing; it shows only the one
   matching its document.
 

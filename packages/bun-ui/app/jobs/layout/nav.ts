@@ -2,8 +2,7 @@ import type { JobsUiSections } from "../../../lib/jobs/browser/config.ts";
 import type { JobsSectionId } from "../../../lib/jobs/browser/sections.ts";
 import type { JobsApiAction } from "../api/contract";
 import type { MetaDto } from "../api/types";
-import { sectionsFor } from "../../../lib/kit/browser/sections.ts";
-import { JOBS_SECTIONS } from "../../../lib/jobs/browser/sections.ts";
+import { jobsSectionsFor } from "../../../lib/jobs/browser/sections.ts";
 
 /** Stable ids of the nav entries: the sections' (`JOBS_SECTIONS`), and the API docs' two children. */
 export type NavId = JobsSectionId | "docs-http" | "docs-ws";
@@ -33,8 +32,8 @@ export interface NavInputs {
 /**
  * The entries the caller can use, in display order: `JOBS_SECTIONS` (the
  * browser contract's list, which a host's side menu reads too; embedding.md
- * §2), filtered by permission with the kit's `sectionsFor`, then by what the
- * API serves. An entry is **absent**
+ * §2), filtered by permission and by what the API serves with
+ * `jobsSectionsFor`, which a host's menu calls too (#881). An entry is **absent**
  * (never disabled) when its section is switched off, the API's mode prunes
  * its routes, or the caller lacks the action it lists with:
  *
@@ -54,35 +53,21 @@ export interface NavInputs {
  *   socket (`meta.docs.asyncapi`).
  */
 export function buildNav({ meta, sections, can }: NavInputs): NavItem[] {
-  const jobsMode = meta.mode === "jobs" || meta.mode === "both";
-  const runnerMode = meta.mode === "runner" || meta.mode === "both";
-  /** Whether the API serves a section (its mode, features, the `sections` option); its permission is `sectionsFor`'s. */
-  const served: Readonly<Record<JobsSectionId, boolean>> = {
-    overview: sections.manage && jobsMode,
-    queues: sections.manage && jobsMode,
-    workers: sections.manage && jobsMode && meta.features.workers,
-    summoning: sections.manage && jobsMode && meta.features.summonList === true,
-    providers: sections.manage && meta.features.providers,
-    runners: sections.manage && runnerMode,
-    events: sections.manage && Boolean(meta.websocket),
-    docs: sections.docs && Boolean(meta.docs),
-  };
-  return sectionsFor(JOBS_SECTIONS, can)
-    .filter((section) => served[section.id])
-    .map((section): NavItem => {
-      if (section.id !== "docs") {
-        return { id: section.id, label: section.label, to: section.path };
-      }
-      const children: NavItem[] = [
-        { id: "docs-http", label: "HTTP API", to: "/docs/http" },
-      ];
-      if (meta.docs?.asyncapi !== undefined) {
-        children.push({
-          id: "docs-ws",
-          label: "WebSocket API",
-          to: "/docs/ws",
-        });
-      }
-      return { id: "docs", label: section.label, to: section.path, children };
-    });
+  // The rule is the browser contract's, so a host's menu is this nav.
+  return jobsSectionsFor(meta, can, sections).map((section): NavItem => {
+    if (section.id !== "docs") {
+      return { id: section.id, label: section.label, to: section.path };
+    }
+    const children: NavItem[] = [
+      { id: "docs-http", label: "HTTP API", to: "/docs/http" },
+    ];
+    if (meta.docs?.asyncapi !== undefined) {
+      children.push({
+        id: "docs-ws",
+        label: "WebSocket API",
+        to: "/docs/ws",
+      });
+    }
+    return { id: "docs", label: section.label, to: section.path, children };
+  });
 }

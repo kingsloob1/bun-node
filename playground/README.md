@@ -62,7 +62,7 @@ can reach it, so never expose it.
 | `/playground/cache` | the bun-cache lab (`cache.ts`, see "The cache lab" below): routes behind `cacheResponse()` showing `X-Cache`, `Age` and timing, stale-while-revalidate and stale-if-error, invalidation by path and by tag, live `cache.stats()`, and one cache switchable between drivers, compression algorithms and an L1 tier. PR-C1's `getOrSet` demo stays on the same cache: `GET /playground/cache/report` (250 ms to build, cached 10 s with a 30 s stale window; its `cache` field says `miss`/`hit`/`stale`; ten at once build once), `GET /playground/cache/stats`, `POST /playground/cache/invalidate` (the `report` tag, or `?tag=`). And the **at-rest** item, `/playground/cache/at-rest`: one value through an encrypted cache with `hashNames` on, as the store holds it beside what the cache answers (see "At rest" below) |
 | `/playground/client` | the typed client (`typed-client.ts`, see "The typed client" below): bun-client against a small API at `/playground/client/api`, its generated route map beside the OpenAPI document it came from, live typed calls (a 200, a narrowed 404, `api.op`, `throwOnError`, an undeclared status, a `Retry-After` retry, a timeout, middleware, server-sent events and their resume, a WebSocket channel: `channel()` on the chat channel below, over a real socket), validation both ways, the query layer (keys, `ETag`/304, `invalidates`, `Cache-Tag` tags, live invalidation over `/__live`), and a regenerate button with its diff. `/playground/client/__bun/types` is its `devTypes()` endpoint, for `bun-client watch` (development only, loopback, token) |
 | `/security`, `/security-api`, `/playground/security` | the security demo (`security.ts`, see "The security demo" below): bun-security's control plane at `/security-api` and bun-ui's security UI at `/security`, over three demo services whose engines run behind agents, with an attacker loop keeping every screen moving; `/playground/security` shows the loop's figures and the alert emails the control plane sent |
-| `/playground/embed` | the host-shell demo (`embed.ts`, see "The host-shell demo" below): a page of its own mounting the jobs UI, the security UI and the docs viewer in its content area, its menu built from their sections |
+| `/playground/embed` | the host-shell demo (`embed.ts`, see "The host-shell demo" below): a page of its own mounting the jobs UI, the security UI and the docs viewer in its content area, its menu built from their sections (the jobs group from what the jobs API serves) |
 | `/playground/throttle` | bun-common's `throttle()` on one route: 5 requests per 30 s per address with the IETF `RateLimit-Policy`/`RateLimit` headers, then a `429` problem+json with `Retry-After` (`curl -i` it in a loop) |
 | `/` | redirects to `/jobs` |
 
@@ -511,8 +511,10 @@ was sent, and that a stopped demo ticks no more.
 
 `/playground/embed` (`embed.ts`) is a page of the playground's own, the way
 an admin app of yours would be: its header and side menu, built from the
-UIs' sections (`JOBS_SECTIONS`, `SECURITY_SECTIONS`, `DOCS_SECTIONS` through
-`sectionsFor()`), and a content area where it mounts the jobs UI, the
+UIs' sections (`JOBS_SECTIONS` through `jobsSectionsFor()` over the jobs
+API's `/meta` and `/meta/permissions`, asked as you on each render, so the
+menu lists exactly what the mounted UI's nav does; `SECURITY_SECTIONS` and
+`DOCS_SECTIONS` through `sectionsFor()`), and a content area where it mounts the jobs UI, the
 security UI and the docs viewer (bun-ui's `mountJobsUi`, `mountSecurityUi`,
 `mountDocsUi`) from the modules their routers serve (`*UiMountTags()`), under
 its own strict CSP.
@@ -524,7 +526,8 @@ its own strict CSP.
 - **Theme** switches the page's scheme; the UI inherits it.
 - **Unmount** and **Mount** tear the UI down and bring it back.
 
-`bun run test:embed` checks the page and the files it names; the browser's
+`bun run test:embed` checks the page, the files it names and that the jobs
+menu matches what a real jobs API serves (jobs and runner mode); the browser's
 side is bun-ui's `__tests__/kit/e2e/embed.e2e.test.ts`.
 
 ## The cache lab

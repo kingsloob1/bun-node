@@ -216,7 +216,8 @@ describe("one export of ./docs/embed in a browser bundle", () => {
  * export of each `/<ui>/browser` entry, which now also carries the kit's
  * mount contract (`lib/kit/browser/mount.ts`). Measured (bytes with
  * `sideEffects`, without): security 956 / 1,136, jobs 599 / 779, docs
- * 154 / 361. Without the field, the mount contract's frozen `UI_SHELLS`
+ * 154 / 361; `jobsSectionsFor` 1,110 with (#881, 2026-11-26, Bun
+ * 1.4.5-canary.1+862278db7). Without the field, the mount contract's frozen `UI_SHELLS`
  * and the shared default layout stay in.
  */
 const SECTION_ROWS = [
@@ -231,6 +232,12 @@ const SECTION_ROWS = [
     `import { JOBS_SECTIONS } from "${MANIFEST.name}/jobs/browser";\nexport const sections = JOBS_SECTIONS;\n`,
     "Overview",
     700,
+  ],
+  [
+    "jobs, served (#881)",
+    `import { jobsSectionsFor } from "${MANIFEST.name}/jobs/browser";\nexport const menu = (meta: Parameters<typeof jobsSectionsFor>[0]) => jobsSectionsFor(meta, () => true);\n`,
+    "Overview",
+    1280,
   ],
   [
     "docs",

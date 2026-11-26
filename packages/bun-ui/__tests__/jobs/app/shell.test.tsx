@@ -6,13 +6,18 @@
  * to the UI's root rather than always to `<html>`.
  */
 import type { JobsApiAction } from "../../../app/jobs/api/contract";
+import type { MetaDto } from "../../../app/jobs/api/types";
 import { describe, expect, it } from "bun:test";
 import { parseUiConfig, UiConfigError } from "../../../app/jobs/config";
 import { UiConfigContext } from "../../../app/jobs/context";
 import { buildNav } from "../../../app/jobs/layout/nav";
 import { ThemeToggle } from "../../../app/jobs/layout/ThemeToggle";
 import { UiRootContext } from "../../../app/kit/frame";
-import { JOBS_SECTIONS } from "../../../lib/jobs/browser/sections";
+import type { JobsSectionsMeta } from "../../../lib/jobs/browser/sections";
+import {
+  JOBS_SECTIONS,
+  jobsSectionsFor,
+} from "../../../lib/jobs/browser/sections";
 import { sectionsFor } from "../../../lib/kit/browser/sections";
 import { expectNone, expectUndefined } from "../../harness/assert";
 import { fireEvent, LOADED, page, render, setupDom, within } from "./dom";
@@ -34,6 +39,93 @@ function nav(granted: (action: JobsApiAction) => boolean) {
     can: granted,
   });
 }
+
+describe("jobsSectionsFor is the nav's rule (#881)", () => {
+  const base = metaFixture();
+  /** Every combination of mode, feature, socket and docs the rule reads. */
+  const metas = ["jobs", "runner", "both"].flatMap((mode) =>
+    [false, true].flatMap((workers) =>
+      [false, true, undefined].flatMap((summonList) =>
+        [false, true].flatMap((providers) =>
+          [false, true].flatMap((socket) =>
+            [false, true].map((docs): MetaDto => ({
+              ...base,
+              mode: mode as MetaDto["mode"],
+              features: {
+                ...base.features,
+                workers,
+                // Absent on an older API.
+                summonList: summonList as boolean,
+                providers,
+              },
+              websocket: socket ? base.websocket : null,
+              docs: docs ? base.docs : null,
+            })),
+          ),
+        ),
+      ),
+    ),
+  );
+  const grants: ((action: JobsApiAction) => boolean)[] = [
+    (action) => ALL.actions[action] === true,
+    () => false,
+    (action) => action === "queues.list" || action === "docs.read",
+    (action) => action !== "metrics.read" && action !== "runners.list",
+  ];
+  const parts = [
+    { manage: true, docs: true },
+    { manage: true, docs: false },
+    { manage: false, docs: true },
+  ];
+
+  it("gives the nav's sections, in its order, for every mode, feature, grant and part", () => {
+    let compared = 0;
+    for (const meta of metas) {
+      for (const can of grants) {
+        for (const sections of parts) {
+          expect(
+            jobsSectionsFor(meta, can, sections).map(
+              (section): string => section.id,
+            ),
+          ).toEqual(
+            buildNav({ meta, sections, can }).map((item): string => item.id),
+          );
+          compared += 1;
+        }
+      }
+    }
+    expect(compared).toBe(3 * 2 * 3 * 2 * 2 * 2 * 4 * 3);
+  });
+
+  it("drops what the API does not serve, which sectionsFor alone keeps (the control)", () => {
+    const runnerOnly: MetaDto = {
+      ...base,
+      mode: "runner",
+      features: { ...base.features, providers: false },
+      websocket: null,
+      docs: null,
+    };
+    const can = (action: JobsApiAction) => ALL.actions[action] === true;
+    expect(
+      jobsSectionsFor(runnerOnly, can).map((section) => section.id),
+    ).toEqual(["runners"]);
+    // Permission alone links to pages this API answers with not-found.
+    expect(
+      sectionsFor(JOBS_SECTIONS, can).map((section) => section.id),
+    ).not.toEqual(["runners"]);
+  });
+
+  it("defaults both parts on, and takes MetaDto as it is", () => {
+    const meta: JobsSectionsMeta = metaFixture();
+    const can = (action: JobsApiAction) => ALL.actions[action] === true;
+    expect(jobsSectionsFor(meta, can)).toEqual(
+      jobsSectionsFor(meta, can, { manage: true, docs: true }),
+    );
+    expect(
+      jobsSectionsFor(meta, can, { docs: false }).map((section) => section.id),
+    ).not.toContain("docs");
+  });
+});
 
 describe("JOBS_SECTIONS is the nav's list", () => {
   it("in order, id, label and path, with everything granted and served", () => {
