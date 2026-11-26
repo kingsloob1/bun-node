@@ -30,6 +30,7 @@ bun-auth never changes the app's better-auth configuration. It reads it.
 - [Mounting](#mounting)
 - [The session on the request](#the-session-on-the-request)
 - [A plain Bun.serve](#a-plain-bunserve)
+- [A SQL database](#a-sql-database)
 - [Warnings](#warnings)
 - [Errors](#errors)
 - [Telemetry](#telemetry)
@@ -66,9 +67,10 @@ its `consumer-check.json`).
 |---|---|
 | `@kingsleyweb/bun-auth` | `mountAuth`, `authHandler`, `sessionMiddleware`, `requireSession`, `getAuthSession`, `DEFAULT_CLIENT_IP_HEADER`; the types `AuthInstance`, `AuthSession`, `AuthRequest`, `BunAuthOptions`, `RequireSessionOptions` |
 | `@kingsleyweb/bun-auth/serve` | `withAuth` for a plain `Bun.serve`; the type `ServeServer` |
+| `@kingsleyweb/bun-auth/sql` | `bunSqlAdapter`, better-auth's database adapter on bun-sql (an optional peer this entry needs); the types `BunSqlAdapter`, `BunSqlAdapterOptions`, `AuthSchemaChange` |
 
 Each is also under `./lib/` (`@kingsleyweb/bun-auth/lib/serve`). Later
-entries (`./sql`, `./password`, `./security`, `./authorize`, `./client`) are
+entries (`./password`, `./security`, `./authorize`, `./client`) are
 described in the plan and added as they land.
 
 ## Quick start
@@ -200,6 +202,61 @@ proxy every client has the proxy's address; mount on bun-common's adapter
 with `trustProxy` there instead. An error better-auth throws rejects, for
 `Bun.serve`'s `error` handler.
 
+## A SQL database
+
+`bunSqlAdapter` is better-auth's database adapter on
+[bun-sql](../bun-sql/README.md): Postgres, MySQL, MariaDB and SQLite through
+Bun's own `SQL` client, with no driver to install
+([sub-plan](../../docs/plans/bun-auth/sql-adapter.md)).
+
+```ts
+import { betterAuth } from "better-auth";
+import { bunSqlAdapter } from "@kingsleyweb/bun-auth/sql";
+
+const database = bunSqlAdapter({ url: process.env.DATABASE_URL, syncSchema: true });
+export const auth = betterAuth({ database, emailAndPassword: { enabled: true } });
+```
+
+```bash
+bun add @kingsleyweb/bun-sql
+```
+
+| `BunSqlAdapterOptions` | Default | What |
+|---|---|---|
+| `sql` | | An existing Bun `SQL` client. Never closed by the adapter. |
+| `url` | | `postgres://…`, `mysql://…`, `mariadb://…`, `sqlite://path`, a file path or `:memory:`. MySQL's `allowPublicKeyRetrieval=true` is passed as the option Bun honours. |
+| `connection` | | The connection as fields, when there is no `url` (needs `adapter`). |
+| `adapter` | from the URL or client | `postgres`, `mysql`, `mariadb` or `sqlite`. A `mysql://` URL to a MariaDB server needs `"mariadb"`. |
+| `prefix` | `""` | Put before every table name (`auth_user`). |
+| `syncSchema` | `false` | Create and sync the tables before the first query: `true`, or bun-sql's `SchemaSyncOptions`. |
+| `usePlural` | `false` | better-auth's plural table names. |
+| `transaction` | `true` | Run better-auth's multi-step writes in a transaction. |
+| `debugLogs` | off | better-auth's adapter debug logs. |
+| `max` | Bun's | Pool size of a client the adapter opens. |
+
+The returned adapter is also:
+
+- **`syncSchema(auth.options, sync?)`**: creates better-auth's missing tables
+  (its plugins' too) and syncs existing ones by bun-sql's rules: columns and
+  indexes are added (a column added to a table that has rows is nullable),
+  the adapter's own stale `ix_` indexes dropped, and a column type change only
+  with `alterColumns: true`. It returns every change; `{ dryRun: true }`
+  plans. better-auth's CLI `generate` writes the same plan as SQL (the
+  adapter's `createSchema`).
+- **`close()`**: closes the client it opened from `url` or `connection`.
+
+**Column types.** Identifiers (ids, references, unique, indexed or sortable
+strings) are bun-sql's: `TEXT`, or on MySQL and MariaDB `VARCHAR(191)` in a
+binary collation, so they compare exactly; dates are `TIMESTAMPTZ(3)`,
+`DATETIME(3)`, or ISO 8601 text on SQLite; JSON is `JSONB`, `JSON`, or
+`TEXT`. Unique fields get unique indexes. There are no foreign keys:
+better-auth deletes a user's sessions and accounts itself.
+
+**Atomic operations.** `consumeOne` (single-use tokens) and `incrementOne`
+(guarded counters, two-factor backup codes) are one statement on Postgres and
+SQLite, and a `SELECT … FOR UPDATE` and the write in one transaction on MySQL
+and MariaDB, which have no `RETURNING`.
+
 ## Warnings
 
 Each is logged at most once per mount, with a `warning` field naming it:
@@ -242,7 +299,16 @@ bun run format:check   # bun fmt --check
 bun run test           # type-check the tests, then run them in parallel
 ```
 
-The tests run a real `betterAuth()` on better-auth's memory adapter, mounted
+`./sql`'s suites run better-auth's own adapter conformance kit
+(`@better-auth/test-utils/adapter`) and a real `betterAuth()` on SQLite and on
+each server whose URL is set: `BUN_AUTH_TEST_{POSTGRES,MYSQL,MARIADB}_URL`,
+falling back to bun-jobs' `BUN_JOBS_TEST_*_URL` (`bun
+scripts/setup-databases.ts --print-env`). An unset URL skips visibly; a set
+URL whose server cannot be reached fails. Each run's tables have a prefix of
+their own and are dropped by name. The kit depends on test order, so a
+`--randomize` order check leaves out `__tests__/sql/conformance.*`.
+
+The other tests run a real `betterAuth()` on better-auth's memory adapter, mounted
 on bun-common's adapter under its default body options, `deferBody` and
 `retainBuffer: false`, and on a plain `Bun.serve`. `bun
 scripts/consumer-check.ts packages/bun-auth` from the repository root checks

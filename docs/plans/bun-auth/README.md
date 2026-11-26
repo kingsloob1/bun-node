@@ -582,6 +582,7 @@ A2 to A8 can run side by side once A1 lands.
 | `authOperator(auth, options)`, `sessionStepUp(auth, { maxAge, factors?, challenge })`, `authSignInProfiles(auth, options)`, `authRateLimitStorage(cache, options)` | `./security` |
 | `authorizeJobsApi(auth, rules)`, `authorizeUi(auth, rules)`, `authorizeSecurityApi(auth, rules, { scopes? })`, `roleRules(...)`; type `AuthRule` | `./authorize` |
 | `bunSqlAdapter({ sql \| url, adapter?, prefix? })` | `./sql` |
+| Added in PR-A6, approved by the user (2026-11-26): `BunSqlAdapterOptions` (the options type) with, beyond the approved four: `connection` (bun-sql's `SqlConnectionOptions`, when there is no `url`), `syncSchema` (`boolean \| SchemaSyncOptions`, default `false`: create and sync the tables before the first query), `usePlural` (default `false`), `transaction` (default `true`), `debugLogs`, `max` (pool size of a client the adapter opens). The returned type `BunSqlAdapter`: callable as better-auth's `database`, plus `engine`, `syncSchema(authOptions, sync?)` (returns the changes; `{ dryRun: true }` plans) and `close()` (closes only a client it opened). Type `AuthSchemaChange` (bun-sql's `SchemaChange`, plus `kind: "create-table"`) | `./sql` |
 | `bunPassword({ algorithm?, onLegacyHash? })` | `./password` |
 | `createAuthClient({ baseUrl, fetch? })`; type `AuthRoutes` | `./client` |
 | `req.webRequest()` | bun-common `BunRequest` |
