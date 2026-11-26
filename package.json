@@ -25,7 +25,8 @@
       "packages/bun-cache",
       "packages/bun-client",
       "packages/bun-security",
-      "packages/bun-sql"
+      "packages/bun-sql",
+      "packages/bun-auth"
     ],
     "catalog": {
       "@asyncapi/specs": "^6.11.1",

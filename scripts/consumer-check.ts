@@ -122,6 +122,16 @@ export interface CheckConfig {
   workspaceDependencies?: string[];
   /** Extra packages the consumer installs, as `name@range` (e.g. a peer the entries need). */
   consumerDependencies?: string[];
+  /**
+   * Extra `lib` entries for every consumer's compiler options, in every
+   * column (e.g. `["DOM"]`), for a package whose required peer's own
+   * declarations name globals only those libs declare: bun-auth's peer
+   * better-auth names `HeadersInit` and `JsonWebKey`, which Bun's types do
+   * not declare globally, so every app type-checking its dependencies needs
+   * `"DOM"` with or without bun-auth. An entry already in a column's `lib`
+   * (in any case) is not repeated. Default none.
+   */
+  consumerLib?: string[];
   /** The import spellings to check. */
   entries: EntryConfig[];
 }
@@ -291,6 +301,27 @@ const COLUMNS: Record<string, Record<string, unknown>> = {
     types: [],
   },
 };
+
+/**
+ * One column's compiler options: {@link COLUMNS}' with `skipLibCheck`, and
+ * `consumerLib`'s entries appended to its `lib` unless already there (in any
+ * case).
+ */
+export function columnCompilerOptions(
+  column: string,
+  skipLibCheck: boolean,
+  consumerLib: readonly string[] = [],
+): Record<string, unknown> {
+  const base = COLUMNS[column];
+  if (!base) throw new Error(`unknown column ${column}`);
+  const lib = [...((base.lib as string[] | undefined) ?? [])];
+  for (const extra of consumerLib) {
+    if (!lib.some((have) => have.toLowerCase() === extra.toLowerCase())) {
+      lib.push(extra);
+    }
+  }
+  return { ...base, lib, skipLibCheck };
+}
 
 /** Writes the probe file for one entry. */
 function probeSource(entry: EntryConfig): string {
@@ -641,6 +672,15 @@ export async function runCheck(options: CheckOptions): Promise<RunResult> {
   const config = JSON.parse(
     readFileSync(join(packageDir, "consumer-check.json"), "utf8"),
   ) as CheckConfig;
+  if (
+    config.consumerLib !== undefined &&
+    (!Array.isArray(config.consumerLib) ||
+      config.consumerLib.some((lib) => typeof lib !== "string" || lib === ""))
+  ) {
+    throw new TypeError(
+      "consumer-check.json: consumerLib must be a list of lib names",
+    );
+  }
   const manifest = JSON.parse(
     readFileSync(join(packageDir, "package.json"), "utf8"),
   ) as {
@@ -757,7 +797,11 @@ export async function runCheck(options: CheckOptions): Promise<RunResult> {
           join(dir, tsconfig),
           JSON.stringify(
             {
-              compilerOptions: { ...COLUMNS[column], skipLibCheck },
+              compilerOptions: columnCompilerOptions(
+                column,
+                skipLibCheck,
+                config.consumerLib,
+              ),
               files: [probe],
             },
             null,

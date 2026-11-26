@@ -40,10 +40,11 @@ prefer Bun and native APIs over third-party dependencies.
 | [bun-cache](packages/bun-cache/README.md) | `@kingsleyweb/bun-cache` | Caching over pluggable drivers: one typed API (TTLs, tags, single-flight, stale-while-revalidate, counters, an L1 memory tier kept coherent by a bus) over memory, file, SQLite, Postgres, MySQL, MariaDB, Redis, MongoDB, S3, Azure Blob Storage and Cloudflare drivers, an HTTP response cache for bun-common and a Keyv store. |
 | [bun-security](packages/bun-security/README.md) | `@kingsleyweb/bun-security` | A request-defence engine for Bun services, decided locally per request from a policy compiled once: client identity on bun-common's trusted-proxy foundation (IPv6 keyed by /64, service identities, trust misconfiguration detection), allow and deny lists over a CIDR trie, rate limits, counted rules, bans with an offence score, request rules, honeypots and canary credentials, sign-in protection, challenges, IP intelligence, verified crawlers, API keys, shared state across processes, dry run and `explain()`; integrations for a plain `Bun.serve` (`./serve`), bun-common (`./http`) and NestJS (bun-nest's `./security`); a security store (a policy file, SQLite or Postgres, secrets sealed at rest); a control plane (`./control`: services and groups, signed policy bundles, approvals, an audit log, analytics and alerts) with agents that keep a fleet current (`./agent`); and attack simulators for testing a policy (`./testing`). Its management UI is bun-ui's `/security`. |
 | [bun-sql](packages/bun-sql/README.md) | `@kingsleyweb/bun-sql` | The SQL layer the other packages share: one dialect per engine (Postgres, MySQL, MariaDB, SQLite), table and index definitions rendered to DDL, a schema sync that adds what is missing and changes only what cannot stall a running service unless asked, connection helpers, opaque keyset page cursors and a MongoDB index sync, one subpath per area. |
+| [bun-auth](packages/bun-auth/README.md) | `@kingsleyweb/bun-auth` | [better-auth](https://www.better-auth.com) on bun-node, with the app's own `betterAuth()` instance as a peer: `mountAuth` hands each request to it on bun-common with the body as received and the client's address bun-common resolved, `withAuth` does the same on a plain `Bun.serve`, the session typed from the instance goes on the request, `requireSession` answers `401`/`403` as problem+json, and warnings name the settings that hide errors or trust a forgeable address. |
 | [bun-ui](packages/bun-ui/README.md) | `@kingsleyweb/bun-ui` | Every browser UI of the repo in one package, one subpath each: `@kingsleyweb/bun-ui/jobs` is the React management UI for bun-jobs' management API, served by a `jobsUi()` router that mounts beside `createJobsApi` (bun-jobs is an optional peer only that subpath needs); `@kingsleyweb/bun-ui/security` is the management UI of bun-security's control plane, served by a `securityUi()` router beside `createSecurityApi` (bun-security an optional peer only it needs); `@kingsleyweb/bun-ui/docs` is a self-hosted viewer for one OpenAPI 3.1 or AsyncAPI 3.0 document, served by a `docsUi()` handler under a strict self-only CSP. |
 
-bun-nest, bun-jobs, bun-cache, bun-security, bun-sql and bun-ui depend on
-bun-common, which depends on bun-contract; bun-jobs, bun-cache and
+bun-nest, bun-jobs, bun-cache, bun-security, bun-sql, bun-auth and bun-ui
+depend on bun-common, which depends on bun-contract; bun-jobs, bun-cache and
 bun-security also depend on bun-sql; bun-client depends on bun-contract
 alone.
 
@@ -201,7 +202,8 @@ bun-node/
 │   ├── bun-jobs/          # jobs and queues: lib/, __tests__/, bench/ (its own package)
 │   ├── bun-client/        # the typed HTTP client, no dependency: lib/, __tests__/
 │   ├── bun-security/      # the request-defence engine: lib/, __tests__/
-│   └── bun-sql/           # the shared SQL layer: lib/, __tests__/
+│   ├── bun-sql/           # the shared SQL layer: lib/, __tests__/
+│   └── bun-auth/          # better-auth on bun-node: lib/, __tests__/
 ├── examples/
 │   ├── bun-common/        # one runnable project per package
 │   ├── bun-nest/

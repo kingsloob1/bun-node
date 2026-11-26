@@ -1,6 +1,6 @@
 # bun-auth: better-auth on bun-node — plan
 
-Status: **approved by the user (2026-11-20)**: the names in §15 and the recommendations of all fourteen questions in §16. PR-A0 (`req.webRequest()`) is built; nothing else yet. Written 2026-11-20 against `develop` at
+Status: **approved by the user (2026-11-20)**: the names in §15 and the recommendations of all fourteen questions in §16. PR-A0 (`req.webRequest()`) is merged (#887); PR-A1 (the package, `.` and `./serve`) is built; its added names in §15 were approved by the user (2026-11-26). Written 2026-11-20 against `develop` at
 `52082313`, Bun 1.4.5-canary.1+862278db7 on linux-x64, with better-auth
 1.7.27 (`latest`), 1.6.35 (`release-1.6`) and 1.8.0-beta.10 (`beta`).
 
@@ -282,6 +282,17 @@ yet decided):
 - a caller that needs the exact bytes (a signature over the body) refuses
   `"parsed"` itself.
 
+**Built in PR-A1.** `mountAuth` accepts `"parsed"` and warns once: at mount
+when the adapter's `requestOpts` say `retainBuffer: false` without
+`deferBody`, and otherwise (`authHandler` registered by hand, a per-kind
+`retainBuffer`) at the first request whose body arrives `"parsed"`. A
+`"parsed"` JSON and form sign-in passed against a real better-auth.
+`mountAuth` does **not** install `requestParsing({ retainBuffer: true })`:
+under `deferBody` the body is already unread when its `use` handler runs, so
+`webRequest()` answers `"original"`, exact, without it (E14), and with the
+adapter's default the bytes are kept anyway; it would only read the body
+earlier.
+
 ### 4.2 The client address
 
 better-auth's limiter takes the client from `X-Forwarded-For`, unverified
@@ -293,8 +304,11 @@ with `trustProxy`). So `mountAuth`:
   ["x-bun-auth-client-ip"]`.
 
 It warns once at start when the auth instance's options read another header
-(Q4). That the option takes effect is **assumed**: E7 read its types but did
-not run it.
+(Q4). **Measured (E15):** the option takes effect, in the session's
+`ipAddress` and in the limiter's key; with only bun-auth's header named, a
+forged `X-Forwarded-For` per attempt is limited after the third. So does
+`trustedProxies`, but it is not needed with bun-auth's single-value header,
+and a client inside one of its ranges resolves to no address.
 
 ### 4.3 Errors
 
@@ -563,6 +577,8 @@ A2 to A8 can run side by side once A1 lands.
 | `mountAuth(app, auth, options)`, `authHandler(auth, options)`, `sessionMiddleware(auth)`, `requireSession(auth, { roles?, organization? })`, `getAuthSession(req)`; types `AuthSession<A>`, `AuthRequest<A>`, `BunAuthOptions`, `RequireSessionOptions` | `.` |
 | `BunAuthOptions`: `basePath` (default the instance's), `clientIpHeader` (default `x-bun-auth-client-ip`), `warn` (default `true`) | `.` |
 | `withAuth(auth, fetch, options)` | `./serve` |
+| **Added in PR-A1, approved by the user (2026-11-26):** `BunAuthOptions.logger` (any `LoggerLike`; default the router's for `mountAuth`, bun-common's console logger otherwise), the type `AuthInstance` (what bun-auth reads of a `betterAuth()` instance, the constraint of `AuthSession<A>`/`AuthRequest<A>`), the constant `DEFAULT_CLIENT_IP_HEADER` (`"x-bun-auth-client-ip"`, for the app's `ipAddressHeaders`); `requireSession`'s `organization` takes an organization id or `true` (any active one); `AuthRequest`'s `session` and `user` are optional, so a route handler can declare its request as one | `.` |
+| **Added in PR-A1, approved by the user (2026-11-26):** the type `ServeServer` (what `withAuth` needs of the server `Bun.serve` passes: `requestIP`) | `./serve` |
 | `authOperator(auth, options)`, `sessionStepUp(auth, { maxAge, factors?, challenge })`, `authSignInProfiles(auth, options)`, `authRateLimitStorage(cache, options)` | `./security` |
 | `authorizeJobsApi(auth, rules)`, `authorizeUi(auth, rules)`, `authorizeSecurityApi(auth, rules, { scopes? })`, `roleRules(...)`; type `AuthRule` | `./authorize` |
 | `bunSqlAdapter({ sql \| url, adapter?, prefix? })` | `./sql` |
