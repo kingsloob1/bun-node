@@ -1,12 +1,20 @@
 /**
  * The host-shell demo (`embed.ts`): its page under its own CSP, the menu
  * built from each UI's sections, and each UI's mount module and stylesheet
- * named with SRI and served by that UI's router. The browser's side is
+ * named with SRI and served by that UI's router; the jobs group lists what
+ * the jobs API serves (#881). The browser's side is
  * bun-ui's `__tests__/kit/e2e/embed.e2e.test.ts`.
  */
+import type { JobsSectionsMeta } from "@kingsleyweb/bun-ui/jobs/browser";
 import { BunHttpAdapter, noopLogger } from "@kingsleyweb/bun-common";
+import { BunJobs, createJobsApi, MemoryDriver } from "@kingsleyweb/bun-jobs";
 import { docsUi } from "@kingsleyweb/bun-ui/docs";
 import { jobsUi } from "@kingsleyweb/bun-ui/jobs";
+import {
+  JOBS_SECTIONS,
+  jobsSectionsFor,
+  sectionsFor,
+} from "@kingsleyweb/bun-ui/jobs/browser";
 import { securityUi } from "@kingsleyweb/bun-ui/security";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { EMBED_BASE, mountEmbedDemo } from "./embed";
@@ -81,5 +89,101 @@ describe("the host-shell demo", () => {
       expect(css).not.toBeNull();
       expect((await fetch(`${origin}${css![1]}`)).status).toBe(200);
     }
+  });
+});
+
+describe("the demo's jobs menu (#881)", () => {
+  /** The demo beside a real jobs API in `mode`; the menu's jobs links, and what the API serves. */
+  async function jobsLinks(mode: "jobs" | "runner"): Promise<{
+    links: string[];
+    served: string[];
+    permissionOnly: string[];
+  }> {
+    const jobs = new BunJobs({
+      namespace: `embed-${crypto.randomUUID().slice(0, 8)}`,
+      driver: new MemoryDriver(),
+      logger: noopLogger,
+    });
+    const api = createJobsApi({
+      jobs,
+      basePath: "/jobs-api",
+      mode,
+      authorize: () => true,
+      logger: noopLogger,
+    });
+    const demo = new BunHttpAdapter(0, { logger: noopLogger });
+    const ui = jobsUi({
+      api,
+      basePath: "/jobs",
+      dev: true,
+      logger: noopLogger,
+    });
+    demo.use(api.basePath, api.router);
+    demo.use(ui.basePath, ui.router);
+    const others = {
+      security: securityUi({
+        apiUrl: "/security-api",
+        basePath: "/security",
+        dev: true,
+        logger: noopLogger,
+      }),
+      docs: docsUi({
+        document: () => ({
+          openapi: "3.1.0",
+          info: { title: "t", version: "1" },
+          paths: {},
+        }),
+        basePath: "/api-docs",
+        dev: true,
+        logger: noopLogger,
+      }),
+    };
+    for (const other of Object.values(others)) {
+      demo.use(other.basePath, other.router);
+    }
+    mountEmbedDemo(demo, { jobs: ui, ...others });
+    try {
+      const html = await (await demo.fetch(`${EMBED_BASE}/jobs`)).text();
+      const links = [
+        ...html.matchAll(new RegExp(`href="${EMBED_BASE}/jobs([^"]*)"`, "g")),
+      ].map((match) => match[1] || "/");
+      // What the mounted UI's nav shows: the API's meta and permissions.
+      const meta = (await (
+        await demo.fetch("/jobs-api/meta")
+      ).json()) as JobsSectionsMeta;
+      const granted = (
+        (await (await demo.fetch("/jobs-api/meta/permissions")).json()) as {
+          actions: Record<string, boolean>;
+        }
+      ).actions;
+      const can = (action: string) => granted[action] === true;
+      return {
+        links,
+        served: jobsSectionsFor(meta, can).map((section) => section.path),
+        // As the demo built it before: every section, permission alone.
+        permissionOnly: sectionsFor(JOBS_SECTIONS, () => true).map(
+          (section) => section.path,
+        ),
+      };
+    } finally {
+      await api.close();
+      await jobs.close();
+      await demo.close();
+    }
+  }
+
+  it("lists what the demo's API serves, as the mounted UI's nav does", async () => {
+    for (const mode of ["jobs", "runner"] as const) {
+      const { links, served } = await jobsLinks(mode);
+      expect([mode, links]).toEqual([mode, served]);
+    }
+  });
+
+  it("negative control: the permission-only list links pages a runner-only API does not serve", async () => {
+    const { links, permissionOnly } = await jobsLinks("runner");
+    expect(links).toContain("/runners");
+    expect(links).not.toContain("/queues");
+    // sectionsFor alone, as the demo built it before, would link /queues.
+    expect(permissionOnly).toContain("/queues");
   });
 });

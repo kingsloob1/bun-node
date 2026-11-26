@@ -1,8 +1,9 @@
 /**
  * The host-shell demo (`/playground/embed`, embedding.md §9.5): a page of
  * the playground's own, its header and side menu built from the UIs'
- * sections (`JOBS_SECTIONS`, `SECURITY_SECTIONS`, `DOCS_SECTIONS` through
- * `sectionsFor()`), mounting the jobs UI, the security UI and the docs
+ * sections (`JOBS_SECTIONS` through `jobsSectionsFor()` over the jobs API's
+ * `/meta`, so it lists what the mounted UI's nav does; `SECURITY_SECTIONS`
+ * and `DOCS_SECTIONS` through `sectionsFor()`), mounting the jobs UI, the security UI and the docs
  * viewer in its content area with `mount*Ui()`, from the modules their
  * routers serve (`*UiMountTags()`). Try it by hand: the menu moves the UI
  * and back and forward follow; the shell picker remounts with
@@ -10,14 +11,26 @@
  * scheme, which the UI inherits; Unmount and Mount tear it down and bring
  * it back. The page has its own strict CSP.
  */
-import type { BunHttpAdapter, RouterHandler } from "@kingsleyweb/bun-common";
+import type {
+  BunHttpAdapter,
+  BunRequest,
+  RouterHandler,
+} from "@kingsleyweb/bun-common";
 import type { DocsUi } from "@kingsleyweb/bun-ui/docs";
 import type { JobsUi } from "@kingsleyweb/bun-ui/jobs";
 import type { SecurityUi } from "@kingsleyweb/bun-ui/security";
-import type { UiSection } from "@kingsleyweb/bun-ui/jobs/browser";
+import type {
+  JobsSectionPermission,
+  JobsSectionsMeta,
+  UiSection,
+} from "@kingsleyweb/bun-ui/jobs/browser";
 import { DOCS_SECTIONS } from "@kingsleyweb/bun-ui/docs/browser";
 import { docsUiMountTags } from "@kingsleyweb/bun-ui/docs";
-import { JOBS_SECTIONS, sectionsFor } from "@kingsleyweb/bun-ui/jobs/browser";
+import {
+  JOBS_SECTIONS,
+  jobsSectionsFor,
+  sectionsFor,
+} from "@kingsleyweb/bun-ui/jobs/browser";
 import { jobsUiMountTags } from "@kingsleyweb/bun-ui/jobs";
 import { SECURITY_SECTIONS } from "@kingsleyweb/bun-ui/security/browser";
 import { securityUiMountTags } from "@kingsleyweb/bun-ui/security";
@@ -44,7 +57,11 @@ function escape(text: string): string {
     .replaceAll('"', "&quot;");
 }
 
-/** The menu's links for one UI's sections. */
+/**
+ * The menu's links for one UI's sections: `sections` as given (the jobs UI's
+ * already filtered by {@link jobsMenu}), or every one for a UI whose
+ * sections need nothing the demo checks.
+ */
 function group(
   ui: string,
   label: string,
@@ -153,14 +170,54 @@ if (kindOf(location.pathname) === null) history.replaceState(null, "", cfg.base 
 void show(location.pathname);
 `;
 
+/**
+ * The jobs UI's sections for the menu, as the mounted UI's own nav shows them
+ * (#881): `jobsSectionsFor()` over the jobs API's `GET /meta` and
+ * `GET /meta/permissions`, asked as the page's visitor (their cookie and
+ * authorization). An answer that is not a 200 (signed out, no API) leaves
+ * the permission-only list, every section.
+ */
+async function jobsMenu(
+  app: BunHttpAdapter,
+  jobs: JobsUi,
+  req: BunRequest,
+): Promise<readonly UiSection[]> {
+  const headers: Record<string, string> = {};
+  for (const name of ["cookie", "authorization"]) {
+    const value = req.getHeader(name);
+    if (typeof value === "string") headers[name] = value;
+  }
+  const base = jobs.config.apiBase.replace(/\/$/, "");
+  const ask = (path: string) =>
+    base.startsWith("/")
+      ? app.fetch(`${base}${path}`, { headers })
+      : fetch(`${base}${path}`, { headers });
+  const [meta, permissions] = await Promise.all([
+    ask("/meta"),
+    ask("/meta/permissions"),
+  ]);
+  if (!meta.ok || !permissions.ok) return JOBS_SECTIONS;
+  const granted = (
+    (await permissions.json()) as {
+      actions?: Partial<Record<JobsSectionPermission, boolean>>;
+    }
+  ).actions;
+  return jobsSectionsFor(
+    (await meta.json()) as JobsSectionsMeta,
+    (action) => granted?.[action] === true,
+    jobs.config.sections,
+  );
+}
+
 /** Serves the demo at {@link EMBED_BASE} and under it. */
 export function mountEmbedDemo(app: BunHttpAdapter, uis: EmbedDemoUis): void {
-  const menu = [
-    group("jobs", "Jobs", JOBS_SECTIONS),
-    group("security", "Security", SECURITY_SECTIONS),
-    group("docs", "API docs", DOCS_SECTIONS),
-  ].join("");
-  const handler: RouterHandler = async (_req, res) => {
+  const handler: RouterHandler = async (req, res) => {
+    // The jobs group asks the API what it serves on each render (#881).
+    const menu = [
+      group("jobs", "Jobs", await jobsMenu(app, uis.jobs, req)),
+      group("security", "Security", SECURITY_SECTIONS),
+      group("docs", "API docs", DOCS_SECTIONS),
+    ].join("");
     const tags = {
       jobs: await jobsUiMountTags(uis.jobs),
       security: await securityUiMountTags(uis.security),

@@ -119,6 +119,7 @@
       "values": [
         "JOBS_UI_CONFIG_ELEMENT_ID",
         "JOBS_SECTIONS",
+        "jobsSectionsFor",
         "sectionsFor",
         "isUiShell",
         "resolveMountLayout",
@@ -131,6 +132,8 @@
       "types": [
         "JobsUiConfig",
         "JobsUiSections",
+        "JobsSectionsMeta",
+        "JobsSectionPermission",
         "UiTheme",
         "UiUnauthorized",
         "UiUnauthorizedStatus",
