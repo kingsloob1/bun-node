@@ -55,9 +55,24 @@ const expressMulter = {
   },
 };
 
-/** Whether the installed Express merges `limits` key by key (12.0.4+, #17818). */
-const EXPRESS_MERGES_LIMITS =
-  typeof expressMulter.utils.mergeMulterOptions === "function";
+/**
+ * Whether the installed Express merges `limits` key by key (12.0.4+, #17818):
+ * asked of its own `mergeMulterOptions`, which 11.2.10 also has but which
+ * there spreads `limits` whole, as Nest 11 always has.
+ */
+const EXPRESS_MERGES_LIMITS = (() => {
+  const merge = expressMulter.utils.mergeMulterOptions;
+  if (typeof merge !== "function") {
+    return false;
+  }
+  const merged = (
+    merge as (
+      global: object,
+      local: object,
+    ) => { limits?: Record<string, unknown> }
+  )({ limits: { files: 1 } }, { limits: { fileSize: 2 } });
+  return merged.limits?.files === 1;
+})();
 
 /** Whether bun-nest does (Nest 12, by the `mapException` capability). */
 const BUN_MERGES_LIMITS =

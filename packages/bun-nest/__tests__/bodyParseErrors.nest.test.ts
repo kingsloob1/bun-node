@@ -7,7 +7,10 @@
  * and 12 alike: Nest 11's core maps a `SyntaxError` or `URIError` raised
  * outside a route to `BadRequestException`; Nest 12 moved that mapping into
  * the adapter (`mapException`, nestjs/nest #15075). The same holds for a
- * path parameter that cannot be decoded and a middleware's `next(err)`.
+ * path parameter that cannot be decoded and a middleware's `next(err)`,
+ * except, from Nest 11.2.10, a middleware's error without a `status` of 400:
+ * the core leaves it unmapped, a generic 500 (its message may hold internal
+ * details), as on Express.
  *
  * `reflect-metadata` is imported last per the import-sort rule. No top-level
  * `await`: it perturbs decorator metadata in other gateway test files.
@@ -23,6 +26,7 @@ import {
   Post,
 } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
+import { RoutesResolver } from "@nestjs/core/router/routes-resolver.js";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { BunHttpAdapter } from "../lib";
 import "reflect-metadata";
@@ -46,12 +50,30 @@ class EchoController {
   }
 }
 
-/** `next()`s a `SyntaxError` or `URIError` for `/mw/syntax` and `/mw/uri`. */
+/**
+ * `next()`s a `SyntaxError` or `URIError` for `/mw/syntax` and `/mw/uri`,
+ * and one with a `status` of 400, as a parser sets it, for `/mw/syntax-400`
+ * and `/mw/uri-400`.
+ */
 function failing(
   req: { url?: string },
   _res: unknown,
   next: (error?: unknown) => void,
 ) {
+  if (req.url?.endsWith("/syntax-400")) {
+    next(
+      Object.assign(new SyntaxError("bad syntax from middleware"), {
+        status: 400,
+      }),
+    );
+    return;
+  }
+  if (req.url?.endsWith("/uri-400")) {
+    next(
+      Object.assign(new URIError("bad uri from middleware"), { status: 400 }),
+    );
+    return;
+  }
   if (req.url?.endsWith("/syntax")) {
     next(new SyntaxError("bad syntax from middleware"));
     return;
@@ -69,6 +91,29 @@ class AppModule {
     consumer.apply(failing).forRoutes("mw/*path");
   }
 }
+
+/**
+ * Whether the installed core leaves a `SyntaxError` without a `status` of 400
+ * unmapped (Nest 11.2.10 and later): read from its own
+ * `mapExternalException`, which Nest 12 does not have (its adapter maps).
+ */
+const CORE_LEAVES_UNMARKED_SYNTAX_ERRORS = (() => {
+  const map = (RoutesResolver.prototype as { mapExternalException?: unknown })
+    .mapExternalException;
+  if (typeof map !== "function") {
+    return false;
+  }
+  const probe = new SyntaxError("probe");
+  return (
+    (map as (this: object, error: unknown) => unknown).call(
+      { isHttpFastifyError: () => false },
+      probe,
+    ) === probe
+  );
+})();
+
+/** Nest's built-in filter's answer to an error it does not know. */
+const INTERNAL_ERROR = { statusCode: 500, message: "Internal server error" };
 
 /** `BadRequestException(message)`'s body, as Nest's filters write it. */
 function badRequest(message: string) {
@@ -143,16 +188,30 @@ describe("bun-nest: a SyntaxError or URIError outside a route's handler", () => 
     expect([ok.status, await ok.json()]).toEqual([200, { id: "café" }]);
   });
 
-  it("is a 400 for a middleware's next(err), with the error's message", async () => {
+  it("is a 400 for a middleware's next(err) with a status of 400, with the error's message", async () => {
     for (const [path, message] of [
-      ["/mw/syntax", "bad syntax from middleware"],
-      ["/mw/uri", "bad uri from middleware"],
+      ["/mw/syntax-400", "bad syntax from middleware"],
+      ["/mw/uri-400", "bad uri from middleware"],
     ] as const) {
       const res = await built.fetch(path);
       expect([res.status, await res.json()]).toEqual([
         400,
         badRequest(message),
       ]);
+    }
+  });
+
+  it(`is ${CORE_LEAVES_UNMARKED_SYNTAX_ERRORS ? "a generic 500 (Nest 11.2.10 and later)" : "a 400, with the error's message,"} for a middleware's next(err) without a status`, async () => {
+    for (const [path, message] of [
+      ["/mw/syntax", "bad syntax from middleware"],
+      ["/mw/uri", "bad uri from middleware"],
+    ] as const) {
+      const res = await built.fetch(path);
+      expect([res.status, await res.json()]).toEqual(
+        CORE_LEAVES_UNMARKED_SYNTAX_ERRORS
+          ? [500, INTERNAL_ERROR]
+          : [400, badRequest(message)],
+      );
     }
     const ok = await built.fetch("/mw/fine");
     expect([ok.status, await ok.json()]).toEqual([200, { kind: "fine" }]);

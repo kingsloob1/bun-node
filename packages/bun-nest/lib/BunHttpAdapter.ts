@@ -149,6 +149,9 @@ type ApplyVersionFilterParameters = Parameters<
   AbstractHttpAdapter["applyVersionFilter"]
 >;
 
+/** `require` from this file, for the capability probes that load a module. */
+const requireFromHere = createRequire(import.meta.url);
+
 /**
  * Whether the installed `@nestjs/core` scopes the not-found handler to the
  * global prefix, as `@nestjs/platform-express` does from Nest 12 (nestjs/nest
@@ -180,6 +183,59 @@ function coreIsAtLeast12_3(): boolean {
     typeof (BaseExceptionFilter.prototype as { getHttpErrorMessage?: unknown })
       .getHttpErrorMessage === "function"
   );
+}
+
+/**
+ * Whether the installed Nest 11 is one whose platform-express hides a replied
+ * `Error`'s properties: 11.2.10 backported 12.3's
+ * `body instanceof Error && response.statusCode >= 400` to platform-express,
+ * which this adapter replaces, so it is told apart by what the core shipped
+ * beside it in that release, never by a version string. From 11.2.10,
+ * `RoutesResolver.prototype.mapExternalException` leaves a `SyntaxError`
+ * without a `status` of 400 unmapped (one from server code, whose message may
+ * hold internal details); before, it maps every one to a
+ * `BadRequestException`. Nest 12 has no such method (its adapters map, see
+ * {@link coreIsAtLeast12_3}), so this is `false` there. A core this cannot
+ * ask (the module or the method missing, or a throw) reads as `false`.
+ */
+function core11HidesRepliedErrors(): boolean {
+  let routesResolver: { RoutesResolver?: { prototype?: object } };
+  try {
+    routesResolver = requireFromHere(
+      "@nestjs/core/router/routes-resolver.js",
+    ) as typeof routesResolver;
+  } catch {
+    return false;
+  }
+  const map = (
+    routesResolver.RoutesResolver?.prototype as
+      { mapExternalException?: unknown } | undefined
+  )?.mapExternalException;
+  if (typeof map !== "function") {
+    return false;
+  }
+  const probe = new SyntaxError("probe");
+  try {
+    // Its other case reads `this.isHttpFastifyError`; a stand-in answers it.
+    return (
+      (map as (this: object, error: unknown) => unknown).call(
+        { isHttpFastifyError: () => false },
+        probe,
+      ) === probe
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether the installed Nest's platform-express hides a replied `Error`'s
+ * properties, as {@link BunHttpAdapter.reply} then does: Nest 12.3.0 and
+ * later ({@link coreIsAtLeast12_3}), and Nest 11.2.10 and later, which
+ * backported it ({@link core11HidesRepliedErrors}).
+ */
+function coreHidesRepliedErrors(): boolean {
+  return coreIsAtLeast12_3() || core11HidesRepliedErrors();
 }
 
 /**
@@ -1000,9 +1056,6 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
   );
 }
 
-/** `require` from this file, for the one optional capability probe below. */
-const requireFromHere = createRequire(import.meta.url);
-
 /**
  * Whether the installed Nest is 12.2.0 or later, whose platform-express
  * unquotes a quoted media-type version (`v="2"`, nestjs/nest c8923bd7c):
@@ -1242,10 +1295,16 @@ export class BunHttpAdapter<
   readonly #replyAppliesEveryStatus = coreScopesNotFoundToPrefix();
 
   /**
-   * Whether this Nest's platform-express maps `http-errors` and hides a replied
-   * `Error`'s properties (see {@link coreIsAtLeast12_3}); read once.
+   * Whether this Nest's platform-express maps `http-errors` in
+   * {@link mapException} (see {@link coreIsAtLeast12_3}); read once.
    */
   readonly #atLeast12_3 = coreIsAtLeast12_3();
+  /**
+   * Whether this Nest's platform-express hides a replied `Error`'s
+   * properties in {@link reply} (12.3.0 and later, 11.2.10 and later; see
+   * {@link coreHidesRepliedErrors}); read once.
+   */
+  readonly #hidesRepliedErrors = coreHidesRepliedErrors();
   /**
    * Body parsers already registered, keyed by path prefix and parser kind
    * (`"*"` for the untyped `registerParserMiddleware`), so each kind is added
@@ -3344,12 +3403,12 @@ export class BunHttpAdapter<
       return this.#replyStreamableFile(response, body);
     }
 
-    // As @nestjs/platform-express 12.3: `json()` would serialise an `Error`'s
-    // enumerable properties, such as the request config of an HTTP client's
-    // error, so one replied with a status of 400 or more only says the status.
-    // Before 12.3 Express serialises them, and so does this.
+    // As @nestjs/platform-express 12.3 and 11.2.10: `json()` would serialise
+    // an `Error`'s enumerable properties, such as the request config of an
+    // HTTP client's error, so one replied with a status of 400 or more only
+    // says the status. Before them Express serialises them, and so does this.
     if (
-      this.#atLeast12_3 &&
+      this.#hidesRepliedErrors &&
       body instanceof Error &&
       response.statusCode >= 400
     ) {

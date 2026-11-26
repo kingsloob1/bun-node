@@ -89,17 +89,10 @@ import {
 } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import {
-  ClientProxyFactory,
-  MessagePattern,
-  Payload,
-  Transport,
-} from "@nestjs/microservices";
-import {
   MessageBody,
   SubscribeMessage,
   WebSocketGateway,
 } from "@nestjs/websockets";
-import { SocketModule } from "@nestjs/websockets/socket-module.js";
 import { firstValueFrom, timeout } from "rxjs";
 import * as yup from "yup";
 import { z } from "zod";
@@ -123,6 +116,14 @@ const NestSchemaPipe = (nestCommon as unknown as Record<string, unknown>)
   .StandardSchemaValidationPipe as (new () => PipeTransform) | undefined;
 
 /**
+ * `@nestjs/websockets/socket-module` and `@nestjs/microservices` (below) are
+ * loaded by `import()`, once every static import (`@nestjs/core` among them)
+ * has run. A static import of either can be evaluated before `@nestjs/core`
+ * (Bun evaluates CommonJS imports out of order, oven-sh/bun#49614), and on
+ * Nest 11.2.10 and later that enters a require cycle that leaves the
+ * application without its WebSocket module: no gateway is served, a 404 on
+ * the upgrade (docs/bun-bugs/cjs-imports-evaluated-out-of-order.md).
+ *
  * Whether Nest applies global pipes to gateways: Nest 12's
  * `SocketModule.getContextCreator(container, config, …)` hands the
  * application's config (its global pipes) to the gateway's pipes; Nest 11's
@@ -130,6 +131,7 @@ const NestSchemaPipe = (nestCommon as unknown as Record<string, unknown>)
  * `StandardValidationModule.gatewayPipes()`, so the checks below hold the
  * helper to what the installed Nest does rather than to its own answer.
  */
+const { SocketModule } = await import("@nestjs/websockets/socket-module.js");
 const GLOBAL_PIPES_REACH_GATEWAYS =
   (
     SocketModule.prototype as unknown as {
@@ -880,6 +882,11 @@ await checkRejects(
 
 /* ------------------------------------------------------------------ */
 step("In a microservice: the client's send() fails with the issues");
+
+// Loaded here, once every static import has run, as `SocketModule` is
+// above: see the note there.
+const { ClientProxyFactory, MessagePattern, Payload, Transport } =
+  await import("@nestjs/microservices");
 
 /** A `@MessagePattern` taking a `SchemaDto` payload. */
 @Controller()
