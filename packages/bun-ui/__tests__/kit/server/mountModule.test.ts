@@ -146,6 +146,54 @@ describe("buildAssets({ mountEntry })", () => {
     expect(typeof (await module.lazyFixture())).toBe("function");
   });
 
+  it("re-bundled by a host, names no file of its own build (#880)", async () => {
+    const assets = await buildAssets({
+      entry: WITH_MOUNT,
+      sourcemap: "none",
+      mount: "jobs",
+      mountEntry: siblingMountEntry(WITH_MOUNT),
+    });
+    const dir = join(SCRATCH, "rebundled");
+    await writeAssets(assets, dir);
+    await writeMountExports(assets, dir);
+    // A host importing `exports["./jobs/mount"]`, bundled with splitting
+    // as the README's bundling host is.
+    const host = join(SCRATCH, "rebundled-host");
+    writeFileSync(
+      join(SCRATCH, "rebundled-host.ts"),
+      `import { lazyFixture, mountFixture } from ${JSON.stringify(join(dir, "mount", "index.js"))};\nexport { lazyFixture, mountFixture };\n`,
+    );
+    const result = await Bun.build({
+      entrypoints: [join(SCRATCH, "rebundled-host.ts")],
+      outdir: host,
+      target: "browser",
+      splitting: true,
+      minify: true,
+    });
+    expect(result.success).toBe(true);
+    const outputs = new Set(readdirSync(host));
+    const code = [...outputs]
+      .filter((name) => name.endsWith(".js"))
+      .map((name) => readFileSync(join(host, name), "utf8"))
+      .join("\n");
+    // Every file the host's code names is in its output...
+    const named = [...code.matchAll(/["'`]\.\/([\w.-]+\.js)["'`]/g)].map(
+      (match) => match[1]!,
+    );
+    expect(named.filter((name) => !outputs.has(name))).toEqual([]);
+    // ...and none of the package's own chunk files is named at all.
+    const own = assets.mount!.files!.filter((name) => name.endsWith(".js"));
+    expect(own.length).toBeGreaterThan(1);
+    expect(own.filter((name) => code.includes(name))).toEqual([]);
+    // The host's build still works, its lazy chunk included.
+    const module = (await import(join(host, "rebundled-host.js"))) as {
+      mountFixture: () => string;
+      lazyFixture: () => Promise<() => void>;
+    };
+    expect(module.mountFixture()).toBe("mounted");
+    expect(typeof (await module.lazyFixture())).toBe("function");
+  });
+
   it("writes the module's files itself for a dist without a build (build:types), no manifest", async () => {
     const assets = await buildAssets({
       entry: WITH_MOUNT,

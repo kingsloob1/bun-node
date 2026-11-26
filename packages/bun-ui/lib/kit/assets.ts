@@ -225,6 +225,8 @@ export interface BuildAssetsOptions {
    * The UI's mount entry (`app/<ui>/mount.tsx`, {@link uiMountEntry}):
    * bundled too, its module and chunks added to the files and named in
    * {@link UiAssets.mount}'s `js`. Needs {@link mount}. Defaults to none.
+   * It is built without Bun's chunk-preload runtime (the page keeps it), so
+   * a host that re-bundles it requests none of this build's chunk files.
    */
   mountEntry?: string;
 }
@@ -311,7 +313,14 @@ export async function buildAssets(
   if (options.mount === undefined) return assets;
   assets = withMountStylesheet(assets, options.mount, stylesheets);
   if (options.mountEntry === undefined) return assets;
-  const mount = await bundle(options.mountEntry, options);
+  // No preload runtime in the mount module (#880): a bundling host
+  // re-bundles it through `exports["./<ui>/mount"]`, where a table naming
+  // this build's chunk files would send the browser after files the host's
+  // output does not have. Its lazy imports stay plain `import()`s, which the
+  // host's bundler follows and splits itself.
+  const mount = await bundle(options.mountEntry, options, {
+    modulePreload: false,
+  });
   const files = new Map(assets.files);
   const own: string[] = [];
   // Its stylesheet is the page's rules unscoped: the scoped one stands for it.
@@ -328,10 +337,23 @@ export async function buildAssets(
   };
 }
 
+/** How {@link bundle} bundles one entry, beyond {@link BuildAssetsOptions}. */
+interface BundleOptions {
+  /**
+   * Bun's chunk-preload runtime: each `import()` first adds a
+   * `<link rel="modulepreload">` for every chunk its target imports, from a
+   * table naming this build's files. Defaults to `true` (the page, which
+   * the browser loads as built); `false` for the mount module, which a host
+   * may re-bundle, emitting plain `import()`s.
+   */
+  modulePreload?: boolean;
+}
+
 /** One entry bundled, as {@link buildAssets} bundles it: its files, its module and its stylesheets. */
 async function bundle(
   entry: string,
   options: BuildAssetsOptions,
+  { modulePreload = true }: BundleOptions = {},
 ): Promise<{ files: Map<string, UiAsset>; js: string; css: string[] }> {
   const sourcemap = options.sourcemap ?? "linked";
   const result = await Bun.build({
@@ -340,6 +362,7 @@ async function bundle(
     format: "esm",
     minify: options.minify ?? true,
     splitting: true,
+    modulePreload,
     sourcemap,
     naming: {
       entry: "[name]-[hash].[ext]",

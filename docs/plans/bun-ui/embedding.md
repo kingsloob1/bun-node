@@ -390,6 +390,13 @@ a host's unlayered rules above every layer, measured in Chrome.
     "./assets/mount-<hash>.js"` and `/mount.css` the scoped stylesheets, both
     `Cache-Control: no-cache` with an ETag; the hashed files keep their
     immutable caching and SRI, which `xxxUiMountTags()` prints.
+    **The mount module has no preload runtime** (#880, fixed after 3.3.0):
+    built with `modulePreload: false`, its lazy imports are plain
+    `import()`s. With Bun's runtime, a host that re-bundled it kept the
+    runtime's table of this build's chunk names, and the browser asked the
+    host for each one (26 404s on the jobs screens). The page keeps the
+    runtime; the router's `/mount.js` loses only the early fetch of a lazy
+    screen's chunks.
 15. **`onNavigate(path, { replace })`**: the second argument says whether the
     navigation replaces the entry (a filter in the query, a redirect), so a
     host's router does not stack them; a navigation to where the UI already
